@@ -42,7 +42,7 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="h-dvh grid place-items-center px-6">
-      <div className="w-full max-w-sm">
+      <div className="card-in w-full max-w-sm rounded-3xl border border-white/10 bg-white/[0.04] p-8 shadow-2xl shadow-black/50 backdrop-blur-2xl backdrop-saturate-150">
         <div className="mb-8 text-center">
           <div className="text-3xl font-semibold tracking-tight">Mood</div>
           <div className="mt-2 text-sm text-zinc-500">
@@ -61,11 +61,11 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@example.com"
-              className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm outline-none placeholder:text-zinc-600 focus:border-violet-500/50"
+              className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm outline-none placeholder:text-zinc-600 focus:border-white/30"
             />
             <button
               disabled={busy}
-              className="w-full rounded-xl bg-violet-600 px-4 py-3 text-sm font-medium text-white hover:bg-violet-500 disabled:opacity-50"
+              className="w-full rounded-xl bg-white px-4 py-3 text-sm font-medium text-black hover:bg-zinc-200 disabled:opacity-50"
             >
               {busy ? "Sending…" : "Send magic link"}
             </button>

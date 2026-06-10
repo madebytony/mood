@@ -23,7 +23,7 @@ function StackCard({ stack, thumbs, onOpen }: { stack: Stack; thumbs: string[]; 
   return (
     <button
       onClick={onOpen}
-      className="group card-in block w-full rounded-xl border border-white/5 bg-white/[0.03] p-3 text-left transition-transform hover:scale-[1.01] hover:border-violet-500/40"
+      className="group card-in block w-full rounded-xl border border-white/5 bg-white/[0.03] p-3 text-left transition-transform hover:scale-[1.01] hover:border-white/30"
     >
       <div className="relative mx-auto aspect-[4/3] w-full">
         {thumbs.length === 0 ? (
@@ -70,7 +70,7 @@ function Card({
     item.width && item.height ? Math.min(item.height / item.width, THUMB_MAX_H / THUMB_W) : null;
 
   return (
-    <div className={`group relative ${selected ? "rounded-xl ring-2 ring-violet-500" : ""}`}>
+    <div className={`group relative ${selected ? "rounded-xl ring-2 ring-white/80" : ""}`}>
       <button
         onClick={() => onOpen(item)}
         className="card-in lift block w-full overflow-hidden rounded-xl border border-white/5 bg-white/[0.03] text-left hover:border-white/15"
@@ -116,7 +116,7 @@ function Card({
           title="Select"
           className={`absolute left-2 top-2 z-10 h-6 w-6 rounded-full border text-[12px] leading-none ${
             selected
-              ? "pop-in block border-violet-300 bg-violet-600 text-white"
+              ? "pop-in block border-white/80 bg-white text-black"
               : "hidden border-white/50 bg-black/50 text-white/0 backdrop-blur hover:text-white/80 group-hover:block"
           }`}
         >
@@ -126,7 +126,7 @@ function Card({
       {onFile && (
         <button
           onClick={() => onFile(item)}
-          className="absolute right-2 top-2 hidden rounded-full bg-black/60 px-3 py-1 text-[11px] text-white backdrop-blur hover:bg-violet-600 group-hover:block"
+          className="absolute right-2 top-2 hidden rounded-full bg-black/60 px-3 py-1 text-[11px] text-white backdrop-blur hover:bg-white hover:text-black group-hover:block"
         >
           File →
         </button>
@@ -212,13 +212,13 @@ export default function Masonry({
     >
       {band && (
         <div
-          className="pointer-events-none fixed z-30 rounded border border-violet-400/70 bg-violet-500/10"
+          className="pointer-events-none fixed z-30 rounded border border-white/60 bg-white/10"
           style={bandRect(band)}
         />
       )}
       {ghosts.map((g) => (
         <div key={`g-${g.id}`} className="mb-3" style={{ breakInside: "avoid" }}>
-          <div className="card-in animate-pulse rounded-xl border border-violet-500/25 bg-white/[0.05]">
+          <div className="card-in animate-pulse rounded-xl border border-white/20 bg-white/[0.05]">
             <div className="grid h-48 w-full place-items-center px-3 text-center">
               <span className="line-clamp-3 break-all text-[11px] text-zinc-500">{g.label}</span>
             </div>

@@ -56,7 +56,7 @@ export default function AddMenu({ onFiles, onUrl, onCapture, onNote, openTick }:
 
       <button
         onClick={() => setOpen(true)}
-        className="fixed bottom-6 right-5 z-30 hidden h-14 w-14 place-items-center rounded-full bg-violet-600 text-2xl text-white shadow-lg shadow-violet-900/40 transition-transform hover:scale-105 active:scale-95 md:grid"
+        className="fixed bottom-6 right-5 z-30 hidden h-14 w-14 place-items-center rounded-full bg-white text-2xl text-black shadow-lg shadow-black/50 transition-transform hover:scale-105 active:scale-95 md:grid"
         title="Add to Mood"
       >
         +
@@ -66,7 +66,7 @@ export default function AddMenu({ onFiles, onUrl, onCapture, onNote, openTick }:
         <div className="fixed inset-0 z-40 flex items-end justify-center sm:items-center" onClick={close}>
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
           <div
-            className="relative z-10 w-full max-w-md rounded-t-2xl border border-white/10 bg-[#17171c] p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:rounded-2xl"
+            className="relative z-10 w-full max-w-md rounded-t-2xl border border-white/10 bg-[#17171c]/80 p-3 backdrop-blur-2xl pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:rounded-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             {mode === "menu" && (
@@ -94,7 +94,7 @@ export default function AddMenu({ onFiles, onUrl, onCapture, onNote, openTick }:
                     onChange={(e) => setText(e.target.value)}
                     rows={4}
                     placeholder="Jot an idea…"
-                    className="w-full resize-none rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm outline-none focus:border-violet-500/50"
+                    className="w-full resize-none rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm outline-none focus:border-white/30"
                   />
                 ) : (
                   <input
@@ -103,14 +103,14 @@ export default function AddMenu({ onFiles, onUrl, onCapture, onNote, openTick }:
                     onChange={(e) => setText(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && submit()}
                     placeholder={mode === "capture" ? "https://site-to-screenshot.com" : "https://…"}
-                    className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm outline-none focus:border-violet-500/50"
+                    className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm outline-none focus:border-white/30"
                   />
                 )}
                 <div className="flex justify-end gap-2">
                   <button onClick={close} className="rounded-xl px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200">
                     Cancel
                   </button>
-                  <button onClick={submit} className="rounded-xl bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-500">
+                  <button onClick={submit} className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-black hover:bg-zinc-200">
                     {mode === "capture" ? "Capture" : "Add"}
                   </button>
                 </div>

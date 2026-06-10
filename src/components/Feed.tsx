@@ -121,7 +121,7 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
     load(q, true);
   }
 
-  const chip = "rounded-full bg-black/55 px-2.5 py-1 text-[11px] text-white backdrop-blur hover:bg-violet-600";
+  const chip = "rounded-full bg-black/55 px-2.5 py-1 text-[11px] text-white backdrop-blur hover:bg-white hover:text-black";
 
   return (
     <div className={compact ? "" : "px-3 pb-24"}>
@@ -137,9 +137,9 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Describe what you're hunting for… e.g. brutalist e-commerce, editorial type"
-          className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm outline-none placeholder:text-zinc-600 focus:border-violet-500/50"
+          className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm outline-none placeholder:text-zinc-600 focus:border-white/30"
         />
-        <button className="shrink-0 rounded-xl bg-violet-600 px-4 text-sm font-medium text-white hover:bg-violet-500">
+        <button className="shrink-0 rounded-xl bg-white px-4 text-sm font-medium text-black hover:bg-zinc-200">
           {loading ? "…" : "Discover"}
         </button>
       </form>
@@ -204,7 +204,7 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
             <button
               key={`l-${card.item.id}`}
               onClick={() => onOpenItem(card.item)}
-              className="card-in group relative mb-3 block w-full overflow-hidden rounded-xl border border-violet-500/20 bg-white/[0.03] text-left"
+              className="card-in group relative mb-3 block w-full overflow-hidden rounded-xl border border-white/15 bg-white/[0.03] text-left"
               style={{ breakInside: "avoid" }}
             >
               {card.item.thumb_path && urls.get(card.item.thumb_path) ? (
@@ -213,7 +213,7 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
               ) : (
                 <div className="px-4 py-5 text-sm text-zinc-300">{(card.item.content ?? card.item.title ?? "").slice(0, 200)}</div>
               )}
-              <div className="px-3 py-2 text-[11px] text-violet-300/80">↻ From your library — been a while</div>
+              <div className="px-3 py-2 text-[11px] text-zinc-200/80">↻ From your library — been a while</div>
             </button>
           )
         )}
@@ -224,7 +224,7 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
           <button
             onClick={findMore}
             disabled={loading}
-            className="rounded-full border border-white/10 bg-white/[0.03] px-6 py-2.5 text-sm text-violet-300 hover:border-violet-500/50 disabled:opacity-50"
+            className="rounded-full border border-white/10 bg-white/[0.03] px-6 py-2.5 text-sm text-zinc-200 hover:border-white/30 disabled:opacity-50"
           >
             {loading ? "Curating…" : seeds.current.length ? "↓ Find more like what I'm into" : "↓ Find more"}
           </button>

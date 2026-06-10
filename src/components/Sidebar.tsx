@@ -88,7 +88,7 @@ export default function Sidebar({ libraries, spaces, selected, counts, onSelect,
 
   const row = (active: boolean) =>
     `group flex w-full items-center justify-between rounded-lg px-3 py-1.5 text-left text-sm transition-colors ${
-      active ? "bg-violet-600/20 text-violet-200" : "text-zinc-400 hover:bg-white/5 hover:text-zinc-200"
+      active ? "bg-white/10 text-white" : "text-zinc-400 hover:bg-white/5 hover:text-zinc-200"
     }`;
 
   return (
@@ -195,7 +195,7 @@ export default function Sidebar({ libraries, spaces, selected, counts, onSelect,
         <div className="fixed inset-0 z-50 grid place-items-center" onClick={() => setQr(null)}>
           <div className="absolute inset-0 bg-black/75 backdrop-blur-sm" />
           <div
-            className="relative z-10 w-[min(360px,92vw)] rounded-2xl border border-white/10 bg-[#141418] p-5 text-center"
+            className="relative z-10 w-[min(360px,92vw)] rounded-2xl border border-white/10 bg-[#141418]/85 p-5 shadow-2xl backdrop-blur-2xl text-center"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-1 text-sm font-medium text-zinc-200">Sign in on your phone</div>

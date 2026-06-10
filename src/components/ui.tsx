@@ -73,7 +73,7 @@ export function DialogHost() {
     <div className="fixed inset-0 z-[70] flex items-end justify-center sm:items-center" onClick={cancel}>
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
       <div
-        className="card-in relative z-10 w-full max-w-sm rounded-t-2xl border border-white/10 bg-[#17171c] p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] sm:rounded-2xl sm:pb-5"
+        className="card-in relative z-10 w-full max-w-sm rounded-t-2xl border border-white/10 bg-[#17171c]/80 p-5 shadow-2xl backdrop-blur-2xl pb-[max(1.25rem,env(safe-area-inset-bottom))] sm:rounded-2xl sm:pb-5"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
           if (e.key === "Enter") confirm();
@@ -91,7 +91,7 @@ export function DialogHost() {
             value={val}
             onChange={(e) => setVal(e.target.value)}
             placeholder={req.placeholder}
-            className="mt-3 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm outline-none placeholder:text-zinc-600 focus:border-violet-500/50"
+            className="mt-3 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm outline-none placeholder:text-zinc-600 focus:border-white/30"
           />
         )}
         <div className="mt-4 flex justify-end gap-2">
@@ -102,8 +102,10 @@ export function DialogHost() {
           )}
           <button
             onClick={confirm}
-            className={`rounded-xl px-4 py-2 text-sm font-medium text-white ${
-              req.kind === "confirm" && req.danger ? "bg-red-600 hover:bg-red-500" : "bg-violet-600 hover:bg-violet-500"
+            className={`rounded-xl px-4 py-2 text-sm font-medium ${
+              req.kind === "confirm" && req.danger
+                ? "bg-red-600 text-white hover:bg-red-500"
+                : "bg-white text-black hover:bg-zinc-200"
             }`}
           >
             {("confirmLabel" in req && req.confirmLabel) ||

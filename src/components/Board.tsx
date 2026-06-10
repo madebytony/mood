@@ -315,7 +315,7 @@ export default function Board({ items, urls, onOpen, stacks = [], stackThumbs, o
               key={key}
               id={`card-${key}`}
               className={`group absolute left-0 top-0 cursor-grab overflow-hidden rounded-xl border bg-[#17171c] shadow-lg shadow-black/40 active:cursor-grabbing ${
-                isStack ? "border-violet-500/30" : "border-white/10"
+                isStack ? "border-white/20" : "border-white/10"
               } ${tidying ? "transition-transform duration-300" : ""}`}
               style={{ width: p.w, height: h, transform: `translate(${p.x}px, ${p.y}px)` }}
               onPointerDown={(e) => {
@@ -368,7 +368,7 @@ export default function Board({ items, urls, onOpen, stacks = [], stackThumbs, o
       <div className="absolute bottom-20 left-1/2 z-10 flex -translate-x-1/2 gap-2 md:bottom-5">
         <button
           onClick={tidy}
-          className="rounded-full border border-white/10 bg-[#1b1b21]/90 px-4 py-2 text-xs text-zinc-200 backdrop-blur hover:border-violet-500/50"
+          className="rounded-full border border-white/10 bg-[#1b1b21]/65 px-4 py-2 text-xs text-zinc-200 backdrop-blur-xl hover:border-white/30"
         >
           ✨ Tidy
         </button>
@@ -377,7 +377,7 @@ export default function Board({ items, urls, onOpen, stacks = [], stackThumbs, o
             view.current = { x: 60, y: 60, k: 1 };
             applyView();
           }}
-          className="rounded-full border border-white/10 bg-[#1b1b21]/90 px-4 py-2 text-xs text-zinc-200 backdrop-blur hover:border-violet-500/50"
+          className="rounded-full border border-white/10 bg-[#1b1b21]/65 px-4 py-2 text-xs text-zinc-200 backdrop-blur-xl hover:border-white/30"
         >
           Reset view
         </button>

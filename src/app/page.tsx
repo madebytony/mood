@@ -469,7 +469,7 @@ function App() {
 
   return (
     <div className="flex h-dvh overflow-hidden">
-      <aside className="hidden w-60 shrink-0 border-r border-white/5 bg-[#121216] md:block">
+      <aside className="hidden w-60 shrink-0 border-r border-white/5 bg-[#121216]/55 backdrop-blur-2xl backdrop-saturate-150 md:block">
         <Sidebar
           libraries={libraries}
           spaces={spaces}
@@ -485,7 +485,7 @@ function App() {
       {sidebarOpen && (
         <div className="fixed inset-0 z-40 md:hidden">
           <div className="absolute inset-0 bg-black/60" onClick={() => setSidebarOpen(false)} />
-          <aside className="absolute left-0 top-0 h-full w-72 border-r border-white/10 bg-[#121216]">
+          <aside className="absolute left-0 top-0 h-full w-72 border-r border-white/10 bg-[#121216]/75 backdrop-blur-2xl backdrop-saturate-150">
             <Sidebar
               libraries={libraries}
               spaces={spaces}
@@ -509,7 +509,7 @@ function App() {
           {currentSpace && (
             <button
               onClick={toggleView}
-              className="rounded-lg border border-white/10 px-2.5 py-1 text-[11px] text-zinc-400 hover:border-violet-500/50 hover:text-zinc-200"
+              className="rounded-lg border border-white/10 px-2.5 py-1 text-[11px] text-zinc-400 hover:border-white/30 hover:text-zinc-200"
               title="Toggle grid / board"
             >
               {showBoard ? "⊞ Grid" : "⬚ Board"}
@@ -522,13 +522,13 @@ function App() {
                 onChange={(e) => setSearch(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && e.metaKey && runAiSearch()}
                 placeholder="Search… (⌘↩ for AI search)"
-                className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm outline-none placeholder:text-zinc-600 focus:border-violet-500/50"
+                className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm outline-none placeholder:text-zinc-600 focus:border-white/30"
               />
               <button
                 onClick={runAiSearch}
                 disabled={aiBusy || !search.trim()}
                 title="AI search — understands meaning, not just words"
-                className="shrink-0 rounded-xl border border-white/10 px-3 py-2 text-sm text-violet-300 hover:border-violet-500/50 disabled:opacity-40"
+                className="shrink-0 rounded-xl border border-white/10 px-3 py-2 text-sm text-zinc-200 hover:border-white/30 disabled:opacity-40"
               >
                 {aiBusy ? "…" : "✨"}
               </button>
@@ -598,7 +598,7 @@ function App() {
                 <div className="px-3 pb-24">
                   <button
                     onClick={() => setSimilarQuery(search.trim())}
-                    className="mx-auto block rounded-full border border-white/10 bg-white/[0.03] px-5 py-2.5 text-xs text-violet-300 hover:border-violet-500/50"
+                    className="mx-auto block rounded-full border border-white/10 bg-white/[0.03] px-5 py-2.5 text-xs text-zinc-200 hover:border-white/30"
                   >
                     🌐 Search the web for “{search.trim()}”
                   </button>
@@ -612,7 +612,7 @@ function App() {
       <AddMenu onFiles={handleFiles} onUrl={handleUrl} onCapture={handleCapture} onNote={handleNote} openTick={addTick} />
 
       {/* Mobile bottom tab bar */}
-      <nav className="fixed inset-x-0 bottom-0 z-30 flex items-stretch border-t border-white/10 bg-[#121216]/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-30 flex items-stretch border-t border-white/10 bg-[#0f0f12]/65 pb-[env(safe-area-inset-bottom)] backdrop-blur-2xl backdrop-saturate-150 md:hidden">
         {(
           [
             { key: "home", icon: "✨", label: "Home", fn: () => { setSelected("home"); setColorFilter(null); } },
@@ -623,7 +623,7 @@ function App() {
         ).map((t) =>
           t.key === "add" ? (
             <button key={t.key} onClick={t.fn} className="flex flex-1 items-center justify-center py-1.5" title="Add to Mood">
-              <span className="grid h-9 w-9 place-items-center rounded-full bg-violet-600 text-xl leading-none text-white shadow-lg shadow-violet-900/40 active:scale-95">
+              <span className="grid h-9 w-9 place-items-center rounded-full bg-white text-xl leading-none text-black shadow-lg shadow-black/50 active:scale-95">
                 +
               </span>
             </button>
@@ -632,7 +632,7 @@ function App() {
               key={t.key}
               onClick={t.fn}
               className={`flex flex-1 flex-col items-center gap-0.5 py-1.5 text-[10px] ${
-                selected === t.key ? "text-violet-300" : "text-zinc-500 active:text-zinc-300"
+                selected === t.key ? "text-zinc-200" : "text-zinc-500 active:text-zinc-300"
               }`}
             >
               <span className="text-base leading-none">{t.icon}</span>
@@ -664,7 +664,7 @@ function App() {
         <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center" onClick={() => setFiling(null)}>
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
           <div
-            className="relative z-10 w-full max-w-sm rounded-t-2xl border border-white/10 bg-[#17171c] p-3 sm:rounded-2xl"
+            className="relative z-10 w-full max-w-sm rounded-t-2xl border border-white/10 bg-[#17171c]/80 p-3 backdrop-blur-2xl sm:rounded-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="px-2 pb-2 text-xs uppercase tracking-wider text-zinc-500">File to…</div>
@@ -684,11 +684,11 @@ function App() {
       )}
 
       {selIds.size > 0 && (
-        <div className="rise-in fixed bottom-20 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/10 bg-[#1b1b21]/95 px-4 py-2.5 shadow-xl backdrop-blur md:bottom-6">
+        <div className="rise-in fixed bottom-20 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/10 bg-[#17171b]/70 px-4 py-2.5 shadow-xl backdrop-blur-2xl backdrop-saturate-150 md:bottom-6">
           <span className="text-xs text-zinc-400">{selIds.size} selected</span>
           <button
             onClick={makeStack}
-            className="rounded-full bg-violet-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-violet-500"
+            className="rounded-full bg-white px-4 py-1.5 text-xs font-medium text-black hover:bg-zinc-200"
           >
             🗂 Stack
           </button>
@@ -702,7 +702,7 @@ function App() {
         <div className="fixed inset-0 z-40 flex" onClick={() => setSimilarQuery(null)}>
           <div className="absolute inset-0 bg-black/75 backdrop-blur-sm" />
           <div
-            className="relative z-10 m-auto flex h-[90dvh] w-[min(1280px,96vw)] flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#101013]"
+            className="relative z-10 m-auto flex h-[90dvh] w-[min(1280px,96vw)] flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#101013]/80 shadow-2xl backdrop-blur-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
@@ -739,7 +739,7 @@ function App() {
         <div className="fixed inset-0 z-40 flex" onClick={() => setStackView(null)}>
           <div className="absolute inset-0 bg-black/75 backdrop-blur-sm" />
           <div
-            className="relative z-10 m-auto flex max-h-[88dvh] w-[min(980px,96vw)] flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#101013]"
+            className="relative z-10 m-auto flex max-h-[88dvh] w-[min(980px,96vw)] flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#101013]/80 shadow-2xl backdrop-blur-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between gap-3 border-b border-white/5 px-5 py-3">
@@ -751,7 +751,7 @@ function App() {
                     renameStack(stackView.stack.id, v).then(loadItems).catch(() => {});
                   }
                 }}
-                className="w-full max-w-xs rounded-lg border border-transparent bg-transparent px-2 py-1 text-sm font-medium text-zinc-200 outline-none hover:border-white/10 focus:border-violet-500/50"
+                className="w-full max-w-xs rounded-lg border border-transparent bg-transparent px-2 py-1 text-sm font-medium text-zinc-200 outline-none hover:border-white/10 focus:border-white/30"
               />
               <div className="flex shrink-0 items-center gap-3">
                 <button onClick={dissolveStack} className="text-xs text-red-400/80 hover:text-red-300">
@@ -771,7 +771,7 @@ function App() {
                         setStackView(null);
                         setOpen(i);
                       }}
-                      className="block w-full overflow-hidden rounded-lg border border-white/10 hover:border-violet-500/50"
+                      className="block w-full overflow-hidden rounded-lg border border-white/10 hover:border-white/30"
                     >
                       {i.thumb_path && urls.get(i.thumb_path) ? (
                         // eslint-disable-next-line @next/next/no-img-element
@@ -785,7 +785,7 @@ function App() {
                     <button
                       onClick={() => unstackOne(i)}
                       title="Remove from stack"
-                      className="absolute right-1.5 top-1.5 hidden rounded-full bg-black/60 px-2 py-0.5 text-[10px] text-white backdrop-blur hover:bg-violet-600 group-hover:block"
+                      className="absolute right-1.5 top-1.5 hidden rounded-full bg-black/60 px-2 py-0.5 text-[10px] text-white backdrop-blur hover:bg-white hover:text-black group-hover:block"
                     >
                       ↩ unstack
                     </button>
@@ -798,10 +798,10 @@ function App() {
       )}
 
       {dragging && (
-        <div className="pointer-events-none fixed inset-0 z-50 grid place-items-center border-4 border-dashed border-violet-500/60 bg-violet-600/10">
-          <div className="rounded-2xl bg-[#17171c] px-6 py-4 text-sm text-zinc-200 shadow-xl">
+        <div className="pointer-events-none fixed inset-0 z-50 grid place-items-center border-4 border-dashed border-white/40 bg-white/10">
+          <div className="rounded-2xl bg-[#17171c]/80 px-6 py-4 backdrop-blur-xl text-sm text-zinc-200 shadow-xl">
             Drop to add to{" "}
-            <span className="font-semibold text-violet-300">{currentSpace?.name ?? "Inbox"}</span>
+            <span className="font-semibold text-zinc-200">{currentSpace?.name ?? "Inbox"}</span>
           </div>
         </div>
       )}
@@ -811,12 +811,12 @@ function App() {
           <div
             key={t.id}
             className={`rise-in pointer-events-auto flex items-center gap-3 rounded-full px-4 py-2 text-xs shadow-lg ${
-              t.kind === "error" ? "bg-red-950 text-red-200" : "bg-[#1f1f26] text-zinc-200"
+              t.kind === "error" ? "border border-red-400/20 bg-red-950/80 text-red-200 backdrop-blur-xl" : "border border-white/10 bg-[#1b1b20]/75 text-zinc-100 backdrop-blur-xl"
             }`}
           >
             {t.text}
             {t.action && (
-              <button onClick={t.action.fn} className="font-semibold text-violet-300 hover:text-violet-200">
+              <button onClick={t.action.fn} className="font-semibold text-white hover:text-zinc-300">
                 {t.action.label}
               </button>
             )}

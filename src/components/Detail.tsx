@@ -129,7 +129,7 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
   }
 
   const input =
-    "w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm outline-none focus:border-violet-500/50";
+    "w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm outline-none focus:border-white/30";
   const btn =
     "rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-zinc-300 hover:border-white/25 disabled:opacity-50";
 
@@ -137,7 +137,7 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
     <div className="fixed inset-0 z-40 flex" onClick={onClose}>
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
       <div
-        className="card-in no-scrollbar relative z-10 m-auto flex h-dvh w-screen flex-col overflow-y-auto bg-[#141418] md:h-auto md:max-h-[94dvh] md:w-[min(1200px,96vw)] md:flex-row md:overflow-hidden md:rounded-2xl md:border md:border-white/10"
+        className="card-in no-scrollbar relative z-10 m-auto flex h-dvh w-screen flex-col overflow-y-auto bg-[#141418]/85 backdrop-blur-2xl md:h-auto md:shadow-2xl md:max-h-[94dvh] md:w-[min(1200px,96vw)] md:flex-row md:overflow-hidden md:rounded-2xl md:border md:border-white/10"
         onClick={(e) => e.stopPropagation()}
       >
         <button
@@ -207,7 +207,7 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
                         .slice(0, 220)
                     )
                   }
-                  className="text-[11px] text-violet-300 hover:underline"
+                  className="text-[11px] text-zinc-200 hover:underline"
                 >
                   Search the web for similar →
                 </button>
@@ -218,7 +218,7 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
                     <button
                       key={r.id}
                       onClick={() => onOpenItem(r)}
-                      className="h-20 w-28 shrink-0 overflow-hidden rounded-lg border border-white/10 hover:border-violet-500/50"
+                      className="h-20 w-28 shrink-0 overflow-hidden rounded-lg border border-white/10 hover:border-white/30"
                     >
                       {r.thumb_path && urls.get(r.thumb_path) ? (
                         // eslint-disable-next-line @next/next/no-img-element
@@ -293,7 +293,7 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
                       target="_blank"
                       rel="noreferrer"
                       title={`Open in ${label}`}
-                      className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] text-zinc-300 hover:border-violet-500/50 hover:text-violet-200"
+                      className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] text-zinc-300 hover:border-white/30 hover:text-white"
                     >
                       <span className="mr-1 font-serif italic text-zinc-500">Aa</span>
                       {name}
@@ -345,7 +345,7 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
           {item.source_url && (
             <div>
               <label className="mb-1 block text-[11px] uppercase tracking-wider text-zinc-600">Source</label>
-              <a href={item.source_url} target="_blank" rel="noreferrer" className="block truncate text-sm text-violet-300 hover:underline">
+              <a href={item.source_url} target="_blank" rel="noreferrer" className="block truncate text-sm text-zinc-200 hover:underline">
                 {item.source_domain ?? item.source_url}
               </a>
             </div>
