@@ -250,11 +250,29 @@ export async function updateItem(id: string, patch: Partial<Item>): Promise<Item
   return data;
 }
 
-export async function deleteItem(item: Item): Promise<void> {
-  const paths = [item.storage_path, item.thumb_path].filter(Boolean) as string[];
-  if (paths.length) await supabase.storage.from("media").remove([...new Set(paths)]);
+/** Undo-able delete, step 1: remove the row immediately (survives refresh/app close). */
+export async function deleteItemRow(item: Item): Promise<void> {
   const { error } = await supabase.from("items").delete().eq("id", item.id);
   if (error) throw error;
+}
+
+/** Undo: re-insert the row exactly as it was (files weren't touched yet). */
+export async function restoreItem(item: Item): Promise<void> {
+  const { error } = await supabase.from("items").insert(item);
+  if (error) throw error;
+}
+
+/** Step 2, after the undo window: clear storage unless another item shares the files. */
+export async function deleteItemStorage(item: Item): Promise<void> {
+  const paths = [...new Set([item.storage_path, item.thumb_path].filter(Boolean))] as string[];
+  if (!paths.length) return;
+  const { data } = await supabase
+    .from("items")
+    .select("id")
+    .or(paths.map((p) => `storage_path.eq.${p},thumb_path.eq.${p}`).join(","))
+    .limit(1);
+  if (data?.length) return; // content-addressed files still referenced elsewhere
+  await supabase.storage.from("media").remove(paths);
 }
 
 export async function createSpace(libraryId: string, name: string): Promise<Space> {

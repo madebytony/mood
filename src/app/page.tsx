@@ -17,7 +17,9 @@ import {
   captionItem,
   captureSite,
   createStack,
-  deleteItem,
+  deleteItemRow,
+  deleteItemStorage,
+  restoreItem,
   deleteStack,
   fetchItems,
   fetchLibraries,
@@ -225,14 +227,22 @@ function App() {
     [targetSpace, loadItems, toast]
   );
 
-  /** Instant delete with a 5s Undo window — no confirm dialogs. */
-  function softDelete(item: Item) {
+  /** Instant delete with a 5s Undo window. The row is deleted immediately (so a refresh
+   *  can't resurrect it); Undo re-inserts it. Files are cleared after the window closes. */
+  async function softDelete(item: Item) {
     setItems((prev) => prev.filter((i) => i.id !== item.id));
+    try {
+      await deleteItemRow(item);
+    } catch (e) {
+      toast(`Delete failed: ${(e as Error).message}`, "error");
+      loadItems();
+      return;
+    }
     const id = ++toastId.current;
     let undone = false;
     const timer = setTimeout(() => {
-      if (!undone) deleteItem(item).catch(() => loadItems());
-    }, 5000);
+      if (!undone) deleteItemStorage(item).catch(() => {});
+    }, 5200);
     setToasts((t) => [
       ...t,
       {
@@ -241,10 +251,15 @@ function App() {
         kind: "info",
         action: {
           label: "Undo",
-          fn: () => {
+          fn: async () => {
             undone = true;
             clearTimeout(timer);
             setToasts((ts) => ts.filter((x) => x.id !== id));
+            try {
+              await restoreItem(item);
+            } catch (e) {
+              toast(`Undo failed: ${(e as Error).message}`, "error");
+            }
             loadItems();
           },
         },
