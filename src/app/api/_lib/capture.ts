@@ -253,6 +253,8 @@ export interface Shot {
 
 export async function chromiumShot(url: string): Promise<Shot> {
   let browser;
+  let fonts: string[] = [];
+  let tech: string[] = [];
   try {
     browser = await launchBrowser();
     const page = await browser.newPage();
@@ -275,27 +277,35 @@ export async function chromiumShot(url: string): Promise<Shot> {
     const resp = await page.goto(url, { waitUntil: "networkidle2", timeout: 35000 }).catch(() => null);
     await page.evaluate(LAZY_SCROLL).catch(() => {});
     await page.evaluate(CLEAN_PAGE).catch(() => {});
-    const fonts = (await page.evaluate(FONT_SNIFF).catch(() => [])) as string[];
+    fonts = (await page.evaluate(FONT_SNIFF).catch(() => [])) as string[];
     const bundleBlob = jsBlobs.join("\n").slice(0, 2_500_000);
     const pageTech = (await page
       .evaluate(`(${TECH_SNIFF})(${JSON.stringify(bundleBlob)})`)
       .catch(() => [])) as string[];
-    const tech = [...new Set([...pageTech, ...hostingFrom(resp?.headers() ?? {})])];
+    tech = [...new Set([...pageTech, ...hostingFrom(resp?.headers() ?? {})])];
     await new Promise((r) => setTimeout(r, 350));
     const height = Math.min(
       await page.evaluate("document.body.scrollHeight").then((h) => Number(h) || 960),
       6000
     );
-    const buf = await page.screenshot({
-      type: "jpeg",
-      quality: 82,
-      clip: { x: 0, y: 0, width: 1440, height },
-    });
+    // Heavy WebGL pages can fail tall captures under software rendering — step down before giving up.
+    let buf: Uint8Array | undefined;
+    for (const h of [...new Set([height, Math.min(height, 2800), 960])]) {
+      try {
+        buf = await page.screenshot({ type: "jpeg", quality: 82, clip: { x: 0, y: 0, width: 1440, height: h } });
+        break;
+      } catch {}
+    }
+    if (!buf) throw new Error("screenshot failed at all heights");
     await browser.close();
     return { bytes: Buffer.from(buf).buffer as ArrayBuffer, type: "image/jpeg", engine: "chromium", fonts, tech };
   } catch (e) {
     if (browser) await browser.close().catch(() => {});
-    throw e;
+    // Carry whatever we managed to sniff so the fallback image can still get fonts/tech.
+    const err = e as Error & { fonts?: string[]; tech?: string[] };
+    err.fonts = fonts;
+    err.tech = tech;
+    throw err;
   }
 }
 
@@ -314,7 +324,11 @@ async function thumShot(url: string, capped: boolean): Promise<Shot> {
 export async function captureScreenshot(url: string, capped = false): Promise<Shot> {
   try {
     return await chromiumShot(url);
-  } catch {
-    return await thumShot(url, capped);
+  } catch (e) {
+    const carrier = e as { fonts?: string[]; tech?: string[] };
+    const shot = await thumShot(url, capped);
+    if (carrier.fonts?.length) shot.fonts = carrier.fonts;
+    if (carrier.tech?.length) shot.tech = carrier.tech;
+    return shot;
   }
 }
