@@ -84,6 +84,18 @@ function App() {
     return () => setPending((p) => p.filter((x) => x.id !== id));
   }, []);
 
+  // ---------- URL state: refresh / share keeps the current view ----------
+  useEffect(() => {
+    const h = decodeURIComponent(window.location.hash.slice(1));
+    if (h === "all" || h === "home") setSelected(h);
+    else if (h.startsWith("s/")) setSelected(h.slice(2));
+  }, []);
+
+  useEffect(() => {
+    const h = selected === "home" || selected === "all" ? selected : `s/${selected}`;
+    history.replaceState(null, "", `#${h}`);
+  }, [selected]);
+
   const toast = useCallback((text: string, kind: Toast["kind"] = "info") => {
     const id = ++toastId.current;
     setToasts((t) => [...t, { id, text, kind }]);
@@ -96,20 +108,35 @@ function App() {
     setSpaces(sps);
   }, []);
 
+  /** Stale-while-revalidate: cached views paint instantly, fresh data swaps in behind. */
+  const viewCache = useRef(
+    new Map<string, { items: Item[]; stacks: Stack[]; urls: Map<string, string>; stackThumbs: Map<string, string[]> }>()
+  );
+
   const loadItems = useCallback(async () => {
     const spaceKey = selected === "home" ? "all" : selected;
+    const cacheKey = `${spaceKey}|${search}`;
+    const cached = viewCache.current.get(cacheKey);
+    if (cached) {
+      setItems(cached.items);
+      setStacks(cached.stacks);
+      setUrls(cached.urls);
+      setStackThumbs(cached.stackThumbs);
+      setReady(true);
+    }
     const [data, stks] = await Promise.all([fetchItems(spaceKey, search), fetchStacks(spaceKey)]);
-    setItems(data);
-    setStacks(stks);
     const fan = await stackThumbPaths(stks.map((s) => s.id));
     const paths = [
       ...(data.map((i) => i.thumb_path).filter(Boolean) as string[]),
       ...[...fan.values()].flat(),
     ];
     const map = paths.length ? await signedUrls(paths) : new Map<string, string>();
-    setUrls(map);
     const fanUrls = new Map<string, string[]>();
     for (const [sid, ps] of fan) fanUrls.set(sid, ps.map((p) => map.get(p)).filter(Boolean) as string[]);
+    viewCache.current.set(cacheKey, { items: data, stacks: stks, urls: map, stackThumbs: fanUrls });
+    setItems(data);
+    setStacks(stks);
+    setUrls(map);
     setStackThumbs(fanUrls);
     setReady(true);
   }, [selected, search]);
@@ -131,7 +158,10 @@ function App() {
   }, [search, selected]);
 
   useEffect(() => {
-    setReady(false); // show skeletons while a new view loads
+    // skeletons only for views we've never seen this session
+    const spaceKey = selected === "home" ? "all" : selected;
+    if (!viewCache.current.has(`${spaceKey}|${search}`)) setReady(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
 
   const inbox = useMemo(() => spaces.find((s) => s.kind === "inbox"), [spaces]);
@@ -559,6 +589,9 @@ function App() {
                 onOpenStack={openStack}
                 selected={selIds}
                 onToggleSelect={toggleSelect}
+                onMarquee={(ids, additive) =>
+                  setSelIds((prev) => new Set(additive ? [...prev, ...ids] : ids))
+                }
                 ghosts={pending}
               />
               {search.trim() && (
@@ -651,7 +684,7 @@ function App() {
       )}
 
       {selIds.size > 0 && (
-        <div className="fixed bottom-20 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/10 bg-[#1b1b21]/95 px-4 py-2.5 shadow-xl backdrop-blur md:bottom-6">
+        <div className="rise-in fixed bottom-20 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/10 bg-[#1b1b21]/95 px-4 py-2.5 shadow-xl backdrop-blur md:bottom-6">
           <span className="text-xs text-zinc-400">{selIds.size} selected</span>
           <button
             onClick={makeStack}
@@ -777,7 +810,7 @@ function App() {
         {toasts.map((t) => (
           <div
             key={t.id}
-            className={`pointer-events-auto flex items-center gap-3 rounded-full px-4 py-2 text-xs shadow-lg ${
+            className={`rise-in pointer-events-auto flex items-center gap-3 rounded-full px-4 py-2 text-xs shadow-lg ${
               t.kind === "error" ? "bg-red-950 text-red-200" : "bg-[#1f1f26] text-zinc-200"
             }`}
           >

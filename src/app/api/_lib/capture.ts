@@ -84,10 +84,34 @@ const LAZY_SCROLL = `(async () => {
   await new Promise((r) => setTimeout(r, 900));
 })()`;
 
+/** Rank the typefaces actually painted on the page (weighted by visible text length). */
+const FONT_SNIFF = `(() => {
+  const generic = new Set(["serif","sans-serif","monospace","cursive","fantasy","system-ui","ui-sans-serif","ui-serif","ui-monospace",
+    "-apple-system","blinkmacsystemfont","segoe ui","arial","helvetica","helvetica neue","times new roman","times","georgia","verdana","tahoma","inherit","initial"]);
+  const clean = (f) => f.split(",")[0].trim().replace(/^['"]|['"]$/g, "");
+  const score = new Map();
+  let n = 0;
+  for (const el of document.querySelectorAll("h1,h2,h3,h4,h5,p,a,li,span,blockquote,button,figcaption,div")) {
+    if (++n > 2500) break;
+    const t = (el.childNodes.length && el.textContent || "").trim();
+    if (t.length < 2) continue;
+    const fam = clean(getComputedStyle(el).fontFamily || "");
+    if (!fam || generic.has(fam.toLowerCase())) continue;
+    const weight = /^h[1-4]$/i.test(el.tagName) ? 120 : Math.min(t.length, 60);
+    score.set(fam, (score.get(fam) || 0) + weight);
+  }
+  const loaded = new Set();
+  try { document.fonts.forEach((f) => { if (f.status === "loaded") loaded.add(clean(f.family)); }); } catch {}
+  const ranked = [...score.entries()].sort((a, b) => b[1] - a[1]).map(([f]) => f);
+  for (const f of loaded) if (!ranked.includes(f) && !generic.has(f.toLowerCase())) ranked.push(f);
+  return ranked.slice(0, 6);
+})()`;
+
 export interface Shot {
   bytes: ArrayBuffer;
   type: string;
   engine: "chromium" | "thum.io";
+  fonts?: string[];
 }
 
 export async function chromiumShot(url: string): Promise<Shot> {
@@ -100,6 +124,7 @@ export async function chromiumShot(url: string): Promise<Shot> {
     await page.goto(url, { waitUntil: "networkidle2", timeout: 35000 }).catch(() => {});
     await page.evaluate(LAZY_SCROLL).catch(() => {});
     await page.evaluate(CLEAN_PAGE).catch(() => {});
+    const fonts = (await page.evaluate(FONT_SNIFF).catch(() => [])) as string[];
     await new Promise((r) => setTimeout(r, 350));
     const height = Math.min(
       await page.evaluate("document.body.scrollHeight").then((h) => Number(h) || 960),
@@ -111,7 +136,7 @@ export async function chromiumShot(url: string): Promise<Shot> {
       clip: { x: 0, y: 0, width: 1440, height },
     });
     await browser.close();
-    return { bytes: Buffer.from(buf).buffer as ArrayBuffer, type: "image/jpeg", engine: "chromium" };
+    return { bytes: Buffer.from(buf).buffer as ArrayBuffer, type: "image/jpeg", engine: "chromium", fonts };
   } catch (e) {
     if (browser) await browser.close().catch(() => {});
     throw e;

@@ -37,3 +37,54 @@ body {
 .card-in {
   animation: cardIn 0.25s ease both;
 }
+
+@keyframes riseIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.rise-in {
+  animation: riseIn 0.22s cubic-bezier(0.21, 1.02, 0.73, 1) both;
+}
+
+@keyframes popIn {
+  0% {
+    transform: scale(0.6);
+  }
+  70% {
+    transform: scale(1.12);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+.pop-in {
+  animation: popIn 0.18s ease-out both;
+}
+
+/* Card hover lift — feels physical without being showy */
+.lift {
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+.lift:hover {
+  transform: translateY(-2px) scale(1.012);
+  box-shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.55);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card-in,
+  .rise-in,
+  .pop-in {
+    animation: none;
+  }
+  .lift,
+  .lift:hover {
+    transition: none;
+    transform: none;
+  }
+}

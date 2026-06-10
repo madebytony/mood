@@ -131,6 +131,7 @@ export async function addImageFile(file: File | Blob, spaceId: string, extras: P
       source_domain: extras.source_url ? hostOf(extras.source_url) : null,
       tags: extras.tags ?? [],
       colors: processed.colors,
+      fonts: extras.fonts ?? [],
     })
     .select()
     .single();
@@ -223,7 +224,11 @@ export async function captureSite(url: string, spaceId: string): Promise<Item> {
   }
   const blob = await res.blob();
   const domain = hostOf(url);
-  return addImageFile(blob, spaceId, { type: "site", source_url: url, title: domain });
+  let fonts: string[] = [];
+  try {
+    fonts = JSON.parse(decodeURIComponent(res.headers.get("x-page-fonts") ?? "%5B%5D"));
+  } catch {}
+  return addImageFile(blob, spaceId, { type: "site", source_url: url, title: domain, fonts });
 }
 
 export async function addNote(text: string, spaceId: string): Promise<Item> {

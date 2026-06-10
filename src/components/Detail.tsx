@@ -137,7 +137,7 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
     <div className="fixed inset-0 z-40 flex" onClick={onClose}>
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
       <div
-        className="no-scrollbar relative z-10 m-auto flex h-dvh w-screen flex-col overflow-y-auto bg-[#141418] md:h-auto md:max-h-[94dvh] md:w-[min(1200px,96vw)] md:flex-row md:overflow-hidden md:rounded-2xl md:border md:border-white/10"
+        className="card-in no-scrollbar relative z-10 m-auto flex h-dvh w-screen flex-col overflow-y-auto bg-[#141418] md:h-auto md:max-h-[94dvh] md:w-[min(1200px,96vw)] md:flex-row md:overflow-hidden md:rounded-2xl md:border md:border-white/10"
         onClick={(e) => e.stopPropagation()}
       >
         <button
@@ -195,7 +195,18 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
               <div className="mb-2 flex items-center justify-between">
                 <span className="text-[11px] uppercase tracking-wider text-zinc-600">More like this</span>
                 <button
-                  onClick={() => onWebSimilar([item.title, ...(item.tags ?? [])].filter(Boolean).slice(0, 4).join(" "))}
+                  onClick={() =>
+                    onWebSimilar(
+                      [
+                        item.ai_caption ?? item.title,
+                        ...(item.tags ?? []).slice(0, 3),
+                        ...(item.colors ?? []).filter((c) => c !== "dark" && c !== "light").slice(0, 2),
+                      ]
+                        .filter(Boolean)
+                        .join(" ")
+                        .slice(0, 220)
+                    )
+                  }
                   className="text-[11px] text-violet-300 hover:underline"
                 >
                   Search the web for similar →
@@ -250,6 +261,25 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
           {item.ai_caption && (
             <div className="rounded-lg border border-white/5 bg-white/[0.03] px-3 py-2 text-xs leading-relaxed text-zinc-400">
               ✨ {item.ai_caption}
+            </div>
+          )}
+
+          {item.fonts?.length > 0 && (
+            <div>
+              <label className="mb-1 block text-[11px] uppercase tracking-wider text-zinc-600">Fonts on this site</label>
+              <div className="flex flex-wrap gap-1.5">
+                {item.fonts.map((f) => (
+                  <button
+                    key={f}
+                    onClick={() => navigator.clipboard.writeText(f).catch(() => {})}
+                    title="Click to copy"
+                    className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] text-zinc-300 hover:border-violet-500/50"
+                  >
+                    <span className="mr-1 font-serif italic text-zinc-500">Aa</span>
+                    {f}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 

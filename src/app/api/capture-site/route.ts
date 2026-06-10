@@ -19,6 +19,7 @@ export async function GET(req: Request) {
         "content-type": shot.type,
         "cache-control": "no-store",
         "x-capture-engine": shot.engine,
+        "x-page-fonts": encodeURIComponent(JSON.stringify(shot.fonts ?? [])),
       },
     });
   } catch (e) {

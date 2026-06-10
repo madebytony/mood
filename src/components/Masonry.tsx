@@ -1,5 +1,6 @@
 "use client";
 
+import { useRef, useState } from "react";
 import type { Item, Stack } from "@/lib/types";
 import { THUMB_W, THUMB_MAX_H, dominantHex } from "@/lib/media";
 
@@ -13,6 +14,8 @@ interface Props {
   onOpenStack?: (s: Stack) => void;
   selected?: Set<string>;
   onToggleSelect?: (id: string) => void;
+  /** Rubber-band selection (desktop): replaces selection, or merges when shift is held. */
+  onMarquee?: (ids: string[], additive: boolean) => void;
   ghosts?: { id: number; label: string }[];
 }
 
@@ -20,7 +23,7 @@ function StackCard({ stack, thumbs, onOpen }: { stack: Stack; thumbs: string[]; 
   return (
     <button
       onClick={onOpen}
-      className="card-in block w-full rounded-xl border border-white/5 bg-white/[0.03] p-3 text-left transition-transform hover:scale-[1.01] hover:border-violet-500/40"
+      className="group card-in block w-full rounded-xl border border-white/5 bg-white/[0.03] p-3 text-left transition-transform hover:scale-[1.01] hover:border-violet-500/40"
     >
       <div className="relative mx-auto aspect-[4/3] w-full">
         {thumbs.length === 0 ? (
@@ -32,8 +35,12 @@ function StackCard({ stack, thumbs, onOpen }: { stack: Stack; thumbs: string[]; 
               key={i}
               src={t}
               alt=""
-              className="absolute inset-0 h-full w-full rounded-lg border border-white/10 object-cover object-top shadow-lg shadow-black/40"
-              style={{ transform: `rotate(${(i - 1) * 5}deg) translateY(${i * -3}px)`, zIndex: i }}
+              className="absolute inset-0 h-full w-full rounded-lg border border-white/10 object-cover object-top shadow-lg shadow-black/40 transition-transform duration-300 ease-out group-hover:[transform:var(--fan)]"
+              style={{
+                transform: `rotate(${(i - 1) * 5}deg) translateY(${i * -3}px)`,
+                ["--fan" as string]: `rotate(${(i - 1) * 11}deg) translate(${(i - 1) * 16}px, ${i * -6}px)`,
+                zIndex: i,
+              }}
             />
           ))
         )}
@@ -66,7 +73,7 @@ function Card({
     <div className={`group relative ${selected ? "rounded-xl ring-2 ring-violet-500" : ""}`}>
       <button
         onClick={() => onOpen(item)}
-        className="card-in block w-full overflow-hidden rounded-xl border border-white/5 bg-white/[0.03] text-left transition-transform hover:scale-[1.01] hover:border-white/15"
+        className="card-in lift block w-full overflow-hidden rounded-xl border border-white/5 bg-white/[0.03] text-left hover:border-white/15"
       >
         {thumb ? (
           <div
@@ -109,7 +116,7 @@ function Card({
           title="Select"
           className={`absolute left-2 top-2 z-10 h-6 w-6 rounded-full border text-[12px] leading-none ${
             selected
-              ? "block border-violet-300 bg-violet-600 text-white"
+              ? "pop-in block border-violet-300 bg-violet-600 text-white"
               : "hidden border-white/50 bg-black/50 text-white/0 backdrop-blur hover:text-white/80 group-hover:block"
           }`}
         >
@@ -138,8 +145,55 @@ export default function Masonry({
   onOpenStack,
   selected,
   onToggleSelect,
+  onMarquee,
   ghosts = [],
 }: Props) {
+  const gridRef = useRef<HTMLDivElement>(null);
+  const [band, setBand] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
+  const bandStart = useRef<{ x: number; y: number; shift: boolean } | null>(null);
+
+  function bandRect(b: { x1: number; y1: number; x2: number; y2: number }) {
+    return {
+      left: Math.min(b.x1, b.x2),
+      top: Math.min(b.y1, b.y2),
+      width: Math.abs(b.x2 - b.x1),
+      height: Math.abs(b.y2 - b.y1),
+    };
+  }
+
+  function idsInBand(b: { x1: number; y1: number; x2: number; y2: number }): string[] {
+    const r = bandRect(b);
+    const out: string[] = [];
+    gridRef.current?.querySelectorAll<HTMLElement>("[data-mid]").forEach((el) => {
+      const c = el.getBoundingClientRect();
+      if (c.left < r.left + r.width && c.left + c.width > r.left && c.top < r.top + r.height && c.top + c.height > r.top) {
+        out.push(el.dataset.mid!);
+      }
+    });
+    return out;
+  }
+
+  function onBandDown(e: React.PointerEvent) {
+    if (!onMarquee || e.pointerType !== "mouse" || e.button !== 0) return;
+    if ((e.target as HTMLElement).closest("[data-mid], button, a, img")) return; // only empty space
+    bandStart.current = { x: e.clientX, y: e.clientY, shift: e.shiftKey };
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+  }
+  function onBandMove(e: React.PointerEvent) {
+    const s = bandStart.current;
+    if (!s) return;
+    if (!band && Math.abs(e.clientX - s.x) + Math.abs(e.clientY - s.y) < 6) return;
+    e.preventDefault();
+    setBand({ x1: s.x, y1: s.y, x2: e.clientX, y2: e.clientY });
+  }
+  function onBandUp() {
+    const s = bandStart.current;
+    bandStart.current = null;
+    if (!band) return;
+    onMarquee?.(idsInBand(band), s?.shift ?? false);
+    setBand(null);
+  }
+
   if (!items.length && !stacks.length && !ghosts.length) {
     return (
       <div className="grid h-64 place-items-center text-sm text-zinc-600">
@@ -148,7 +202,20 @@ export default function Masonry({
     );
   }
   return (
-    <div className="columns-2 gap-3 px-3 pb-24 sm:columns-3 lg:columns-4 xl:columns-5 2xl:columns-6">
+    <div
+      ref={gridRef}
+      onPointerDown={onBandDown}
+      onPointerMove={onBandMove}
+      onPointerUp={onBandUp}
+      onPointerCancel={onBandUp}
+      className={`columns-2 gap-3 px-3 pb-24 sm:columns-3 lg:columns-4 xl:columns-5 2xl:columns-6 ${band ? "select-none" : ""}`}
+    >
+      {band && (
+        <div
+          className="pointer-events-none fixed z-30 rounded border border-violet-400/70 bg-violet-500/10"
+          style={bandRect(band)}
+        />
+      )}
       {ghosts.map((g) => (
         <div key={`g-${g.id}`} className="mb-3" style={{ breakInside: "avoid" }}>
           <div className="card-in animate-pulse rounded-xl border border-violet-500/25 bg-white/[0.05]">
@@ -164,7 +231,7 @@ export default function Masonry({
         </div>
       ))}
       {items.map((item) => (
-        <div key={item.id} className="mb-3" style={{ breakInside: "avoid" }}>
+        <div key={item.id} data-mid={item.id} className="mb-3" style={{ breakInside: "avoid" }}>
           <Card
             item={item}
             urls={urls}

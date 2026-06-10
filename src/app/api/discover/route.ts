@@ -54,6 +54,16 @@ function hostOnly(u: string): string {
   try { return new URL(u).hostname; } catch { return ""; }
 }
 
+/** The gallery pool arrives in the same front-page order every time; shuffling keeps repeat searches fresh. */
+function shuffle<T>(a: T[]): T[] {
+  const x = [...a];
+  for (let i = x.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [x[i], x[j]] = [x[j], x[i]];
+  }
+  return x;
+}
+
 let cache: { at: number; items: Suggestion[] } | null = null;
 
 function absol(href: string, base: string): string | null {
@@ -148,7 +158,7 @@ async function rank(cands: Suggestion[], taste: string[], query: string | null):
       messages: [
         {
           role: "user",
-          content: `You curate design inspiration for a senior designer. Their taste profile (from what they save): ${taste.length ? taste.join(", ") : "high-end, typography-led, modern"}.${query ? ` Current brief: "${query}".` : ""}\n\nCandidates (index | domain | title | source):\n${list}\n\nPick up to 30 candidates that look like leading-class, moodboard-worthy design work${query ? " matching the brief" : ""}. Cut anything generic. Reply JSON only: {"picks": [indexes, best first]}`,
+          content: `You curate design inspiration for a senior designer. Their taste profile (from what they save): ${taste.length ? taste.join(", ") : "high-end, typography-led, modern"}.${query ? ` Their current brief OVERRIDES the taste profile: "${query}" — match the brief's specific subject, palette and mood first; prefer "web"-source candidates when they fit the brief.` : ""}\n\nCandidates (index | domain | title | source):\n${list}\n\nPick up to 30 candidates that look like leading-class, moodboard-worthy design work${query ? " matching the brief" : ""}. Cut anything generic. Reply JSON only: {"picks": [indexes, best first]}`,
         },
       ],
     });
@@ -230,8 +240,9 @@ export async function GET(req: Request) {
 
   let cands = await aggregate();
   if (query && hasKey()) {
+    // Brief-led search: fresh web results lead; the (shuffled) gallery pool only pads the tail.
     const ws = await webSearch(query);
-    cands = [...ws, ...cands];
+    cands = [...ws, ...shuffle(cands)];
   } else if (!query && hasKey()) {
     // keep the endless feed fresh once gallery candidates are exhausted
     const remaining = cands.filter((c) => !exclude.has(c.domain) && !exclude.has(c.url));

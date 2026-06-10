@@ -32,6 +32,7 @@ export interface Item {
   source_domain: string | null;
   tags: string[];
   colors: string[];
+  fonts: string[];
   width: number | null;
   height: number | null;
   board_x: number | null;
