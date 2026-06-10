@@ -336,8 +336,12 @@ export default function Board({ items, urls, onOpen, stacks = [], stackThumbs, o
                           src={t}
                           alt=""
                           draggable={false}
-                          className="absolute inset-0 h-full w-full select-none rounded-lg border border-white/10 object-cover object-top"
-                          style={{ transform: `rotate(${(i - 1) * 5}deg)`, zIndex: i }}
+                          className="absolute inset-0 h-full w-full select-none rounded-lg border border-white/10 object-cover object-top transition-transform duration-300 ease-out [transform:var(--rest)] group-hover:[transform:var(--fan)]"
+                          style={{
+                            ["--rest" as string]: `rotate(${(i - 1) * 5}deg)`,
+                            ["--fan" as string]: `rotate(${(i - 1) * 12}deg) translateX(${(i - 1) * 14}px) scale(1.03)`,
+                            zIndex: i,
+                          }}
                         />
                       ))
                     )}

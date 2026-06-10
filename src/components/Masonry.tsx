@@ -35,10 +35,10 @@ function StackCard({ stack, thumbs, onOpen }: { stack: Stack; thumbs: string[]; 
               key={i}
               src={t}
               alt=""
-              className="absolute inset-0 h-full w-full rounded-lg border border-white/10 object-cover object-top shadow-lg shadow-black/40 transition-transform duration-300 ease-out group-hover:[transform:var(--fan)]"
+              className="absolute inset-0 h-full w-full rounded-lg border border-white/10 object-cover object-top shadow-lg shadow-black/40 transition-transform duration-300 ease-out [transform:var(--rest)] group-hover:[transform:var(--fan)]"
               style={{
-                transform: `rotate(${(i - 1) * 5}deg) translateY(${i * -3}px)`,
-                ["--fan" as string]: `rotate(${(i - 1) * 11}deg) translate(${(i - 1) * 16}px, ${i * -6}px)`,
+                ["--rest" as string]: `rotate(${(i - 1) * 5}deg) translateY(${i * -3}px)`,
+                ["--fan" as string]: `rotate(${(i - 1) * 12}deg) translate(${(i - 1) * 18}px, ${i * -7}px) scale(1.04)`,
                 zIndex: i,
               }}
             />
