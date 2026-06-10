@@ -96,14 +96,14 @@ const FONT_SNIFF = `(() => {
     const t = (el.childNodes.length && el.textContent || "").trim();
     if (t.length < 2) continue;
     const fam = clean(getComputedStyle(el).fontFamily || "");
-    if (!fam || generic.has(fam.toLowerCase())) continue;
+    if (!fam || generic.has(fam.toLowerCase()) || /icon|glyph|symbol|emoji|awesome/i.test(fam)) continue;
     const weight = /^h[1-4]$/i.test(el.tagName) ? 120 : Math.min(t.length, 60);
     score.set(fam, (score.get(fam) || 0) + weight);
   }
   const loaded = new Set();
   try { document.fonts.forEach((f) => { if (f.status === "loaded") loaded.add(clean(f.family)); }); } catch {}
   const ranked = [...score.entries()].sort((a, b) => b[1] - a[1]).map(([f]) => f);
-  for (const f of loaded) if (!ranked.includes(f) && !generic.has(f.toLowerCase())) ranked.push(f);
+  for (const f of loaded) if (!ranked.includes(f) && !generic.has(f.toLowerCase()) && !/icon|glyph|symbol|emoji|awesome/i.test(f)) ranked.push(f);
   return ranked.slice(0, 6);
 })()`;
 
