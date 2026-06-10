@@ -2,7 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import { bearer, isClipToken } from "../_lib/auth";
 import { captureScreenshot } from "../_lib/capture";
 
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 function admin() {
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;

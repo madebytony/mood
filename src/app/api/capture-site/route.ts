@@ -1,7 +1,7 @@
 import { isAuthed } from "../_lib/auth";
 import { captureScreenshot } from "../_lib/capture";
 
-export const maxDuration = 60;
+export const maxDuration = 120; // crash-retry + fallback chain on heavy WebGL sites needs headroom
 
 export async function GET(req: Request) {
   if (!(await isAuthed(req))) {
