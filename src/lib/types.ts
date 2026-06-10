@@ -33,6 +33,7 @@ export interface Item {
   tags: string[];
   colors: string[];
   fonts: string[];
+  tech: string[];
   width: number | null;
   height: number | null;
   board_x: number | null;

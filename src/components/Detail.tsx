@@ -283,6 +283,22 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
             </div>
           )}
 
+          {item.tech?.length > 0 && (
+            <div>
+              <label className="mb-1 block text-[11px] uppercase tracking-wider text-zinc-600">Built with</label>
+              <div className="flex flex-wrap gap-1.5">
+                {item.tech.map((t) => (
+                  <span
+                    key={t}
+                    className="rounded-full border border-teal-500/20 bg-teal-500/[0.06] px-2.5 py-1 text-[11px] text-teal-200/90"
+                  >
+                    {t}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
           {item.colors?.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
               {item.colors.map((c) => (

@@ -20,6 +20,7 @@ export async function GET(req: Request) {
         "cache-control": "no-store",
         "x-capture-engine": shot.engine,
         "x-page-fonts": encodeURIComponent(JSON.stringify(shot.fonts ?? [])),
+        "x-page-tech": encodeURIComponent(JSON.stringify(shot.tech ?? [])),
       },
     });
   } catch (e) {

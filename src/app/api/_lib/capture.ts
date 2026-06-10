@@ -107,11 +107,90 @@ const FONT_SNIFF = `(() => {
   return ranked.slice(0, 6);
 })()`;
 
+/** Fingerprint the frameworks / builders / motion libraries actually running on the page. */
+const TECH_SNIFF = `(() => {
+  const t = new Set();
+  const w = window;
+  const html = document.documentElement;
+  const scripts = Array.from(document.scripts).map((s) => s.src).filter(Boolean).join("\\n").toLowerCase();
+  const gen = (document.querySelector('meta[name="generator" i]')?.getAttribute("content") || "").toLowerCase();
+  const has = (re) => re.test(scripts);
+
+  // app frameworks
+  if (w.__NEXT_DATA__ || document.getElementById("__next")) t.add("Next.js");
+  else if (w.__NUXT__ || document.getElementById("__nuxt")) t.add("Nuxt");
+  else if (document.getElementById("___gatsby")) t.add("Gatsby");
+  if (document.querySelector("astro-island") || gen.includes("astro")) t.add("Astro");
+  if (!t.has("Next.js") && !t.has("Gatsby")) {
+    let react = !!w.React;
+    let i = 0;
+    if (!react) outer: for (const e of document.querySelectorAll("body, body div, body main, body section")) {
+      if (++i > 150) break;
+      for (const k in e) if (k.indexOf("__reactFiber") === 0 || k.indexOf("__reactContainer") === 0) { react = true; break outer; }
+    }
+    if (react) t.add("React");
+  }
+  if (w.__VUE__ || w.Vue || document.querySelector("[data-v-app]")) t.add("Vue");
+  if (html.hasAttribute("ng-version") || document.querySelector("[ng-version]")) t.add("Angular");
+  if (document.querySelector('[class*="svelte-"]')) t.add("Svelte");
+  if (w.Alpine) t.add("Alpine.js");
+  if (w.htmx) t.add("htmx");
+  if (w.jQuery && !gen.includes("wordpress")) t.add("jQuery");
+
+  // builders / CMS
+  if (w.Webflow || html.hasAttribute("data-wf-site") || gen.includes("webflow")) t.add("Webflow");
+  if (gen.includes("framer") || document.getElementById("__framer") || has(/framerusercontent/)) t.add("Framer");
+  if (gen.includes("wordpress") || has(/wp-content|wp-includes/)) t.add("WordPress");
+  if (w.Shopify || has(/cdn\\.shopify/)) t.add("Shopify");
+  if ((w.Static && w.Static.SQUARESPACE_CONTEXT) || gen.includes("squarespace") || has(/squarespace/)) t.add("Squarespace");
+  if (gen.includes("wix") || w.wixBiSession) t.add("Wix");
+  if (has(/cargo\\.site|cargocollective/)) t.add("Cargo");
+  if (gen.includes("readymag") || has(/readymag/)) t.add("Readymag");
+  if (gen.includes("ghost")) t.add("Ghost");
+
+  // motion / interaction
+  if (w.gsap || w.TweenMax || has(/gsap/)) t.add("GSAP");
+  if (w.Lenis || html.classList.contains("lenis") || has(/lenis/)) t.add("Lenis");
+  if (w.LocomotiveScroll || document.querySelector("[data-scroll-container]") || has(/locomotive/)) t.add("Locomotive Scroll");
+  if (w.barba || has(/barba/)) t.add("Barba.js");
+  if (w.THREE || has(/\\bthree(\\.min)?\\.js|three@/)) t.add("Three.js");
+  if (document.querySelector("lottie-player") || has(/lottie/)) t.add("Lottie");
+  if (w.Swiper || document.querySelector(".swiper, .swiper-container")) t.add("Swiper");
+  if (document.querySelector(".splide") || has(/splide/)) t.add("Splide");
+  if (w.Flickity || document.querySelector(".flickity-enabled")) t.add("Flickity");
+  if (w.Plyr || has(/plyr/)) t.add("Plyr");
+
+  // styling heuristic
+  let cls = "";
+  let n = 0;
+  for (const e of document.querySelectorAll("body [class]")) {
+    if (++n > 300) break;
+    if (typeof e.className === "string") cls += " " + e.className;
+  }
+  if (/(^|\\s)(sm:|md:|lg:|xl:)[a-z-]/.test(cls)) t.add("Tailwind CSS");
+
+  return Array.from(t).slice(0, 12);
+})()`;
+
+/** Hosting / CDN from the main document's response headers. */
+function hostingFrom(headers: Record<string, string>): string[] {
+  const out: string[] = [];
+  const server = (headers["server"] ?? "").toLowerCase();
+  if (headers["x-vercel-id"] || server.includes("vercel")) out.push("Vercel");
+  if (headers["x-nf-request-id"] || server.includes("netlify")) out.push("Netlify");
+  if (server.includes("cloudflare")) out.push("Cloudflare");
+  if (server.includes("github.com")) out.push("GitHub Pages");
+  if (headers["x-amz-cf-id"] && !out.length) out.push("AWS CloudFront");
+  if ((headers["x-served-by"] ?? "").includes("cache") || server.includes("fastly")) out.push("Fastly");
+  return out;
+}
+
 export interface Shot {
   bytes: ArrayBuffer;
   type: string;
   engine: "chromium" | "thum.io";
   fonts?: string[];
+  tech?: string[];
 }
 
 export async function chromiumShot(url: string): Promise<Shot> {
@@ -121,10 +200,12 @@ export async function chromiumShot(url: string): Promise<Shot> {
     const page = await browser.newPage();
     await page.setViewport({ width: 1440, height: 960, deviceScaleFactor: 1 });
     await page.setUserAgent(UA);
-    await page.goto(url, { waitUntil: "networkidle2", timeout: 35000 }).catch(() => {});
+    const resp = await page.goto(url, { waitUntil: "networkidle2", timeout: 35000 }).catch(() => null);
     await page.evaluate(LAZY_SCROLL).catch(() => {});
     await page.evaluate(CLEAN_PAGE).catch(() => {});
     const fonts = (await page.evaluate(FONT_SNIFF).catch(() => [])) as string[];
+    const pageTech = (await page.evaluate(TECH_SNIFF).catch(() => [])) as string[];
+    const tech = [...new Set([...pageTech, ...hostingFrom(resp?.headers() ?? {})])];
     await new Promise((r) => setTimeout(r, 350));
     const height = Math.min(
       await page.evaluate("document.body.scrollHeight").then((h) => Number(h) || 960),
@@ -136,7 +217,7 @@ export async function chromiumShot(url: string): Promise<Shot> {
       clip: { x: 0, y: 0, width: 1440, height },
     });
     await browser.close();
-    return { bytes: Buffer.from(buf).buffer as ArrayBuffer, type: "image/jpeg", engine: "chromium", fonts };
+    return { bytes: Buffer.from(buf).buffer as ArrayBuffer, type: "image/jpeg", engine: "chromium", fonts, tech };
   } catch (e) {
     if (browser) await browser.close().catch(() => {});
     throw e;

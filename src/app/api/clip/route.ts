@@ -110,6 +110,7 @@ export async function POST(req: Request) {
     let sourceUrl = body.page_url ?? body.url ?? null;
     let title = body.title ?? null;
     let fonts: string[] = [];
+    let tech: string[] = [];
 
     if (body.kind === "image" && body.image?.startsWith("data:")) {
       const m = /^data:([^;]+);base64,(.*)$/.exec(body.image);
@@ -127,6 +128,7 @@ export async function POST(req: Request) {
       contentType = shot.type;
       bytes = shot.bytes;
       fonts = shot.fonts ?? [];
+      tech = shot.tech ?? [];
       sourceUrl = body.url;
       title = title ?? body.url.replace(/^https?:\/\/(www\.)?/, "").split("/")[0];
     } else {
@@ -156,6 +158,7 @@ export async function POST(req: Request) {
         source_domain: domain,
         tags: [],
         fonts,
+        tech,
         width: dims.w,
         height: dims.h,
       })
