@@ -1,0 +1,260 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import type { Item, Space } from "@/lib/types";
+import { signedUrls, touchViewed, updateItem } from "@/lib/db";
+import { notice } from "./ui";
+
+interface Props {
+  item: Item;
+  spaces: Space[];
+  allItems: Item[];
+  urls: Map<string, string>;
+  onClose: () => void;
+  onChanged: (item: Item | null) => void;
+  onOpenItem: (item: Item) => void;
+  onWebSimilar: (query: string) => void;
+  onDelete: (item: Item) => void;
+}
+
+function related(item: Item, all: Item[]): Item[] {
+  return all
+    .filter((i) => i.id !== item.id)
+    .map((i) => {
+      let score = 0;
+      for (const t of i.tags ?? []) if (item.tags?.includes(t)) score += 2;
+      for (const c of i.colors ?? []) if (item.colors?.includes(c)) score += 1;
+      if (i.source_domain && i.source_domain === item.source_domain) score += 2;
+      return { i, score };
+    })
+    .filter((r) => r.score > 1)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10)
+    .map((r) => r.i);
+}
+
+export default function Detail({ item, spaces, allItems, urls, onClose, onChanged, onOpenItem, onWebSimilar, onDelete }: Props) {
+  const [fullUrl, setFullUrl] = useState<string | null>(null);
+  const [title, setTitle] = useState(item.title ?? "");
+  const [tags, setTags] = useState(item.tags.join(", "));
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [zoomed, setZoomed] = useState(false);
+  const tall = !!(item.width && item.height && item.height / item.width > 1.6);
+  const scrollMode = tall ? !zoomed : zoomed; // tall pages default to full-width scroll
+
+  const rel = useMemo(() => related(item, allItems), [item, allItems]);
+
+  useEffect(() => {
+    setTitle(item.title ?? "");
+    setTags(item.tags.join(", "));
+    setFullUrl(null);
+    setZoomed(false);
+    const path = item.storage_path ?? item.thumb_path;
+    if (path) signedUrls([path]).then((m) => setFullUrl(m.get(path) ?? null));
+    touchViewed(item.id).catch(() => {});
+  }, [item]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  async function save() {
+    setBusy(true);
+    const updated = await updateItem(item.id, {
+      title: title.trim() || null,
+      tags: tags.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean),
+    });
+    setBusy(false);
+    onChanged(updated);
+  }
+
+  async function move(spaceId: string) {
+    const updated = await updateItem(item.id, { space_id: spaceId });
+    onChanged(updated);
+  }
+
+  function remove() {
+    onClose();
+    onDelete(item); // instant, with an Undo toast — no interrogation
+  }
+
+  async function copyImage() {
+    if (!fullUrl) return;
+    try {
+      const blob = await fetch(fullUrl).then((r) => r.blob());
+      const bmp = await createImageBitmap(blob);
+      const canvas = document.createElement("canvas");
+      canvas.width = bmp.width;
+      canvas.height = bmp.height;
+      canvas.getContext("2d")!.drawImage(bmp, 0, 0);
+      const png: Blob = await new Promise((res, rej) =>
+        canvas.toBlob((b) => (b ? res(b) : rej(new Error("toBlob failed"))), "image/png")
+      );
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      notice({ title: "Copy failed", body: "Try downloading instead." });
+    }
+  }
+
+  const input =
+    "w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm outline-none focus:border-violet-500/50";
+  const btn =
+    "rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-zinc-300 hover:border-white/25 disabled:opacity-50";
+
+  return (
+    <div className="fixed inset-0 z-40 flex" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+      <div
+        className="no-scrollbar relative z-10 m-auto flex h-dvh w-screen flex-col overflow-y-auto bg-[#141418] md:h-auto md:max-h-[94dvh] md:w-[min(1200px,96vw)] md:flex-row md:overflow-hidden md:rounded-2xl md:border md:border-white/10"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          onClick={onClose}
+          className="fixed right-3 top-3 z-30 grid h-9 w-9 place-items-center rounded-full bg-black/60 text-white backdrop-blur md:hidden"
+        >
+          ✕
+        </button>
+        <div className="flex shrink-0 flex-col bg-black/40 md:min-h-[60dvh] md:flex-1 md:shrink md:overflow-hidden">
+          <div className={`md:flex-1 ${scrollMode ? "md:overflow-y-auto" : "md:grid md:place-items-center md:overflow-hidden"}`}>
+            {fullUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={fullUrl}
+                alt=""
+                onClick={() => setZoomed((z) => !z)}
+                title={scrollMode ? "Click to fit" : "Click to view full width"}
+                className={
+                  scrollMode
+                    ? "w-full md:cursor-zoom-out"
+                    : "w-full md:max-h-[72dvh] md:cursor-zoom-in md:object-contain"
+                }
+              />
+            ) : item.type === "note" ? (
+              <div className="max-w-prose whitespace-pre-wrap p-8 text-sm leading-relaxed text-zinc-200">{item.content}</div>
+            ) : (
+              <div className="text-zinc-700">No preview</div>
+            )}
+          </div>
+
+          {(rel.length > 0 || item.title || item.tags.length > 0) && (
+            <div className="border-t border-white/5 p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-[11px] uppercase tracking-wider text-zinc-600">More like this</span>
+                <button
+                  onClick={() => onWebSimilar([item.title, ...(item.tags ?? [])].filter(Boolean).slice(0, 4).join(" "))}
+                  className="text-[11px] text-violet-300 hover:underline"
+                >
+                  Search the web for similar →
+                </button>
+              </div>
+              {rel.length > 0 ? (
+                <div className="no-scrollbar flex gap-2 overflow-x-auto">
+                  {rel.map((r) => (
+                    <button
+                      key={r.id}
+                      onClick={() => onOpenItem(r)}
+                      className="h-20 w-28 shrink-0 overflow-hidden rounded-lg border border-white/10 hover:border-violet-500/50"
+                    >
+                      {r.thumb_path && urls.get(r.thumb_path) ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={urls.get(r.thumb_path)} alt="" className="h-full w-full object-cover" />
+                      ) : (
+                        <div className="grid h-full w-full place-items-center bg-white/5 text-[10px] text-zinc-500 px-1">
+                          {(r.title ?? r.source_domain ?? "note").slice(0, 24)}
+                        </div>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-xs text-zinc-700">Nothing related in your library yet.</div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="no-scrollbar w-full shrink-0 space-y-4 p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] md:w-80 md:overflow-y-auto">
+          <div className="flex items-start justify-between">
+            <span className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] uppercase tracking-wider text-zinc-500">
+              {item.type}
+            </span>
+            <button onClick={onClose} className="text-zinc-500 hover:text-zinc-200">✕</button>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-[11px] uppercase tracking-wider text-zinc-600">Title</label>
+            <input value={title} onChange={(e) => setTitle(e.target.value)} onBlur={save} className={input} />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-[11px] uppercase tracking-wider text-zinc-600">
+              Tags <span className="normal-case">(comma separated)</span>
+            </label>
+            <input value={tags} onChange={(e) => setTags(e.target.value)} onBlur={save} className={input} />
+          </div>
+
+          {item.ai_caption && (
+            <div className="rounded-lg border border-white/5 bg-white/[0.03] px-3 py-2 text-xs leading-relaxed text-zinc-400">
+              ✨ {item.ai_caption}
+            </div>
+          )}
+
+          {item.colors?.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {item.colors.map((c) => (
+                <span key={c} className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] text-zinc-400">
+                  {c}
+                </span>
+              ))}
+            </div>
+          )}
+
+          <div>
+            <label className="mb-1 block text-[11px] uppercase tracking-wider text-zinc-600">Space</label>
+            <select value={item.space_id} onChange={(e) => move(e.target.value)} className={input}>
+              {spaces.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {item.source_url && (
+            <div>
+              <label className="mb-1 block text-[11px] uppercase tracking-wider text-zinc-600">Source</label>
+              <a href={item.source_url} target="_blank" rel="noreferrer" className="block truncate text-sm text-violet-300 hover:underline">
+                {item.source_domain ?? item.source_url}
+              </a>
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-2 pt-2">
+            {fullUrl && (
+              <>
+                <button onClick={copyImage} className={btn}>{copied ? "Copied ✓" : "Copy image"}</button>
+                <a href={fullUrl} download target="_blank" rel="noreferrer" className={btn}>Download</a>
+              </>
+            )}
+            {item.source_url && (
+              <button onClick={() => navigator.clipboard.writeText(item.source_url!)} className={btn}>Copy link</button>
+            )}
+            <button onClick={remove} disabled={busy} className={`${btn} text-red-400 hover:border-red-400/40`}>Delete</button>
+          </div>
+
+          <div className="pt-2 text-[11px] text-zinc-700">
+            Added {new Date(item.created_at).toLocaleDateString()}
+            {item.width && item.height ? ` · ${item.width}×${item.height}` : ""}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

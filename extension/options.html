@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Mood Clipper settings</title>
+<style>
+  body { font: 14px -apple-system, system-ui, sans-serif; background: #0e0e11; color: #ececf1; padding: 32px; max-width: 480px; }
+  label { display: block; margin: 16px 0 6px; color: #9a9aa5; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+  input { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid #2a2a31; background: #17171c; color: #ececf1; box-sizing: border-box; }
+  button { margin-top: 20px; padding: 10px 18px; border-radius: 10px; border: none; background: #7c5cff; color: #fff; font-weight: 600; cursor: pointer; }
+  #ok { color: #7ee2a0; margin-left: 10px; }
+</style>
+<h2>Mood Clipper</h2>
+<label>Mood app URL</label>
+<input id="appUrl" placeholder="https://your-mood.vercel.app or http://localhost:3000" />
+<label>Personal token (MOOD_CLIP_TOKEN from .env.local)</label>
+<input id="token" type="password" />
+<button id="save">Save</button><span id="ok"></span>
+<script src="options.js"></script>

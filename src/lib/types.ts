@@ -1,0 +1,62 @@
+export type ItemType = "image" | "site" | "link" | "note";
+
+export interface Library {
+  id: string;
+  user_id: string;
+  name: string;
+  sort: number;
+  created_at: string;
+}
+
+export interface Space {
+  id: string;
+  library_id: string;
+  user_id: string;
+  name: string;
+  kind: "normal" | "inbox";
+  view: "grid" | "board";
+  sort: number;
+  created_at: string;
+}
+
+export interface Item {
+  id: string;
+  space_id: string;
+  user_id: string;
+  type: ItemType;
+  storage_path: string | null;
+  thumb_path: string | null;
+  content: string | null;
+  title: string | null;
+  source_url: string | null;
+  source_domain: string | null;
+  tags: string[];
+  colors: string[];
+  width: number | null;
+  height: number | null;
+  board_x: number | null;
+  board_y: number | null;
+  board_w: number | null;
+  ai_caption: string | null;
+  stack_id: string | null;
+  created_at: string;
+  last_viewed_at: string | null;
+}
+
+export interface Stack {
+  id: string;
+  user_id: string;
+  space_id: string;
+  name: string;
+  board_x: number | null;
+  board_y: number | null;
+  board_w: number | null;
+  created_at: string;
+}
+
+export interface LinkMeta {
+  title: string | null;
+  description: string | null;
+  image: string | null;
+  domain: string;
+}

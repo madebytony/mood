@@ -1,0 +1,14 @@
+{
+  "name": "Mood",
+  "short_name": "Mood",
+  "description": "Design inspiration, everywhere. Your private feed of best-in-class design.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0e0e11",
+  "theme_color": "#0e0e11",
+  "icons": [
+    { "src": "/icon-256.png", "sizes": "256x256", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
