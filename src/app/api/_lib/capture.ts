@@ -15,6 +15,12 @@ const LOCAL_CHROME = [
 async function launchBrowser() {
   const puppeteer = await import("puppeteer-core");
   if (process.env.VERCEL) {
+    // Vercel hides AWS's Lambda env vars, so @sparticuz/chromium doesn't realise it's on
+    // Lambda and skips extracting its bundled shared libs (-> libnss3.so not found).
+    // Faking the vars makes it extract the libs and set LD_LIBRARY_PATH properly.
+    process.env.AWS_LAMBDA_FUNCTION_NAME ||= "mood-capture";
+    process.env.AWS_EXECUTION_ENV ||= "AWS_Lambda_nodejs20.x";
+    process.env.AWS_LAMBDA_JS_RUNTIME ||= "nodejs20.x";
     // Full package: ships the binary + shared libs inside node_modules (no remote pack download).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const chromium: any = (await import("@sparticuz/chromium")).default;
