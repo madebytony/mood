@@ -134,7 +134,7 @@ const FONT_SNIFF = `(() => {
 /** Fingerprint the frameworks / builders / motion libraries actually running on the page.
  *  Three layers: runtime globals & DOM markers, resource URLs, and the *contents* of the
  *  site's JS bundles (catches libraries compiled in with no global and no CDN URL). */
-const TECH_SNIFF = `(async () => {
+const TECH_SNIFF = `((extraBlob) => {
   const t = new Set();
   const w = window;
   const html = document.documentElement;
@@ -145,19 +145,8 @@ const TECH_SNIFF = `(async () => {
   const gen = (document.querySelector('meta[name="generator" i]')?.getAttribute("content") || "").toLowerCase();
   const has = (re) => re.test(scripts);
 
-  // Bundle-content scan: fetch the site's biggest scripts and look for library signatures.
-  let blob = "";
-  try {
-    const candidates = scriptSrcs
-      .filter((s) => !/gtag|googletag|analytics|fbevents|hotjar|clarity|cookie|consent|recaptcha|stripe/i.test(s))
-      .slice(0, 6);
-    const texts = await Promise.race([
-      Promise.allSettled(candidates.map(async (s) => (await fetch(s)).text())),
-      new Promise((r) => setTimeout(() => r([]), 4500)),
-    ]);
-    for (const r of texts) if (r.status === "fulfilled") blob += r.value.slice(0, 700000).toLowerCase();
-  } catch {}
-  // inline scripts too
+  // Bundle contents: network-captured JS (handed in by the capture engine) + inline scripts.
+  let blob = (extraBlob || "");
   for (const s of document.scripts) if (!s.src && s.textContent) blob += s.textContent.slice(0, 200000).toLowerCase();
   const inBundle = (re) => re.test(blob);
 
@@ -231,7 +220,7 @@ const TECH_SNIFF = `(async () => {
   if (/(^|\\s)(sm:|md:|lg:|xl:)[a-z-]/.test(cls)) t.add("Tailwind CSS");
 
   return Array.from(t).slice(0, 16);
-})()`;
+})`;
 
 /** Hosting / CDN from the main document's response headers. */
 function hostingFrom(headers: Record<string, string>): string[] {
@@ -261,11 +250,28 @@ export async function chromiumShot(url: string): Promise<Shot> {
     const page = await browser.newPage();
     await page.setViewport({ width: 1440, height: 960, deviceScaleFactor: 1 });
     await page.setUserAgent(UA);
+
+    // Collect JS bundle contents off the wire (CORS-proof) for the tech sniffer.
+    const jsBlobs: string[] = [];
+    page.on("response", (r) => {
+      (async () => {
+        if (jsBlobs.length >= 8) return;
+        const ct = r.headers()["content-type"] ?? "";
+        if (!/javascript|ecmascript/i.test(ct)) return;
+        if (/gtag|googletag|analytics|fbevents|hotjar|clarity|recaptcha|stripe|cookie|consent/i.test(r.url())) return;
+        const text = await r.text();
+        jsBlobs.push(text.slice(0, 600_000).toLowerCase());
+      })().catch(() => {});
+    });
+
     const resp = await page.goto(url, { waitUntil: "networkidle2", timeout: 35000 }).catch(() => null);
     await page.evaluate(LAZY_SCROLL).catch(() => {});
     await page.evaluate(CLEAN_PAGE).catch(() => {});
     const fonts = (await page.evaluate(FONT_SNIFF).catch(() => [])) as string[];
-    const pageTech = (await page.evaluate(TECH_SNIFF).catch(() => [])) as string[];
+    const bundleBlob = jsBlobs.join("\n").slice(0, 2_500_000);
+    const pageTech = (await page
+      .evaluate(`(${TECH_SNIFF})(${JSON.stringify(bundleBlob)})`)
+      .catch(() => [])) as string[];
     const tech = [...new Set([...pageTech, ...hostingFrom(resp?.headers() ?? {})])];
     await new Promise((r) => setTimeout(r, 350));
     const height = Math.min(
