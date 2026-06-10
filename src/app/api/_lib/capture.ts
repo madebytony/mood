@@ -257,13 +257,14 @@ export async function chromiumShot(url: string): Promise<Shot> {
   let tech: string[] = [];
   try {
     browser = await launchBrowser();
-    const page = await browser.newPage();
+    let page = await browser.newPage();
     await page.setViewport({ width: 1440, height: 960, deviceScaleFactor: 1 });
     await page.setUserAgent(UA);
 
     // Collect JS bundle contents off the wire (CORS-proof) for the tech sniffer.
     const jsBlobs: string[] = [];
-    page.on("response", (r) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const collectJs = (r: any) => {
       (async () => {
         if (jsBlobs.length >= 8) return;
         const ct = r.headers()["content-type"] ?? "";
@@ -272,9 +273,29 @@ export async function chromiumShot(url: string): Promise<Shot> {
         const text = await r.text();
         jsBlobs.push(text.slice(0, 600_000).toLowerCase());
       })().catch(() => {});
-    });
+    };
+    page.on("response", collectJs);
 
-    const resp = await page.goto(url, { waitUntil: "networkidle2", timeout: 35000 }).catch(() => null);
+    let resp = await page.goto(url, { waitUntil: "networkidle2", timeout: 35000 }).catch(() => null);
+
+    // Page crashed (heavy WebGL under software rendering)? Reload once with WebGL stubbed —
+    // the DOM, fonts and JS bundles are still all there to read.
+    const alive = await page.evaluate("1").then(() => true).catch(() => false);
+    if (!alive) {
+      await page.close().catch(() => {});
+      page = await browser.newPage();
+      await page.setViewport({ width: 1440, height: 960, deviceScaleFactor: 1 });
+      await page.setUserAgent(UA);
+      page.on("response", collectJs);
+      await page.evaluateOnNewDocument(`
+        const orig = HTMLCanvasElement.prototype.getContext;
+        HTMLCanvasElement.prototype.getContext = function (type, ...args) {
+          if (/webgl|webgpu/i.test(String(type))) return null;
+          return orig.call(this, type, ...args);
+        };`);
+      resp = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => null);
+      await new Promise((r) => setTimeout(r, 2500));
+    }
 
     // Sniff fonts + tech FIRST — scrolling can crash heavy WebGL pages under software
     // rendering, and we want the metadata even if the screenshot later falls back.
