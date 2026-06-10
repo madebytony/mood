@@ -8,7 +8,7 @@
     "start": "next start"
   },
   "dependencies": {
-    "@sparticuz/chromium-min": "^131.0.0",
+    "@sparticuz/chromium": "^131.0.0",
     "@supabase/supabase-js": "^2.50.0",
     "next": "^15.3.3",
     "puppeteer-core": "^23.11.1",

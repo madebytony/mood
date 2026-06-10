@@ -13,6 +13,7 @@ interface Props {
   onOpenStack?: (s: Stack) => void;
   selected?: Set<string>;
   onToggleSelect?: (id: string) => void;
+  ghosts?: { id: number; label: string }[];
 }
 
 function StackCard({ stack, thumbs, onOpen }: { stack: Stack; thumbs: string[]; onOpen: () => void }) {
@@ -137,8 +138,9 @@ export default function Masonry({
   onOpenStack,
   selected,
   onToggleSelect,
+  ghosts = [],
 }: Props) {
-  if (!items.length && !stacks.length) {
+  if (!items.length && !stacks.length && !ghosts.length) {
     return (
       <div className="grid h-64 place-items-center text-sm text-zinc-600">
         Nothing here yet — drop an image, paste a URL, or hit +
@@ -147,6 +149,15 @@ export default function Masonry({
   }
   return (
     <div className="columns-2 gap-3 px-3 pb-24 sm:columns-3 lg:columns-4 xl:columns-5 2xl:columns-6">
+      {ghosts.map((g) => (
+        <div key={`g-${g.id}`} className="mb-3" style={{ breakInside: "avoid" }}>
+          <div className="card-in animate-pulse rounded-xl border border-violet-500/25 bg-white/[0.05]">
+            <div className="grid h-48 w-full place-items-center px-3 text-center">
+              <span className="line-clamp-3 break-all text-[11px] text-zinc-500">{g.label}</span>
+            </div>
+          </div>
+        </div>
+      ))}
       {stacks.map((s) => (
         <div key={`stk-${s.id}`} className="mb-3" style={{ breakInside: "avoid" }}>
           <StackCard stack={s} thumbs={stackThumbs?.get(s.id) ?? []} onOpen={() => onOpenStack?.(s)} />

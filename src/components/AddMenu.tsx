@@ -1,19 +1,25 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 interface Props {
   onFiles: (files: File[]) => void;
   onUrl: (url: string) => void;
   onCapture: (url: string) => void;
   onNote: (text: string) => void;
+  /** Increment to open the menu from outside (mobile tab bar). */
+  openTick?: number;
 }
 
-export default function AddMenu({ onFiles, onUrl, onCapture, onNote }: Props) {
+export default function AddMenu({ onFiles, onUrl, onCapture, onNote, openTick }: Props) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"menu" | "url" | "capture" | "note">("menu");
   const [text, setText] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (openTick) setOpen(true);
+  }, [openTick]);
 
   function close() {
     setOpen(false);
@@ -50,7 +56,7 @@ export default function AddMenu({ onFiles, onUrl, onCapture, onNote }: Props) {
 
       <button
         onClick={() => setOpen(true)}
-        className="fixed bottom-6 right-5 z-30 grid h-14 w-14 place-items-center rounded-full bg-violet-600 text-2xl text-white shadow-lg shadow-violet-900/40 transition-transform hover:scale-105 active:scale-95"
+        className="fixed bottom-6 right-5 z-30 hidden h-14 w-14 place-items-center rounded-full bg-violet-600 text-2xl text-white shadow-lg shadow-violet-900/40 transition-transform hover:scale-105 active:scale-95 md:grid"
         title="Add to Mood"
       >
         +

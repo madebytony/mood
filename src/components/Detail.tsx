@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Item, Space } from "@/lib/types";
 import { signedUrls, touchViewed, updateItem } from "@/lib/db";
 import { notice } from "./ui";
@@ -9,6 +9,8 @@ interface Props {
   item: Item;
   spaces: Space[];
   allItems: Item[];
+  /** Ordered list the lightbox arrows/swipe move through (the currently visible grid). */
+  siblings?: Item[];
   urls: Map<string, string>;
   onClose: () => void;
   onChanged: (item: Item | null) => void;
@@ -33,8 +35,9 @@ function related(item: Item, all: Item[]): Item[] {
     .map((r) => r.i);
 }
 
-export default function Detail({ item, spaces, allItems, urls, onClose, onChanged, onOpenItem, onWebSimilar, onDelete }: Props) {
+export default function Detail({ item, spaces, allItems, siblings, urls, onClose, onChanged, onOpenItem, onWebSimilar, onDelete }: Props) {
   const [fullUrl, setFullUrl] = useState<string | null>(null);
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
   const [title, setTitle] = useState(item.title ?? "");
   const [tags, setTags] = useState(item.tags.join(", "));
   const [busy, setBusy] = useState(false);
@@ -44,6 +47,10 @@ export default function Detail({ item, spaces, allItems, urls, onClose, onChange
   const scrollMode = tall ? !zoomed : zoomed; // tall pages default to full-width scroll
 
   const rel = useMemo(() => related(item, allItems), [item, allItems]);
+
+  const idx = siblings ? siblings.findIndex((s) => s.id === item.id) : -1;
+  const prevItem = idx > 0 ? siblings![idx - 1] : null;
+  const nextItem = idx >= 0 && idx < siblings!.length - 1 ? siblings![idx + 1] : null;
 
   useEffect(() => {
     setTitle(item.title ?? "");
@@ -57,11 +64,29 @@ export default function Detail({ item, spaces, allItems, urls, onClose, onChange
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") return onClose();
+      if ((e.target as HTMLElement)?.closest?.("input, textarea, select, [contenteditable]")) return;
+      if (e.key === "ArrowLeft" && prevItem) onOpenItem(prevItem);
+      if (e.key === "ArrowRight" && nextItem) onOpenItem(nextItem);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, prevItem, nextItem, onOpenItem]);
+
+  function onTouchStart(e: React.TouchEvent) {
+    touchStart.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  }
+  function onTouchEnd(e: React.TouchEvent) {
+    const s = touchStart.current;
+    touchStart.current = null;
+    if (!s) return;
+    const dx = e.changedTouches[0].clientX - s.x;
+    const dy = e.changedTouches[0].clientY - s.y;
+    if (Math.abs(dx) > 70 && Math.abs(dx) > 1.8 * Math.abs(dy)) {
+      if (dx < 0 && nextItem) onOpenItem(nextItem);
+      else if (dx > 0 && prevItem) onOpenItem(prevItem);
+    }
+  }
 
   async function save() {
     setBusy(true);
@@ -121,7 +146,29 @@ export default function Detail({ item, spaces, allItems, urls, onClose, onChange
         >
           ✕
         </button>
-        <div className="flex shrink-0 flex-col bg-black/40 md:min-h-[60dvh] md:flex-1 md:shrink md:overflow-hidden">
+        <div
+          className="group/nav relative flex shrink-0 flex-col bg-black/40 md:min-h-[60dvh] md:flex-1 md:shrink md:overflow-hidden"
+          onTouchStart={onTouchStart}
+          onTouchEnd={onTouchEnd}
+        >
+          {prevItem && (
+            <button
+              onClick={() => onOpenItem(prevItem)}
+              title="Previous (←)"
+              className="absolute left-3 top-1/2 z-20 hidden h-10 w-10 -translate-y-1/2 place-items-center rounded-full bg-black/50 text-lg text-white opacity-0 backdrop-blur transition-opacity hover:bg-black/70 group-hover/nav:opacity-100 md:grid"
+            >
+              ‹
+            </button>
+          )}
+          {nextItem && (
+            <button
+              onClick={() => onOpenItem(nextItem)}
+              title="Next (→)"
+              className="absolute right-3 top-1/2 z-20 hidden h-10 w-10 -translate-y-1/2 place-items-center rounded-full bg-black/50 text-lg text-white opacity-0 backdrop-blur transition-opacity hover:bg-black/70 group-hover/nav:opacity-100 md:grid"
+            >
+              ›
+            </button>
+          )}
           <div className={`md:flex-1 ${scrollMode ? "md:overflow-y-auto" : "md:grid md:place-items-center md:overflow-hidden"}`}>
             {fullUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
@@ -252,6 +299,7 @@ export default function Detail({ item, spaces, allItems, urls, onClose, onChange
           <div className="pt-2 text-[11px] text-zinc-700">
             Added {new Date(item.created_at).toLocaleDateString()}
             {item.width && item.height ? ` · ${item.width}×${item.height}` : ""}
+            {idx >= 0 && siblings ? ` · ${idx + 1} of ${siblings.length}` : ""}
           </div>
         </div>
       </div>

@@ -12,18 +12,15 @@ const LOCAL_CHROME = [
   "/usr/bin/chromium-browser",
 ];
 
-const CHROMIUM_PACK =
-  process.env.MOOD_CHROMIUM_PACK ||
-  "https://github.com/Sparticuz/chromium/releases/download/v131.0.0/chromium-v131.0.0-pack.tar";
-
 async function launchBrowser() {
   const puppeteer = await import("puppeteer-core");
   if (process.env.VERCEL) {
+    // Full package: ships the binary + shared libs inside node_modules (no remote pack download).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const chromium: any = (await import("@sparticuz/chromium-min")).default;
+    const chromium: any = (await import("@sparticuz/chromium")).default;
     return puppeteer.launch({
       args: chromium.args,
-      executablePath: await chromium.executablePath(CHROMIUM_PACK),
+      executablePath: await chromium.executablePath(),
       headless: true,
     });
   }
@@ -87,7 +84,7 @@ export interface Shot {
   engine: "chromium" | "thum.io";
 }
 
-async function chromiumShot(url: string): Promise<Shot> {
+export async function chromiumShot(url: string): Promise<Shot> {
   let browser;
   try {
     browser = await launchBrowser();

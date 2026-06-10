@@ -47,6 +47,29 @@ export default function Board({ items, urls, onOpen, stacks = [], stackThumbs, o
     origW?: number;
   }>({ mode: null, startX: 0, startY: 0, origX: 0, origY: 0, moved: false });
   const pointers = useRef(new Map<number, { x: number; y: number }>());
+  const velSample = useRef<{ x: number; y: number; t: number } | null>(null);
+  const vel = useRef({ vx: 0, vy: 0 });
+  const momentumRaf = useRef(0);
+
+  /** Flick-to-pan: keep gliding after pointer release, decaying each frame. */
+  function startMomentum() {
+    cancelAnimationFrame(momentumRaf.current);
+    let { vx, vy } = vel.current; // px per frame (~16.7ms)
+    if (Math.abs(vx) + Math.abs(vy) < 2) return;
+    let last = performance.now();
+    const step = (t: number) => {
+      const f = Math.min(3, (t - last) / 16.7);
+      last = t;
+      view.current.x += vx * f;
+      view.current.y += vy * f;
+      vx *= Math.pow(0.93, f);
+      vy *= Math.pow(0.93, f);
+      applyView();
+      if (Math.abs(vx) + Math.abs(vy) > 0.4) momentumRaf.current = requestAnimationFrame(step);
+    };
+    momentumRaf.current = requestAnimationFrame(step);
+  }
+  useEffect(() => () => cancelAnimationFrame(momentumRaf.current), []);
 
   type Node = { key: string; node: Item | Stack };
   const nodes: Node[] = [
@@ -101,6 +124,7 @@ export default function Board({ items, urls, onOpen, stacks = [], stackThumbs, o
     if (!el) return;
     function onWheel(e: WheelEvent) {
       e.preventDefault();
+      cancelAnimationFrame(momentumRaf.current);
       const v = view.current;
       if (e.ctrlKey || e.metaKey) {
         const rect = el!.getBoundingClientRect();
@@ -125,6 +149,9 @@ export default function Board({ items, urls, onOpen, stacks = [], stackThumbs, o
   }
 
   function onPointerDown(e: React.PointerEvent, key?: string) {
+    cancelAnimationFrame(momentumRaf.current); // grab the canvas mid-glide
+    vel.current = { vx: 0, vy: 0 };
+    velSample.current = { x: e.clientX, y: e.clientY, t: performance.now() };
     (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (pointers.current.size === 2) {
@@ -187,6 +214,13 @@ export default function Board({ items, urls, onOpen, stacks = [], stackThumbs, o
     if (d.mode === "pan") {
       view.current.x = d.origX + dx;
       view.current.y = d.origY + dy;
+      const s = velSample.current;
+      const now = performance.now();
+      if (s && now - s.t > 0) {
+        const dt = (now - s.t) / 16.7;
+        vel.current = { vx: (e.clientX - s.x) / dt, vy: (e.clientY - s.y) / dt };
+      }
+      velSample.current = { x: e.clientX, y: e.clientY, t: now };
       applyView();
     } else if (d.mode === "card" && d.key) {
       const k = view.current.k;
@@ -233,6 +267,7 @@ export default function Board({ items, urls, onOpen, stacks = [], stackThumbs, o
         }
       }
     }
+    if (d.mode === "pan" && d.moved && pointers.current.size === 0) startMomentum();
     drag.current = { mode: null, startX: 0, startY: 0, origX: 0, origY: 0, moved: false };
   }
 
@@ -330,7 +365,7 @@ export default function Board({ items, urls, onOpen, stacks = [], stackThumbs, o
         })}
       </div>
 
-      <div className="absolute bottom-5 left-1/2 z-10 flex -translate-x-1/2 gap-2">
+      <div className="absolute bottom-20 left-1/2 z-10 flex -translate-x-1/2 gap-2 md:bottom-5">
         <button
           onClick={tidy}
           className="rounded-full border border-white/10 bg-[#1b1b21]/90 px-4 py-2 text-xs text-zinc-200 backdrop-blur hover:border-violet-500/50"

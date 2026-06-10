@@ -34,6 +34,14 @@ import {
 import { COLOR_NAMES, COLOR_HEX } from "@/lib/media";
 import type { Item, Library, Space, Stack } from "@/lib/types";
 
+function safeHost(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "Link";
+  }
+}
+
 interface Toast {
   id: number;
   text: string;
@@ -61,8 +69,18 @@ function App() {
   const [aiBusy, setAiBusy] = useState(false);
   const [ready, setReady] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [pending, setPending] = useState<{ id: number; label: string }[]>([]);
+  const [addTick, setAddTick] = useState(0);
   const toastId = useRef(0);
+  const pendingId = useRef(0);
   const dragDepth = useRef(0);
+
+  /** Optimistic ghost card: shows instantly in the grid, vanishes when the real item lands. */
+  const trackPending = useCallback((label: string) => {
+    const id = ++pendingId.current;
+    setPending((p) => [...p, { id, label }]);
+    return () => setPending((p) => p.filter((x) => x.id !== id));
+  }, []);
 
   const toast = useCallback((text: string, kind: Toast["kind"] = "info") => {
     const id = ++toastId.current;
@@ -146,51 +164,56 @@ function App() {
       if (!targetSpace) return toast("No space to save into yet", "error");
       const images = files.filter((f) => f.type.startsWith("image/"));
       if (!images.length) return;
-      toast(`Adding ${images.length} image${images.length > 1 ? "s" : ""}…`);
       for (const f of images) {
+        const done = trackPending(f.name || "Image");
         try {
           const item = await addImageFile(f, targetSpace);
           afterAdd(item);
+          await loadItems();
         } catch (e) {
           toast(`Failed: ${(e as Error).message}`, "error");
+        } finally {
+          done();
         }
       }
-      loadItems();
     },
-    [targetSpace, toast, loadItems, afterAdd]
+    [targetSpace, toast, loadItems, afterAdd, trackPending]
   );
 
   const handleUrl = useCallback(
     async (url: string) => {
       if (!targetSpace) return toast("No space to save into yet", "error");
       if (!/^https?:\/\//i.test(url)) return toast("That doesn't look like a URL", "error");
-      toast("Importing…");
+      const done = trackPending(safeHost(url));
       try {
         const item = await addFromUrl(url, targetSpace);
         afterAdd(item);
-        loadItems();
+        await loadItems();
       } catch (e) {
         toast(`Import failed: ${(e as Error).message}`, "error");
+      } finally {
+        done();
       }
     },
-    [targetSpace, toast, loadItems, afterAdd]
+    [targetSpace, toast, loadItems, afterAdd, trackPending]
   );
 
   const handleCapture = useCallback(
     async (url: string) => {
       if (!targetSpace) return toast("No space to save into yet", "error");
       if (!/^https?:\/\//i.test(url)) return toast("That doesn't look like a URL", "error");
-      toast("Capturing full page — can take ~15s…");
+      const done = trackPending(`📸 ${safeHost(url)} — capturing…`);
       try {
         const item = await captureSite(url, targetSpace);
         afterAdd(item);
-        loadItems();
-        toast("Captured ✓");
+        await loadItems();
       } catch (e) {
         toast(`Capture failed: ${(e as Error).message}`, "error");
+      } finally {
+        done();
       }
     },
-    [targetSpace, toast, loadItems, afterAdd]
+    [targetSpace, toast, loadItems, afterAdd, trackPending]
   );
 
   const handleNote = useCallback(
@@ -437,13 +460,7 @@ function App() {
 
       <main className="flex min-w-0 flex-1 flex-col">
         <header className="flex items-center gap-3 px-4 pb-2 pt-[max(1rem,env(safe-area-inset-top))]">
-          <button
-            className="rounded-lg border border-white/10 px-2.5 py-1.5 text-sm text-zinc-400 md:hidden"
-            onClick={() => setSidebarOpen(true)}
-          >
-            ☰
-          </button>
-          <h1 className="hidden truncate text-sm font-medium text-zinc-300 sm:block">{currentName}</h1>
+          <h1 className="truncate text-sm font-medium text-zinc-300">{currentName}</h1>
           {currentSpace && (
             <button
               onClick={toggleView}
@@ -527,6 +544,7 @@ function App() {
                 onOpenStack={openStack}
                 selected={selIds}
                 onToggleSelect={toggleSelect}
+                ghosts={pending}
               />
               {search.trim() && (
                 <div className="px-3 pb-24">
@@ -543,13 +561,45 @@ function App() {
         </div>
       </main>
 
-      <AddMenu onFiles={handleFiles} onUrl={handleUrl} onCapture={handleCapture} onNote={handleNote} />
+      <AddMenu onFiles={handleFiles} onUrl={handleUrl} onCapture={handleCapture} onNote={handleNote} openTick={addTick} />
+
+      {/* Mobile bottom tab bar */}
+      <nav className="fixed inset-x-0 bottom-0 z-30 flex items-stretch border-t border-white/10 bg-[#121216]/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
+        {(
+          [
+            { key: "home", icon: "✨", label: "Home", fn: () => { setSelected("home"); setColorFilter(null); } },
+            { key: "all", icon: "▦", label: "All", fn: () => { setSelected("all"); setColorFilter(null); } },
+            { key: "add", icon: "+", label: "Add", fn: () => setAddTick((t) => t + 1) },
+            { key: "spaces", icon: "☰", label: "Spaces", fn: () => setSidebarOpen(true) },
+          ] as const
+        ).map((t) =>
+          t.key === "add" ? (
+            <button key={t.key} onClick={t.fn} className="flex flex-1 items-center justify-center py-1.5" title="Add to Mood">
+              <span className="grid h-9 w-9 place-items-center rounded-full bg-violet-600 text-xl leading-none text-white shadow-lg shadow-violet-900/40 active:scale-95">
+                +
+              </span>
+            </button>
+          ) : (
+            <button
+              key={t.key}
+              onClick={t.fn}
+              className={`flex flex-1 flex-col items-center gap-0.5 py-1.5 text-[10px] ${
+                selected === t.key ? "text-violet-300" : "text-zinc-500 active:text-zinc-300"
+              }`}
+            >
+              <span className="text-base leading-none">{t.icon}</span>
+              {t.label}
+            </button>
+          )
+        )}
+      </nav>
 
       {open && (
         <Detail
           item={open}
           spaces={spaces}
           allItems={items}
+          siblings={visibleItems}
           urls={urls}
           onClose={() => setOpen(null)}
           onChanged={onItemChanged}
@@ -586,7 +636,7 @@ function App() {
       )}
 
       {selIds.size > 0 && (
-        <div className="fixed bottom-6 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/10 bg-[#1b1b21]/95 px-4 py-2.5 shadow-xl backdrop-blur">
+        <div className="fixed bottom-20 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/10 bg-[#1b1b21]/95 px-4 py-2.5 shadow-xl backdrop-blur md:bottom-6">
           <span className="text-xs text-zinc-400">{selIds.size} selected</span>
           <button
             onClick={makeStack}
