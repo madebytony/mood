@@ -131,14 +131,35 @@ const FONT_SNIFF = `(() => {
   return ranked.slice(0, 6).map((f) => { const p = provider(f); return p ? f + "@" + p : f; });
 })()`;
 
-/** Fingerprint the frameworks / builders / motion libraries actually running on the page. */
-const TECH_SNIFF = `(() => {
+/** Fingerprint the frameworks / builders / motion libraries actually running on the page.
+ *  Three layers: runtime globals & DOM markers, resource URLs, and the *contents* of the
+ *  site's JS bundles (catches libraries compiled in with no global and no CDN URL). */
+const TECH_SNIFF = `(async () => {
   const t = new Set();
   const w = window;
   const html = document.documentElement;
-  const scripts = Array.from(document.scripts).map((s) => s.src).filter(Boolean).join("\\n").toLowerCase();
+  let resources = [];
+  try { resources = performance.getEntriesByType("resource").map((r) => r.name); } catch {}
+  const scriptSrcs = Array.from(document.scripts).map((s) => s.src).filter(Boolean);
+  const scripts = [...scriptSrcs, ...resources].join("\\n").toLowerCase();
   const gen = (document.querySelector('meta[name="generator" i]')?.getAttribute("content") || "").toLowerCase();
   const has = (re) => re.test(scripts);
+
+  // Bundle-content scan: fetch the site's biggest scripts and look for library signatures.
+  let blob = "";
+  try {
+    const candidates = scriptSrcs
+      .filter((s) => !/gtag|googletag|analytics|fbevents|hotjar|clarity|cookie|consent|recaptcha|stripe/i.test(s))
+      .slice(0, 6);
+    const texts = await Promise.race([
+      Promise.allSettled(candidates.map(async (s) => (await fetch(s)).text())),
+      new Promise((r) => setTimeout(() => r([]), 4500)),
+    ]);
+    for (const r of texts) if (r.status === "fulfilled") blob += r.value.slice(0, 700000).toLowerCase();
+  } catch {}
+  // inline scripts too
+  for (const s of document.scripts) if (!s.src && s.textContent) blob += s.textContent.slice(0, 200000).toLowerCase();
+  const inBundle = (re) => re.test(blob);
 
   // app frameworks
   if (w.__NEXT_DATA__ || document.getElementById("__next")) t.add("Next.js");
@@ -172,17 +193,33 @@ const TECH_SNIFF = `(() => {
   if (gen.includes("readymag") || has(/readymag/)) t.add("Readymag");
   if (gen.includes("ghost")) t.add("Ghost");
 
-  // motion / interaction
-  if (w.gsap || w.TweenMax || has(/gsap/)) t.add("GSAP");
-  if (w.Lenis || html.classList.contains("lenis") || has(/lenis/)) t.add("Lenis");
-  if (w.LocomotiveScroll || document.querySelector("[data-scroll-container]") || has(/locomotive/)) t.add("Locomotive Scroll");
-  if (w.barba || has(/barba/)) t.add("Barba.js");
-  if (w.THREE || has(/\\bthree(\\.min)?\\.js|three@/)) t.add("Three.js");
-  if (document.querySelector("lottie-player") || has(/lottie/)) t.add("Lottie");
-  if (w.Swiper || document.querySelector(".swiper, .swiper-container")) t.add("Swiper");
+  // headless CMS by asset domain
+  if (has(/ctfassets\\.net/)) t.add("Contentful");
+  if (has(/cdn\\.sanity\\.io/)) t.add("Sanity");
+  if (has(/images\\.prismic\\.io|prismic\\.io\\/api/)) t.add("Prismic");
+  if (has(/storyblok\\.com/)) t.add("Storyblok");
+  if (has(/datocms-assets\\.com/)) t.add("DatoCMS");
+
+  // motion / interaction — globals, DOM side-effects, URLs, and bundle contents
+  if (w.gsap || w.TweenMax || has(/gsap/) || inBundle(/gsap|greensock/)) t.add("GSAP");
+  if ((t.has("GSAP") && document.querySelector(".pin-spacer")) || w.ScrollTrigger || inBundle(/scrolltrigger/)) t.add("GSAP ScrollTrigger");
+  if (w.Lenis || html.classList.contains("lenis") || has(/lenis/) || inBundle(/@studio-freight\\/lenis|lenis\\b/)) t.add("Lenis");
+  if (w.LocomotiveScroll || document.querySelector("[data-scroll-container]") || has(/locomotive/) || inBundle(/locomotive-scroll/)) t.add("Locomotive Scroll");
+  if (w.barba || has(/barba/) || inBundle(/@barba\\/core|barba\\.init/)) t.add("Barba.js");
+  if (w.THREE || has(/\\bthree(\\.min)?\\.js|three@/) || inBundle(/three\\.module|webglrenderer/)) t.add("Three.js");
+  if (inBundle(/framer-motion/)) t.add("Framer Motion");
+  if (document.querySelector("lottie-player") || has(/lottie/) || inBundle(/lottie/)) t.add("Lottie");
+  if (document.querySelector("spline-viewer") || has(/spline\\.design|splinetool/) || inBundle(/splinetool/)) t.add("Spline");
+  if (has(/rive\\.app|rive-canvas|rive\\.wasm/) || inBundle(/@rive-app|rive\\.wasm/)) t.add("Rive");
+  if (w.anime || has(/animejs|anime\\.min/) || inBundle(/animejs/)) t.add("Anime.js");
+  if (w.AOS || document.querySelector("[data-aos]")) t.add("AOS");
+  if (w.pJSDom || has(/particles\\.js/)) t.add("Particles.js");
+  if (w.Swiper || document.querySelector(".swiper, .swiper-container") || inBundle(/swiper/)) t.add("Swiper");
   if (document.querySelector(".splide") || has(/splide/)) t.add("Splide");
   if (w.Flickity || document.querySelector(".flickity-enabled")) t.add("Flickity");
   if (w.Plyr || has(/plyr/)) t.add("Plyr");
+  if (has(/player\\.vimeo\\.com/)) t.add("Vimeo Player");
+  if (has(/mux\\.com/) || document.querySelector("mux-player")) t.add("Mux");
 
   // styling heuristic
   let cls = "";
@@ -193,7 +230,7 @@ const TECH_SNIFF = `(() => {
   }
   if (/(^|\\s)(sm:|md:|lg:|xl:)[a-z-]/.test(cls)) t.add("Tailwind CSS");
 
-  return Array.from(t).slice(0, 12);
+  return Array.from(t).slice(0, 16);
 })()`;
 
 /** Hosting / CDN from the main document's response headers. */
