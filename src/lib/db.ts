@@ -2,6 +2,11 @@ import { supabase, authToken } from "./supabase";
 import { processImage, uploadProcessed } from "./media";
 import type { Item, Library, LinkMeta, Space, Stack } from "./types";
 
+/** All item columns EXCEPT the 1024-dim embedding vector (too heavy to ship to the client). */
+const ITEM_COLS: string =
+  "id,space_id,user_id,type,storage_path,thumb_path,content,title,source_url,source_domain," +
+  "tags,colors,width,height,board_x,board_y,board_w,ai_caption,stack_id,created_at,last_viewed_at";
+
 // ---------- reads ----------
 
 export async function fetchLibraries(): Promise<Library[]> {
@@ -19,7 +24,7 @@ export async function fetchSpaces(): Promise<Space[]> {
 export async function fetchItems(spaceId: string | "all", search: string): Promise<Item[]> {
   let q = supabase
     .from("items")
-    .select("*")
+    .select(ITEM_COLS)
     .is("stack_id", null)
     .order("created_at", { ascending: false })
     .limit(500);
@@ -38,7 +43,7 @@ export async function fetchItems(spaceId: string | "all", search: string): Promi
   }
   const { data, error } = await q;
   if (error) throw error;
-  return data ?? [];
+  return (data ?? []) as unknown as Item[];
 }
 
 /** Top tags across the most recent saves — the taste profile. */
@@ -65,11 +70,11 @@ export async function libraryDomains(): Promise<string[]> {
 export async function resurface(limit = 8): Promise<Item[]> {
   const { data } = await supabase
     .from("items")
-    .select("*")
+    .select(ITEM_COLS)
     .order("last_viewed_at", { ascending: true, nullsFirst: true })
     .order("created_at", { ascending: true })
     .limit(limit * 3);
-  const pool = data ?? [];
+  const pool = (data ?? []) as unknown as Item[];
   // light shuffle so it isn't identical every load
   return pool.sort(() => Math.random() - 0.5).slice(0, limit);
 }
@@ -134,10 +139,10 @@ export async function addImageFile(file: File | Blob, spaceId: string, extras: P
       fonts: extras.fonts ?? [],
       tech: extras.tech ?? [],
     })
-    .select()
+    .select(ITEM_COLS)
     .single();
   if (error) throw error;
-  return data;
+  return data as unknown as Item;
 }
 
 export function hostOf(url: string): string | null {
@@ -210,10 +215,10 @@ export async function addFromUrl(url: string, spaceId: string): Promise<Item> {
       tags: [],
       colors,
     })
-    .select()
+    .select(ITEM_COLS)
     .single();
   if (error) throw error;
-  return data;
+  return data as unknown as Item;
 }
 
 /** Full-page screenshot of a site -> 'site' card. */
@@ -246,16 +251,16 @@ export async function addNote(text: string, spaceId: string): Promise<Item> {
       title: text.split("\n")[0].slice(0, 80),
       tags: [],
     })
-    .select()
+    .select(ITEM_COLS)
     .single();
   if (error) throw error;
-  return data;
+  return data as unknown as Item;
 }
 
 export async function updateItem(id: string, patch: Partial<Item>): Promise<Item> {
-  const { data, error } = await supabase.from("items").update(patch).eq("id", id).select().single();
+  const { data, error } = await supabase.from("items").update(patch).eq("id", id).select(ITEM_COLS).single();
   if (error) throw error;
-  return data;
+  return data as unknown as Item;
 }
 
 /** Undo-able delete, step 1: remove the row immediately (survives refresh/app close). */
@@ -337,11 +342,11 @@ export async function createStack(spaceId: string, name: string, itemIds: string
 export async function fetchStackItems(stackId: string): Promise<Item[]> {
   const { data, error } = await supabase
     .from("items")
-    .select("*")
+    .select(ITEM_COLS)
     .eq("stack_id", stackId)
     .order("created_at", { ascending: false });
   if (error) throw error;
-  return data ?? [];
+  return (data ?? []) as unknown as Item[];
 }
 
 /** Up to 3 thumbnail paths per stack, for the fanned pile. */
@@ -436,6 +441,107 @@ export async function aiSearch(query: string, items: Item[]): Promise<string[] |
   if (!res.ok) return null;
   const { ids } = await res.json();
   return ids;
+}
+
+// ---------- visual embeddings (taste engine) ----------
+
+let voyageAvailable: boolean | null = null;
+const voyageDown = () => voyageAvailable === false;
+
+/** Style-anchored text for the hybrid vector — captions name the aesthetic the pixels show. */
+function embedText(item: Item): string {
+  return [item.ai_caption, (item.tags ?? []).join(", "), item.title, item.content?.slice(0, 500)]
+    .filter(Boolean)
+    .join(". ");
+}
+
+/** Embed one item (image + caption hybrid) in the background. Silently no-ops without a key. */
+export async function embedItem(item: Item): Promise<boolean> {
+  if (voyageAvailable === false) return false;
+  const text = embedText(item);
+  if (!item.thumb_path && !text) return false;
+  try {
+    let imageUrl: string | undefined;
+    if (item.thumb_path) {
+      const urls = await signedUrls([item.thumb_path]);
+      imageUrl = urls.get(item.thumb_path);
+    }
+    const res = await apiFetch("/api/ai/embed", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ imageUrl, text: text || undefined, input_type: "document" }),
+    });
+    if (res.status === 503) {
+      voyageAvailable = false;
+      return false;
+    }
+    if (!res.ok) return false;
+    voyageAvailable = true;
+    const { embedding } = await res.json();
+    if (!Array.isArray(embedding)) return false;
+    const { error } = await supabase.from("items").update({ embedding }).eq("id", item.id);
+    return !error;
+  } catch {
+    return false; // background job — never surface errors
+  }
+}
+
+let backfillRunning = false;
+
+/** Embed any items still missing vectors, a few at a time. Safe to call on every load. */
+export async function backfillEmbeddings(batch = 12): Promise<void> {
+  if (backfillRunning || voyageAvailable === false) return;
+  backfillRunning = true;
+  try {
+    const { data } = await supabase
+      .from("items")
+      .select(ITEM_COLS)
+      .is("embedding", null)
+      .order("created_at", { ascending: false })
+      .limit(batch);
+    let failures = 0;
+    for (const item of (data ?? []) as unknown as Item[]) {
+      const ok = await embedItem(item);
+      if (!ok && voyageDown()) break;
+      // back off after repeated failures (e.g. 429 rate limits) — next app load retries
+      if (!ok && ++failures >= 2) break;
+      if (ok) failures = 0;
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  } finally {
+    backfillRunning = false;
+  }
+}
+
+/** Visual nearest-neighbours for an item, library-wide. Empty when not yet embedded. */
+export async function matchToItem(itemId: string, count = 12): Promise<Item[]> {
+  const { data, error } = await supabase.rpc("match_to_item", { p_item_id: itemId, p_count: count });
+  if (error) return [];
+  return (data ?? []) as Item[];
+}
+
+/** Semantic text -> image search. Returns null when embeddings are unavailable. */
+export async function semanticSearch(query: string, count = 60): Promise<Item[] | null> {
+  if (voyageAvailable === false) return null;
+  try {
+    const res = await apiFetch("/api/ai/embed", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: query, input_type: "query" }),
+    });
+    if (res.status === 503) {
+      voyageAvailable = false;
+      return null;
+    }
+    if (!res.ok) return null;
+    voyageAvailable = true;
+    const { embedding } = await res.json();
+    const { data, error } = await supabase.rpc("match_items", { p_query: embedding, p_count: count });
+    if (error) return null;
+    return (data ?? []) as Item[];
+  } catch {
+    return null;
+  }
 }
 
 // ---------- Discover / Feed ----------

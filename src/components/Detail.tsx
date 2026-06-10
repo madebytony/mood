@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Item, Space } from "@/lib/types";
-import { signedUrls, touchViewed, updateItem } from "@/lib/db";
+import { matchToItem, signedUrls, touchViewed, updateItem } from "@/lib/db";
 import { notice } from "./ui";
 import { SparklesIcon, XIcon, ChevronLeftIcon, ChevronRightIcon } from "./icons";
 
@@ -26,7 +26,8 @@ function related(item: Item, all: Item[]): Item[] {
     .map((i) => {
       let score = 0;
       for (const t of i.tags ?? []) if (item.tags?.includes(t)) score += 2;
-      for (const c of i.colors ?? []) if (item.colors?.includes(c)) score += 1;
+      // tone tokens (dark/light) are near-universal — they'd relate everything to everything
+      for (const c of i.colors ?? []) if (c !== "dark" && c !== "light" && item.colors?.includes(c)) score += 1;
       if (i.source_domain && i.source_domain === item.source_domain) score += 2;
       return { i, score };
     })
@@ -47,7 +48,8 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
   const tall = !!(item.width && item.height && item.height / item.width > 1.6);
   const scrollMode = tall ? !zoomed : zoomed; // tall pages default to full-width scroll
 
-  const rel = useMemo(() => related(item, allItems), [item, allItems]);
+  const [rel, setRel] = useState<Item[]>([]);
+  const [relUrls, setRelUrls] = useState<Map<string, string>>(new Map());
 
   const idx = siblings ? siblings.findIndex((s) => s.id === item.id) : -1;
   const prevItem = idx > 0 ? siblings![idx - 1] : null;
@@ -62,6 +64,30 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
     if (path) signedUrls([path]).then((m) => setFullUrl(m.get(path) ?? null));
     touchViewed(item.id).catch(() => {});
   }, [item]);
+
+  // True visual similarity (library-wide kNN); falls back to tag/colour overlap pre-embedding.
+  useEffect(() => {
+    let alive = true;
+    setRel([]);
+    matchToItem(item.id, 10)
+      .then(async (matches) => {
+        const good = matches.filter((m) => (m.similarity ?? 0) >= 0.45);
+        const result = good.length ? good : related(item, allItems);
+        if (!alive) return;
+        setRel(result);
+        const paths = result.map((r) => r.thumb_path).filter(Boolean) as string[];
+        if (paths.length) {
+          const m = await signedUrls(paths);
+          if (alive) setRelUrls(m);
+        }
+      })
+      .catch(() => {
+        if (alive) setRel(related(item, allItems));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [item, allItems]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -195,23 +221,21 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
             <div className="border-t border-white/5 p-3">
               <div className="mb-2 flex items-center justify-between">
                 <span className="text-[11px] uppercase tracking-wider text-zinc-600">More like this</span>
-                <button
-                  onClick={() =>
-                    onWebSimilar(
-                      [
-                        item.ai_caption ?? item.title,
-                        ...(item.tags ?? []).slice(0, 3),
-                        ...(item.colors ?? []).filter((c) => c !== "dark" && c !== "light").slice(0, 2),
-                      ]
-                        .filter(Boolean)
-                        .join(" ")
-                        .slice(0, 220)
-                    )
-                  }
-                  className="text-[11px] text-zinc-200 hover:underline"
-                >
-                  Search the web for similar →
-                </button>
+                {(() => {
+                  const q = [
+                    item.ai_caption ?? item.title,
+                    ...(item.tags ?? []).slice(0, 3),
+                    ...(item.colors ?? []).filter((c) => c !== "dark" && c !== "light").slice(0, 2),
+                  ]
+                    .filter(Boolean)
+                    .join(" ")
+                    .slice(0, 220);
+                  return q ? (
+                    <button onClick={() => onWebSimilar(q)} className="text-[11px] text-zinc-200 hover:underline">
+                      Search the web for similar →
+                    </button>
+                  ) : null;
+                })()}
               </div>
               {rel.length > 0 ? (
                 <div className="no-scrollbar flex gap-2 overflow-x-auto">
@@ -221,9 +245,13 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
                       onClick={() => onOpenItem(r)}
                       className="h-20 w-28 shrink-0 overflow-hidden rounded-lg border border-white/10 hover:border-white/30"
                     >
-                      {r.thumb_path && urls.get(r.thumb_path) ? (
+                      {r.thumb_path && (relUrls.get(r.thumb_path) ?? urls.get(r.thumb_path)) ? (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={urls.get(r.thumb_path)} alt="" className="h-full w-full object-cover" />
+                        <img
+                          src={relUrls.get(r.thumb_path) ?? urls.get(r.thumb_path)}
+                          alt=""
+                          className="h-full w-full object-cover"
+                        />
                       ) : (
                         <div className="grid h-full w-full place-items-center bg-white/5 text-[10px] text-zinc-500 px-1">
                           {(r.title ?? r.source_domain ?? "note").slice(0, 24)}

@@ -14,6 +14,7 @@ import {
   addImageFile,
   addNote,
   aiSearch,
+  backfillEmbeddings,
   captionItem,
   captureSite,
   createStack,
@@ -21,12 +22,14 @@ import {
   deleteItemStorage,
   restoreItem,
   deleteStack,
+  embedItem,
   fetchItems,
   fetchLibraries,
   fetchSpaces,
   fetchStackItems,
   fetchStacks,
   renameStack,
+  semanticSearch,
   setSpaceView,
   signedUrls,
   stackThumbPaths,
@@ -67,6 +70,7 @@ function App() {
   const [stacks, setStacks] = useState<Stack[]>([]);
   const [stackThumbs, setStackThumbs] = useState<Map<string, string[]>>(new Map());
   const [selIds, setSelIds] = useState<Set<string>>(new Set());
+  const [aiItems, setAiItems] = useState<Item[] | null>(null); // AI search results overlay
   const [stackView, setStackView] = useState<{ stack: Stack; items: Item[] } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
@@ -155,7 +159,8 @@ function App() {
   }, [loadItems, search, toast]);
 
   useEffect(() => {
-    setSelIds(new Set()); // clear selection when the view changes
+    setSelIds(new Set()); // clear selection + AI results when the view changes
+    setAiItems(null);
   }, [search, selected]);
 
   useEffect(() => {
@@ -172,9 +177,10 @@ function App() {
   );
   const targetSpace = currentSpace?.id ?? inbox?.id;
 
+  const baseItems = aiItems ?? items;
   const visibleItems = useMemo(
-    () => (colorFilter ? items.filter((i) => i.colors?.includes(colorFilter)) : items),
-    [items, colorFilter]
+    () => (colorFilter ? baseItems.filter((i) => i.colors?.includes(colorFilter)) : baseItems),
+    [baseItems, colorFilter]
   );
 
   const counts = useMemo(() => {
@@ -187,10 +193,21 @@ function App() {
 
   const afterAdd = useCallback(
     (item: Item) => {
-      captionItem(item, () => loadItems().catch(() => {}));
+      // caption first so the embedding carries the style description
+      captionItem(item, (updated) => {
+        embedItem(updated);
+        loadItems().catch(() => {});
+      });
+      // sweep catches items captioning never reaches (no key, notes, failures)
+      setTimeout(() => backfillEmbeddings(), 12000);
     },
     [loadItems]
   );
+
+  // Quietly embed anything still missing a vector (new installs, clipped items, pre-AI saves)
+  useEffect(() => {
+    backfillEmbeddings();
+  }, []);
 
   const handleFiles = useCallback(
     async (files: File[]) => {
@@ -262,6 +279,7 @@ function App() {
    *  can't resurrect it); Undo re-inserts it. Files are cleared after the window closes. */
   async function softDelete(item: Item) {
     setItems((prev) => prev.filter((i) => i.id !== item.id));
+    setAiItems((prev) => (prev ? prev.filter((i) => i.id !== item.id) : prev));
     try {
       await deleteItemRow(item);
     } catch (e) {
@@ -363,19 +381,32 @@ function App() {
     if (!search.trim()) return;
     setAiBusy(true);
     try {
-      const all = await fetchItems("all", "");
-      const ids = await aiSearch(search.trim(), all);
-      if (ids === null) {
-        toast("AI search needs ANTHROPIC_API_KEY in .env.local", "error");
-        return;
+      const q = search.trim();
+      let ranked: Item[] | null = null;
+      // instant visual-semantic search over embeddings first
+      const sem = await semanticSearch(q);
+      if (sem?.length) {
+        const top = sem[0].similarity ?? 0;
+        ranked = sem.filter((i, idx) => !i.stack_id && (idx < 12 || (i.similarity ?? 0) >= top * 0.9));
       }
-      const byId = new Map(all.map((i) => [i.id, i]));
-      const ranked = ids.map((id) => byId.get(id)).filter(Boolean) as Item[];
-      setSelected("all");
-      setItems(ranked);
+      if (!ranked) {
+        // fallback: Claude reads titles/tags/captions
+        const all = await fetchItems("all", "");
+        const ids = await aiSearch(q, all);
+        if (ids === null) {
+          toast("AI search needs VOYAGE_API_KEY or ANTHROPIC_API_KEY in .env.local", "error");
+          return;
+        }
+        const byId = new Map(all.map((i) => [i.id, i]));
+        ranked = ids.map((id) => byId.get(id)).filter(Boolean) as Item[];
+      }
+      setAiItems(ranked);
       const paths = ranked.map((i) => i.thumb_path).filter(Boolean) as string[];
-      if (paths.length) setUrls(await signedUrls(paths));
-      toast(`${ranked.length} matches`);
+      if (paths.length) {
+        const m = await signedUrls(paths);
+        setUrls((u) => new Map([...u, ...m]));
+      }
+      toast(`${ranked.length} matches across your library`);
     } catch (e) {
       toast((e as Error).message, "error");
     } finally {
@@ -580,12 +611,20 @@ function App() {
             <SkeletonGrid />
           ) : (
             <>
+              {aiItems && (
+                <div className="flex items-center gap-2 px-4 pb-2 text-[11px] text-violet-300">
+                  ✨ {aiItems.length} AI matches across your library
+                  <button onClick={() => setAiItems(null)} className="text-zinc-500 hover:text-zinc-200">
+                    clear
+                  </button>
+                </div>
+              )}
               <Masonry
                 items={visibleItems}
                 urls={urls}
                 onOpen={setOpen}
                 onFile={currentSpace?.kind === "inbox" ? (i) => setFiling(i) : undefined}
-                stacks={stacks}
+                stacks={aiItems ? [] : stacks}
                 stackThumbs={stackThumbs}
                 onOpenStack={openStack}
                 selected={selIds}
@@ -786,7 +825,7 @@ function App() {
                     <button
                       onClick={() => unstackOne(i)}
                       title="Remove from stack"
-                      className="absolute right-1.5 top-1.5 hidden rounded-full bg-black/60 px-2 py-0.5 text-[10px] text-white backdrop-blur hover:bg-white hover:text-black group-hover:block"
+                      className="absolute right-1.5 top-1.5 hidden rounded-full bg-black/60 px-2 py-0.5 text-[10px] text-white backdrop-blur hover:bg-white hover:text-black group-hover:block pointer-coarse:block"
                     >
                       <span className="flex items-center gap-1"><UnstackIcon className="h-3 w-3" /> unstack</span>
                     </button>

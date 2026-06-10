@@ -118,7 +118,7 @@ function Card({
           className={`absolute left-2 top-2 z-10 h-6 w-6 rounded-full border text-[12px] leading-none ${
             selected
               ? "pop-in block border-white/80 bg-white text-black"
-              : "hidden border-white/50 bg-black/50 text-white/0 backdrop-blur hover:text-white/80 group-hover:block"
+              : "hidden border-white/50 bg-black/50 text-white/0 backdrop-blur hover:text-white/80 group-hover:block pointer-coarse:block pointer-coarse:text-white/60"
           }`}
         >
           ✓
@@ -127,7 +127,7 @@ function Card({
       {onFile && (
         <button
           onClick={() => onFile(item)}
-          className="absolute right-2 top-2 hidden rounded-full bg-black/60 px-3 py-1 text-[11px] text-white backdrop-blur hover:bg-white hover:text-black group-hover:block"
+          className="absolute right-2 top-2 hidden rounded-full bg-black/60 px-3 py-1 text-[11px] text-white backdrop-blur hover:bg-white hover:text-black group-hover:block pointer-coarse:block"
         >
           File →
         </button>

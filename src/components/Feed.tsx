@@ -20,6 +20,10 @@ interface Props {
 
 type FeedCard = { kind: "suggestion"; s: Suggestion } | { kind: "library"; item: Item };
 
+/** Free keyless screenshot fallbacks: mShots first (no watermark), thum.io as last resort. */
+const mshot = (u: string) => `https://s0.wp.com/mshots/v1/${encodeURIComponent(u)}?w=600`;
+const thumio = (u: string) => `https://image.thum.io/get/width/600/crop/750/${u}`;
+
 export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, compact = false, initialQuery, defaultSpaceId }: Props) {
   const [cards, setCards] = useState<FeedCard[]>([]);
   const [urls, setUrls] = useState<Map<string, string>>(new Map());
@@ -46,9 +50,11 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
           discover(q, [...shown.current]),
           q || compact || append ? Promise.resolve([] as Item[]) : resurface(6),
         ]);
-        for (const s of suggestions) shown.current.add(s.url);
+        // belt-and-braces: never show a card twice this session, even if the server re-offers it
+        const fresh = suggestions.filter((s) => !shown.current.has(s.url));
+        for (const s of fresh) shown.current.add(s.url);
         const mixed: FeedCard[] = [];
-        const sug = suggestions.map((s): FeedCard => ({ kind: "suggestion", s }));
+        const sug = fresh.map((s): FeedCard => ({ kind: "suggestion", s }));
         const lib = gems.map((item): FeedCard => ({ kind: "library", item }));
         // interleave: roughly one library gem every 5 suggestions
         let li = 0;
@@ -157,14 +163,14 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
         {cards.map((card, i) =>
           card.kind === "suggestion" ? (
             <div
-              key={`s-${card.s.url}-${i}`}
+              key={`s-${card.s.url}`}
               className="card-in group relative mb-3 overflow-hidden rounded-xl border border-white/5 bg-white/[0.03]"
               style={{ breakInside: "avoid" }}
             >
               <a href={card.s.url} target="_blank" rel="noreferrer" className="block" onClick={() => engage(card.s)}>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
-                  src={card.s.image ?? `https://image.thum.io/get/width/600/crop/750/${card.s.url}`}
+                  src={card.s.image ?? mshot(card.s.url)}
                   alt=""
                   loading="lazy"
                   className="min-h-28 w-full bg-white/[0.04] object-cover object-top opacity-0 transition-opacity duration-500"
@@ -173,7 +179,10 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
                     const el = e.currentTarget;
                     if (!el.dataset.fb) {
                       el.dataset.fb = "1";
-                      el.src = `https://image.thum.io/get/width/600/crop/750/${card.s.url}`;
+                      el.src = mshot(card.s.url);
+                    } else if (el.dataset.fb === "1") {
+                      el.dataset.fb = "2";
+                      el.src = thumio(card.s.url);
                     }
                   }}
                 />
@@ -185,7 +194,7 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
                   {card.s.blurb && <div className="mt-1 text-[11px] leading-snug text-zinc-500">{card.s.blurb}</div>}
                 </div>
               </a>
-              <div className="absolute right-2 top-2 hidden gap-1.5 group-hover:flex">
+              <div className="absolute right-2 top-2 hidden gap-1.5 group-hover:flex pointer-coarse:flex">
                 <button
                   className={chip}
                   onClick={() => (defaultSpaceId ? save(card.s, defaultSpaceId) : setPicking(card.s))}

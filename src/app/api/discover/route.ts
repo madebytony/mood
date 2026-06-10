@@ -20,7 +20,6 @@ export interface Suggestion {
 const GALLERIES: { name: string; url: string }[] = [
   { name: "siteinspire", url: "https://www.siteinspire.com" },
   { name: "httpster", url: "https://httpster.net" },
-  { name: "minimal.gallery", url: "https://minimal.gallery" },
   { name: "godly", url: "https://godly.website" },
   { name: "land-book", url: "https://land-book.com" },
   { name: "dark.design", url: "https://www.dark.design" },
@@ -64,10 +63,90 @@ function shuffle<T>(a: T[]): T[] {
   return x;
 }
 
+const CACHE_TTL = 1000 * 60 * 60 * 6;
 let cache: { at: number; items: Suggestion[] } | null = null;
 
 function absol(href: string, base: string): string | null {
   try { return new URL(href, base).href; } catch { return null; }
+}
+
+/* ---------------- are.na: designer-curated channels (free, keyless) ---------------- */
+
+const arenaCache = new Map<string, { at: number; items: Suggestion[] }>();
+
+async function arena(query: string | null, taste: string[]): Promise<Suggestion[]> {
+  const q = (query?.trim() || taste.slice(0, 2).join(" ") || "web design").slice(0, 80);
+  const hit = arenaCache.get(q);
+  if (hit && Date.now() - hit.at < CACHE_TTL) return hit.items;
+  try {
+    const sres = await fetch(`https://api.are.na/v2/search/channels?q=${encodeURIComponent(q)}&per=8`, {
+      headers: { "user-agent": UA },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!sres.ok) return [];
+    const sj = await sres.json();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const channels = (sj?.channels ?? []).filter((c: any) => (c.length ?? 0) >= 15 && c.slug).slice(0, 4);
+    const out: Suggestion[] = [];
+    await Promise.allSettled(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      channels.map(async (c: any) => {
+        const r = await fetch(
+          `https://api.are.na/v2/channels/${encodeURIComponent(c.slug)}/contents?per=25&sort=position&direction=desc`,
+          { headers: { "user-agent": UA }, signal: AbortSignal.timeout(8000) }
+        );
+        if (!r.ok) return;
+        const { contents } = await r.json();
+        for (const b of contents ?? []) {
+          if (b?.class !== "Link" || !b?.source?.url) continue;
+          let domain: string;
+          try { domain = new URL(b.source.url).hostname.replace(/^www\./, ""); } catch { continue; }
+          if (SOCIAL_RE.test(domain) || GALLERY_HOSTS.has(domain)) continue;
+          out.push({
+            url: b.source.url,
+            title: b.title || b.generated_title || null,
+            image: b.image?.display?.url ?? b.image?.thumb?.url ?? null,
+            domain,
+            source: `are.na/${c.slug}`,
+          });
+        }
+      })
+    );
+    if (out.length) {
+      arenaCache.set(q, { at: Date.now(), items: out });
+      if (arenaCache.size > 24) arenaCache.delete(arenaCache.keys().next().value!);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/* ---------------- minimal.gallery via RSS (structured, no scraping) ---------------- */
+
+async function minimalRss(): Promise<Suggestion[]> {
+  const res = await fetch("https://minimal.gallery/feed/", {
+    headers: { "user-agent": UA, accept: "application/rss+xml,text/xml,*/*" },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!res.ok) throw new Error(String(res.status));
+  const xml = await res.text();
+  const out: Suggestion[] = [];
+  for (const m of xml.matchAll(/<item>([\s\S]*?)<\/item>/g)) {
+    const x = m[1];
+    const title = /<title>([^<]+)<\/title>/.exec(x)?.[1]?.trim() ?? null;
+    const detail = /<link>([^<]+)<\/link>/.exec(x)?.[1]?.trim() ?? null;
+    const img = /src="([^"]+\/wp-content\/uploads\/[^"]+)"/.exec(x)?.[1] ?? null;
+    // screenshot filenames encode the real site: .../bureautonalli.com_.jpg
+    const file = img?.split("/").pop() ?? "";
+    const dm = /^([a-z0-9-]+(?:\.[a-z0-9-]+)+?)_?(?:-\d+x\d+)?\.(?:jpe?g|png|webp)$/i.exec(file);
+    const url = dm ? `https://${dm[1]}` : detail;
+    if (!url) continue;
+    let domain: string;
+    try { domain = new URL(url).hostname.replace(/^www\./, ""); } catch { continue; }
+    out.push({ url, title, image: img, domain, source: "minimal.gallery" });
+  }
+  return out;
 }
 
 /** Tolerant generic extractor: anchors that wrap or sit near an <img>. */
@@ -101,21 +180,26 @@ function extract(html: string, base: string, source: string): Suggestion[] {
 }
 
 async function aggregate(): Promise<Suggestion[]> {
-  if (cache && Date.now() - cache.at < 1000 * 60 * 60 * 6) return cache.items;
-  const results = await Promise.allSettled(
-    GALLERIES.map(async (g) => {
+  if (cache && Date.now() - cache.at < CACHE_TTL) return cache.items;
+  const results = await Promise.allSettled([
+    minimalRss(),
+    ...GALLERIES.map(async (g) => {
       const res = await fetch(g.url, {
         headers: { "user-agent": UA, accept: "text/html" },
         signal: AbortSignal.timeout(8000),
       });
       if (!res.ok) throw new Error(String(res.status));
       return extract((await res.text()).slice(0, 600_000), g.url, g.name);
-    })
-  );
+    }),
+  ]);
   const items = results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
-  const merged = items.length ? items : SEEDS;
-  cache = { at: Date.now(), items: merged };
-  return merged;
+  if (items.length) {
+    cache = { at: Date.now(), items };
+    return items;
+  }
+  // every source failed (likely transient) — serve seeds but retry in ~5 min, don't poison 6h
+  cache = { at: Date.now() - CACHE_TTL + 5 * 60_000, items: SEEDS };
+  return SEEDS;
 }
 
 /* ---------------- web search via Claude (query-specific) ---------------- */
@@ -238,7 +322,8 @@ export async function GET(req: Request) {
   const taste = (sp.get("taste") ?? "").split(",").map((t) => t.trim()).filter(Boolean).slice(0, 30);
   const exclude = new Set((sp.get("exclude") ?? "").split(",").map((d) => d.trim()).filter(Boolean));
 
-  let cands = await aggregate();
+  const [agg, arn] = await Promise.all([aggregate(), arena(query, taste)]);
+  let cands: Suggestion[] = [...arn, ...agg];
   if (query && hasKey()) {
     // Brief-led search: fresh web results lead; the (shuffled) gallery pool only pads the tail.
     const ws = await webSearch(query);
@@ -252,18 +337,23 @@ export async function GET(req: Request) {
     }
   }
   // dedupe by domain+path, drop excluded/seen domains
+  const norm = (u: string) => u.replace(/\/+$/, "");
   const seen = new Set<string>();
   cands = cands.filter((c) => {
-    if (exclude.has(c.domain) || exclude.has(c.url)) return false;
-    const k = c.url.split("?")[0];
+    if (exclude.has(c.domain) || exclude.has(c.url) || exclude.has(norm(c.url))) return false;
+    const k = norm(c.url.split("?")[0]);
     if (seen.has(k)) return false;
     seen.add(k);
     return true;
   });
   cands = await rank(cands, taste, query);
-  const top = await enrich(cands.slice(0, 40));
+  // clone: enrich mutates suggestions in place and must never touch cached objects
+  const top = await enrich(cands.slice(0, 40).map((c) => ({ ...c })));
+  // re-apply exclusions AFTER enrichment — gallery URLs resolve to the real site here,
+  // which is the URL the client's dislikes/saves were recorded against
   const seenDomains = new Set<string>();
   const finalItems = top.filter((s) => {
+    if (exclude.has(s.domain) || exclude.has(s.url) || exclude.has(norm(s.url))) return false;
     if (seenDomains.has(s.domain)) return false;
     seenDomains.add(s.domain);
     return true;

@@ -43,6 +43,8 @@ export interface Item {
   stack_id: string | null;
   created_at: string;
   last_viewed_at: string | null;
+  /** Cosine similarity, present only on rows returned by the match_* RPCs. */
+  similarity?: number;
 }
 
 export interface Stack {
