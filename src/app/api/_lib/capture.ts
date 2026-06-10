@@ -151,7 +151,7 @@ const TECH_SNIFF = `((extraBlob) => {
   const inBundle = (re) => re.test(blob);
 
   // app frameworks
-  if (w.__NEXT_DATA__ || document.getElementById("__next")) t.add("Next.js");
+  if (w.__NEXT_DATA__ || w.__next_f || (w.next && w.next.version) || document.getElementById("__next")) t.add("Next.js");
   else if (w.__NUXT__ || document.getElementById("__nuxt")) t.add("Nuxt");
   else if (document.getElementById("___gatsby")) t.add("Gatsby");
   if (document.querySelector("astro-island") || gen.includes("astro")) t.add("Astro");
@@ -210,14 +210,22 @@ const TECH_SNIFF = `((extraBlob) => {
   if (has(/player\\.vimeo\\.com/)) t.add("Vimeo Player");
   if (has(/mux\\.com/) || document.querySelector("mux-player")) t.add("Mux");
 
-  // styling heuristic
+  // styling: Tailwind always leaves --tw- custom properties in its compiled CSS
+  let css = "";
+  for (const st of document.querySelectorAll("style")) { css += (st.textContent || "").slice(0, 80000); if (css.length > 250000) break; }
+  try {
+    for (const sh of document.styleSheets) {
+      if (css.length > 250000) break;
+      try { for (const r of sh.cssRules) { css += r.cssText; if (css.length > 250000) break; } } catch {}
+    }
+  } catch {}
   let cls = "";
   let n = 0;
   for (const e of document.querySelectorAll("body [class]")) {
     if (++n > 300) break;
     if (typeof e.className === "string") cls += " " + e.className;
   }
-  if (/(^|\\s)(sm:|md:|lg:|xl:)[a-z-]/.test(cls)) t.add("Tailwind CSS");
+  if (/--tw-/.test(css) || /(^|\\s)(sm:|md:|lg:|xl:)[a-z-]/.test(cls)) t.add("Tailwind CSS");
 
   return Array.from(t).slice(0, 16);
 })`;
