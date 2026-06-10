@@ -268,17 +268,39 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
             <div>
               <label className="mb-1 block text-[11px] uppercase tracking-wider text-zinc-600">Fonts on this site</label>
               <div className="flex flex-wrap gap-1.5">
-                {item.fonts.map((f) => (
-                  <button
-                    key={f}
-                    onClick={() => navigator.clipboard.writeText(f).catch(() => {})}
-                    title="Click to copy"
-                    className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] text-zinc-300 hover:border-violet-500/50"
-                  >
-                    <span className="mr-1 font-serif italic text-zinc-500">Aa</span>
-                    {f}
-                  </button>
-                ))}
+                {item.fonts.map((f) => {
+                  const [name, provider] = f.split("@");
+                  const enc = encodeURIComponent(name);
+                  const href =
+                    provider === "google"
+                      ? `https://fonts.google.com/specimen/${name.trim().replace(/ /g, "+")}`
+                      : provider === "adobe"
+                      ? `https://fonts.adobe.com/search?query=${enc}`
+                      : provider === "fontshare"
+                      ? `https://www.fontshare.com/search?q=${enc}`
+                      : provider === "myfonts"
+                      ? `https://www.myfonts.com/search?query=${enc}`
+                      : `https://www.google.com/search?q=${encodeURIComponent(`"${name}" typeface font`)}`;
+                  const label =
+                    provider === "google" ? "Google Fonts" :
+                    provider === "adobe" ? "Adobe Fonts" :
+                    provider === "fontshare" ? "Fontshare" :
+                    provider === "myfonts" ? "MyFonts" : "Search the web";
+                  return (
+                    <a
+                      key={f}
+                      href={href}
+                      target="_blank"
+                      rel="noreferrer"
+                      title={`Open in ${label}`}
+                      className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] text-zinc-300 hover:border-violet-500/50 hover:text-violet-200"
+                    >
+                      <span className="mr-1 font-serif italic text-zinc-500">Aa</span>
+                      {name}
+                      <span className="ml-1 text-zinc-600">↗</span>
+                    </a>
+                  );
+                })}
               </div>
             </div>
           )}

@@ -104,7 +104,31 @@ const FONT_SNIFF = `(() => {
   try { document.fonts.forEach((f) => { if (f.status === "loaded") loaded.add(clean(f.family)); }); } catch {}
   const ranked = [...score.entries()].sort((a, b) => b[1] - a[1]).map(([f]) => f);
   for (const f of loaded) if (!ranked.includes(f) && !generic.has(f.toLowerCase()) && !/icon|glyph|symbol|emoji|awesome/i.test(f)) ranked.push(f);
-  return ranked.slice(0, 6);
+
+  // Which library served them? (Google lists families in its CSS URL; others by loader domain.)
+  let res = [];
+  try { res = performance.getEntriesByType("resource").map((r) => r.name); } catch {}
+  const googleFams = new Set();
+  for (const u of res) {
+    const m = /fonts\\.googleapis\\.com\\/css2?\\?(.+)/.exec(u);
+    if (!m) continue;
+    for (const part of decodeURIComponent(m[1]).split("&")) {
+      const f = /^family=([^:;@&]+)/.exec(part.trim());
+      if (f) for (const fam of f[1].split("|")) googleFams.add(fam.replace(/\\+/g, " ").trim().toLowerCase());
+    }
+  }
+  const hasTypekit = res.some((u) => /typekit\\.net|typekit\\.com/.test(u));
+  const hasFontshare = res.some((u) => /fontshare\\.com/.test(u));
+  const hasMyFonts = res.some((u) => /myfonts\\.net|fast\\.fonts\\.net/.test(u));
+  const provider = (f) => {
+    const k = f.toLowerCase();
+    if (googleFams.has(k) || [...googleFams].some((g) => k.startsWith(g))) return "google";
+    if (hasTypekit) return "adobe";
+    if (hasFontshare) return "fontshare";
+    if (hasMyFonts) return "myfonts";
+    return "";
+  };
+  return ranked.slice(0, 6).map((f) => { const p = provider(f); return p ? f + "@" + p : f; });
 })()`;
 
 /** Fingerprint the frameworks / builders / motion libraries actually running on the page. */
