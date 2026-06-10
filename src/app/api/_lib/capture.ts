@@ -334,6 +334,53 @@ export async function chromiumShot(url: string): Promise<Shot> {
   }
 }
 
+/** Browserless metadata sniff from raw HTML — for sites that crash headless Chrome. */
+async function staticSniff(url: string): Promise<{ fonts: string[]; tech: string[] }> {
+  try {
+    const res = await fetch(url, {
+      headers: { "user-agent": UA, accept: "text/html" },
+      redirect: "follow",
+      signal: AbortSignal.timeout(10000),
+    });
+    const html = (await res.text()).slice(0, 900_000);
+    const lower = html.toLowerCase();
+    const has = (re: RegExp) => re.test(lower);
+    const gen = /<meta[^>]+name=["']generator["'][^>]+content=["']([^"']+)/i.exec(html)?.[1]?.toLowerCase() ?? "";
+    const tech: string[] = [];
+    if (has(/__next_f|__next_data__|\/_next\//)) tech.push("Next.js");
+    if (has(/__nuxt/)) tech.push("Nuxt");
+    if (gen.includes("webflow") || has(/data-wf-site/)) tech.push("Webflow");
+    if (gen.includes("framer") || has(/framerusercontent/)) tech.push("Framer");
+    if (gen.includes("wordpress") || has(/wp-content/)) tech.push("WordPress");
+    if (has(/cdn\.shopify/)) tech.push("Shopify");
+    if (gen.includes("squarespace") || has(/squarespace/)) tech.push("Squarespace");
+    if (has(/gsap|greensock/)) tech.push("GSAP");
+    if (has(/scrolltrigger/)) tech.push("GSAP ScrollTrigger");
+    if (has(/lenis/)) tech.push("Lenis");
+    if (has(/locomotive-scroll/)) tech.push("Locomotive Scroll");
+    if (has(/three(\.min)?\.js|three\.module|webglrenderer/)) tech.push("Three.js");
+    if (has(/framer-motion/)) tech.push("Framer Motion");
+    if (has(/lottie/)) tech.push("Lottie");
+    if (has(/swiper/)) tech.push("Swiper");
+    if (has(/--tw-/)) tech.push("Tailwind CSS");
+    tech.push(...hostingFrom(Object.fromEntries(res.headers.entries())));
+    const fonts: string[] = [];
+    for (const u of lower.match(/fonts\.googleapis\.com\/css2?\?[^"'\\]+/g) ?? []) {
+      for (const part of decodeURIComponent(u).split("&")) {
+        const f = /family=([^:;@&]+)/.exec(part.trim());
+        if (f)
+          for (const fam of f[1].split("|")) {
+            const name = fam.replace(/\+/g, " ").trim().replace(/\b\w/g, (c) => c.toUpperCase());
+            if (name) fonts.push(name + "@google");
+          }
+      }
+    }
+    return { fonts: [...new Set(fonts)].slice(0, 6), tech: [...new Set(tech)].slice(0, 16) };
+  } catch {
+    return { fonts: [], tech: [] };
+  }
+}
+
 /** Hosted fallback (no headless browser needed). `capped` keeps the response under proxy limits. */
 async function thumShot(url: string, capped: boolean): Promise<Shot> {
   const opts = capped ? "width/1100/crop/4500/fullpage" : "width/1440/fullpage";
@@ -351,9 +398,14 @@ export async function captureScreenshot(url: string, capped = false): Promise<Sh
     return await chromiumShot(url);
   } catch (e) {
     const carrier = e as { fonts?: string[]; tech?: string[] };
-    const shot = await thumShot(url, capped);
-    if (carrier.fonts?.length) shot.fonts = carrier.fonts;
-    if (carrier.tech?.length) shot.tech = carrier.tech;
+    const [shot, sniffed] = await Promise.all([
+      thumShot(url, capped),
+      carrier.fonts?.length && carrier.tech?.length
+        ? Promise.resolve({ fonts: [], tech: [] })
+        : staticSniff(url),
+    ]);
+    shot.fonts = carrier.fonts?.length ? carrier.fonts : sniffed.fonts;
+    shot.tech = carrier.tech?.length ? carrier.tech : sniffed.tech;
     return shot;
   }
 }
