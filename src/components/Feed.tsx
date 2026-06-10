@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Item, Space } from "@/lib/types";
 import { addFromUrl, discover, markSeen, resurface, signedUrls, type Suggestion } from "@/lib/db";
 import { SkeletonGrid } from "./ui";
+import { ThumbUpIcon, ThumbDownIcon, RefreshIcon, ArrowDownIcon, InboxIcon } from "./icons";
 
 interface Props {
   spaces: Space[];
@@ -193,10 +194,10 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
                   {saving === card.s.url ? "Saving…" : "Save"}
                 </button>
                 <button className={chip} title="More like this" onClick={() => like(card.s)}>
-                  👍
+                  <ThumbUpIcon className="h-3.5 w-3.5" />
                 </button>
                 <button className={chip} title="Not for me" onClick={() => dismiss(card.s)}>
-                  👎
+                  <ThumbDownIcon className="h-3.5 w-3.5" />
                 </button>
               </div>
             </div>
@@ -213,7 +214,7 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
               ) : (
                 <div className="px-4 py-5 text-sm text-zinc-300">{(card.item.content ?? card.item.title ?? "").slice(0, 200)}</div>
               )}
-              <div className="px-3 py-2 text-[11px] text-zinc-200/80">↻ From your library — been a while</div>
+              <div className="px-3 py-2 text-[11px] text-zinc-200/80"><span className="flex items-center gap-1.5"><RefreshIcon className="h-3 w-3" /> From your library — been a while</span></div>
             </button>
           )
         )}
@@ -226,7 +227,7 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
             disabled={loading}
             className="rounded-full border border-white/10 bg-white/[0.03] px-6 py-2.5 text-sm text-zinc-200 hover:border-white/30 disabled:opacity-50"
           >
-            {loading ? "Curating…" : seeds.current.length ? "↓ Find more like what I'm into" : "↓ Find more"}
+            {loading ? "Curating…" : <span className="flex items-center gap-2"><ArrowDownIcon className="h-3.5 w-3.5" />{seeds.current.length ? "Find more like what I'm into" : "Find more"}</span>}
           </button>
         </div>
       )}
@@ -235,7 +236,7 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
         <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center" onClick={() => setPicking(null)}>
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
           <div
-            className="relative z-10 w-full max-w-sm rounded-t-2xl border border-white/10 bg-[#17171c] p-3 sm:rounded-2xl"
+            className="relative z-10 w-full max-w-sm glass-dark rounded-t-2xl p-3 sm:rounded-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="px-2 pb-2 text-xs uppercase tracking-wider text-zinc-500">Save to…</div>
@@ -246,8 +247,10 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
                   onClick={() => save(picking, s.id)}
                   className="w-full rounded-xl px-4 py-2.5 text-left text-sm text-zinc-200 hover:bg-white/10"
                 >
-                  {s.kind === "inbox" ? "📥 " : ""}
-                  {s.name}
+                  <span className="flex items-center gap-1.5">
+                    {s.kind === "inbox" && <InboxIcon className="h-3.5 w-3.5 text-zinc-500" />}
+                    {s.name}
+                  </span>
                 </button>
               ))}
               {inboxId == null && <div className="px-4 py-2 text-xs text-zinc-600">No spaces yet</div>}

@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { PhotoIcon, LinkIcon, CameraIcon, PencilIcon } from "./icons";
+
 interface Props {
   onFiles: (files: File[]) => void;
   onUrl: (url: string) => void;
@@ -36,7 +38,7 @@ export default function AddMenu({ onFiles, onUrl, onCapture, onNote, openTick }:
     close();
   }
 
-  const itemBtn = "w-full rounded-xl px-4 py-3 text-left text-sm text-zinc-200 hover:bg-white/10";
+  const itemBtn = "flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm text-zinc-200 hover:bg-white/10";
 
   return (
     <>
@@ -66,22 +68,22 @@ export default function AddMenu({ onFiles, onUrl, onCapture, onNote, openTick }:
         <div className="fixed inset-0 z-40 flex items-end justify-center sm:items-center" onClick={close}>
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
           <div
-            className="relative z-10 w-full max-w-md rounded-t-2xl border border-white/10 bg-[#17171c]/80 p-3 backdrop-blur-2xl pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:rounded-2xl"
+            className="relative z-10 w-full max-w-md glass-dark rounded-t-2xl p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:rounded-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             {mode === "menu" && (
               <div className="space-y-1">
                 <button className={itemBtn} onClick={() => fileRef.current?.click()}>
-                  🖼️ &nbsp;Photos / files
+                  <PhotoIcon className="h-5 w-5 text-zinc-400" /> Photos / files
                 </button>
                 <button className={itemBtn} onClick={() => setMode("url")}>
-                  🔗 &nbsp;Paste a URL <span className="text-zinc-500">— image or link card</span>
+                  <LinkIcon className="h-5 w-5 text-zinc-400" /><span>Paste a URL <span className="text-zinc-500">— image or link card</span></span>
                 </button>
                 <button className={itemBtn} onClick={() => setMode("capture")}>
-                  📸 &nbsp;Capture a site <span className="text-zinc-500">— full-page screenshot</span>
+                  <CameraIcon className="h-5 w-5 text-zinc-400" /><span>Capture a site <span className="text-zinc-500">— full-page screenshot</span></span>
                 </button>
                 <button className={itemBtn} onClick={() => setMode("note")}>
-                  ✏️ &nbsp;Quick note
+                  <PencilIcon className="h-5 w-5 text-zinc-400" /> Quick note
                 </button>
               </div>
             )}

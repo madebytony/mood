@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import type { Item, Stack } from "@/lib/types";
 import { THUMB_W, THUMB_MAX_H, dominantHex } from "@/lib/media";
+import { StackIcon, LinkIcon } from "./icons";
 
 interface Props {
   items: Item[];
@@ -27,7 +28,7 @@ function StackCard({ stack, thumbs, onOpen }: { stack: Stack; thumbs: string[]; 
     >
       <div className="relative mx-auto aspect-[4/3] w-full">
         {thumbs.length === 0 ? (
-          <div className="grid h-full w-full place-items-center rounded-lg bg-white/5 text-2xl">🗂</div>
+          <div className="grid h-full w-full place-items-center rounded-lg bg-white/5"><StackIcon className="h-8 w-8 text-zinc-600" /></div>
         ) : (
           thumbs.map((t, i) => (
             // eslint-disable-next-line @next/next/no-img-element
@@ -45,7 +46,7 @@ function StackCard({ stack, thumbs, onOpen }: { stack: Stack; thumbs: string[]; 
           ))
         )}
       </div>
-      <div className="mt-2.5 truncate px-1 text-xs font-medium text-zinc-200">🗂 {stack.name}</div>
+      <div className="mt-2.5 truncate px-1 text-xs font-medium text-zinc-200"><span className="flex items-center gap-1.5"><StackIcon className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{stack.name}</span></span></div>
     </button>
   );
 }
@@ -92,7 +93,7 @@ function Card({
         ) : item.type === "note" ? (
           <div className="px-4 py-5 text-sm leading-relaxed text-zinc-300">{(item.content ?? "").slice(0, 280)}</div>
         ) : (
-          <div className="grid aspect-[4/3] w-full place-items-center text-3xl text-zinc-700">🔗</div>
+          <div className="grid aspect-[4/3] w-full place-items-center text-zinc-700"><LinkIcon className="h-7 w-7" /></div>
         )}
 
         {(item.type === "link" || item.type === "site") && (

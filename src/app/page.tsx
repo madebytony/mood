@@ -35,6 +35,7 @@ import {
 } from "@/lib/db";
 import { COLOR_NAMES, COLOR_HEX } from "@/lib/media";
 import type { Item, Library, Space, Stack } from "@/lib/types";
+import { SparklesIcon, HomeIcon, GridIcon, BoardIcon, MenuIcon, PlusIcon, GlobeIcon, StackIcon, UnstackIcon } from "@/components/icons";
 
 function safeHost(url: string): string {
   try {
@@ -234,7 +235,7 @@ function App() {
     async (url: string) => {
       if (!targetSpace) return toast("No space to save into yet", "error");
       if (!/^https?:\/\//i.test(url)) return toast("That doesn't look like a URL", "error");
-      const done = trackPending(`📸 ${safeHost(url)} — capturing…`);
+      const done = trackPending(`${safeHost(url)} — capturing…`);
       try {
         const item = await captureSite(url, targetSpace);
         afterAdd(item);
@@ -512,7 +513,7 @@ function App() {
               className="rounded-lg border border-white/10 px-2.5 py-1 text-[11px] text-zinc-400 hover:border-white/30 hover:text-zinc-200"
               title="Toggle grid / board"
             >
-              {showBoard ? "⊞ Grid" : "⬚ Board"}
+              <span className="flex items-center gap-1.5">{showBoard ? <GridIcon className="h-3.5 w-3.5" /> : <BoardIcon className="h-3.5 w-3.5" />}{showBoard ? "Grid" : "Board"}</span>
             </button>
           )}
           {selected !== "home" && (
@@ -530,7 +531,7 @@ function App() {
                 title="AI search — understands meaning, not just words"
                 className="shrink-0 rounded-xl border border-white/10 px-3 py-2 text-sm text-zinc-200 hover:border-white/30 disabled:opacity-40"
               >
-                {aiBusy ? "…" : "✨"}
+                {aiBusy ? "…" : <SparklesIcon className="h-4 w-4" />}
               </button>
             </div>
           )}
@@ -600,7 +601,7 @@ function App() {
                     onClick={() => setSimilarQuery(search.trim())}
                     className="mx-auto block rounded-full border border-white/10 bg-white/[0.03] px-5 py-2.5 text-xs text-zinc-200 hover:border-white/30"
                   >
-                    🌐 Search the web for “{search.trim()}”
+                    <span className="flex items-center justify-center gap-2"><GlobeIcon className="h-4 w-4" /> Search the web for “{search.trim()}”</span>
                   </button>
                 </div>
               )}
@@ -615,16 +616,16 @@ function App() {
       <nav className="fixed inset-x-0 bottom-0 z-30 flex items-stretch border-t border-white/10 bg-[#0f0f12]/65 pb-[env(safe-area-inset-bottom)] backdrop-blur-2xl backdrop-saturate-150 md:hidden">
         {(
           [
-            { key: "home", icon: "✨", label: "Home", fn: () => { setSelected("home"); setColorFilter(null); } },
-            { key: "all", icon: "▦", label: "All", fn: () => { setSelected("all"); setColorFilter(null); } },
-            { key: "add", icon: "+", label: "Add", fn: () => setAddTick((t) => t + 1) },
-            { key: "spaces", icon: "☰", label: "Spaces", fn: () => setSidebarOpen(true) },
+            { key: "home", icon: <HomeIcon className="h-5 w-5" />, label: "Home", fn: () => { setSelected("home"); setColorFilter(null); } },
+            { key: "all", icon: <GridIcon className="h-5 w-5" />, label: "All", fn: () => { setSelected("all"); setColorFilter(null); } },
+            { key: "add", icon: null, label: "Add", fn: () => setAddTick((t) => t + 1) },
+            { key: "spaces", icon: <MenuIcon className="h-5 w-5" />, label: "Spaces", fn: () => setSidebarOpen(true) },
           ] as const
         ).map((t) =>
           t.key === "add" ? (
             <button key={t.key} onClick={t.fn} className="flex flex-1 items-center justify-center py-1.5" title="Add to Mood">
-              <span className="grid h-9 w-9 place-items-center rounded-full bg-white text-xl leading-none text-black shadow-lg shadow-black/50 active:scale-95">
-                +
+              <span className="grid h-9 w-9 place-items-center rounded-full bg-white text-black shadow-lg shadow-black/50 active:scale-95">
+                <PlusIcon className="h-5 w-5" />
               </span>
             </button>
           ) : (
@@ -635,7 +636,7 @@ function App() {
                 selected === t.key ? "text-zinc-200" : "text-zinc-500 active:text-zinc-300"
               }`}
             >
-              <span className="text-base leading-none">{t.icon}</span>
+              <span className="leading-none">{t.icon}</span>
               {t.label}
             </button>
           )
@@ -664,7 +665,7 @@ function App() {
         <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center" onClick={() => setFiling(null)}>
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
           <div
-            className="relative z-10 w-full max-w-sm rounded-t-2xl border border-white/10 bg-[#17171c]/80 p-3 backdrop-blur-2xl sm:rounded-2xl"
+            className="relative z-10 w-full max-w-sm glass-dark rounded-t-2xl p-3 sm:rounded-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="px-2 pb-2 text-xs uppercase tracking-wider text-zinc-500">File to…</div>
@@ -684,13 +685,13 @@ function App() {
       )}
 
       {selIds.size > 0 && (
-        <div className="rise-in fixed bottom-20 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/10 bg-[#17171b]/70 px-4 py-2.5 shadow-xl backdrop-blur-2xl backdrop-saturate-150 md:bottom-6">
+        <div className="rise-in fixed bottom-20 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 glass rounded-full px-4 py-2.5 md:bottom-6">
           <span className="text-xs text-zinc-400">{selIds.size} selected</span>
           <button
             onClick={makeStack}
             className="rounded-full bg-white px-4 py-1.5 text-xs font-medium text-black hover:bg-zinc-200"
           >
-            🗂 Stack
+            <span className="flex items-center gap-1.5"><StackIcon className="h-4 w-4" /> Stack</span>
           </button>
           <button onClick={() => setSelIds(new Set())} className="px-2 text-xs text-zinc-500 hover:text-zinc-200">
             Clear
@@ -702,7 +703,7 @@ function App() {
         <div className="fixed inset-0 z-40 flex" onClick={() => setSimilarQuery(null)}>
           <div className="absolute inset-0 bg-black/75 backdrop-blur-sm" />
           <div
-            className="relative z-10 m-auto flex h-[90dvh] w-[min(1280px,96vw)] flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#101013]/80 shadow-2xl backdrop-blur-2xl"
+            className="relative z-10 m-auto flex h-[90dvh] w-[min(1280px,96vw)] flex-col overflow-hidden glass-dark rounded-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
@@ -739,7 +740,7 @@ function App() {
         <div className="fixed inset-0 z-40 flex" onClick={() => setStackView(null)}>
           <div className="absolute inset-0 bg-black/75 backdrop-blur-sm" />
           <div
-            className="relative z-10 m-auto flex max-h-[88dvh] w-[min(980px,96vw)] flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#101013]/80 shadow-2xl backdrop-blur-2xl"
+            className="relative z-10 m-auto flex max-h-[88dvh] w-[min(980px,96vw)] flex-col overflow-hidden glass-dark rounded-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between gap-3 border-b border-white/5 px-5 py-3">
@@ -787,7 +788,7 @@ function App() {
                       title="Remove from stack"
                       className="absolute right-1.5 top-1.5 hidden rounded-full bg-black/60 px-2 py-0.5 text-[10px] text-white backdrop-blur hover:bg-white hover:text-black group-hover:block"
                     >
-                      ↩ unstack
+                      <span className="flex items-center gap-1"><UnstackIcon className="h-3 w-3" /> unstack</span>
                     </button>
                   </div>
                 ))}
@@ -799,7 +800,7 @@ function App() {
 
       {dragging && (
         <div className="pointer-events-none fixed inset-0 z-50 grid place-items-center border-4 border-dashed border-white/40 bg-white/10">
-          <div className="rounded-2xl bg-[#17171c]/80 px-6 py-4 backdrop-blur-xl text-sm text-zinc-200 shadow-xl">
+          <div className="glass rounded-2xl px-6 py-4 text-sm text-zinc-100">
             Drop to add to{" "}
             <span className="font-semibold text-zinc-200">{currentSpace?.name ?? "Inbox"}</span>
           </div>
@@ -811,7 +812,7 @@ function App() {
           <div
             key={t.id}
             className={`rise-in pointer-events-auto flex items-center gap-3 rounded-full px-4 py-2 text-xs shadow-lg ${
-              t.kind === "error" ? "border border-red-400/20 bg-red-950/80 text-red-200 backdrop-blur-xl" : "border border-white/10 bg-[#1b1b20]/75 text-zinc-100 backdrop-blur-xl"
+              t.kind === "error" ? "border border-red-400/20 bg-red-950/80 text-red-200 backdrop-blur-xl" : "glass text-zinc-100"
             }`}
           >
             {t.text}

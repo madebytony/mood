@@ -73,7 +73,7 @@ export function DialogHost() {
     <div className="fixed inset-0 z-[70] flex items-end justify-center sm:items-center" onClick={cancel}>
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
       <div
-        className="card-in relative z-10 w-full max-w-sm rounded-t-2xl border border-white/10 bg-[#17171c]/80 p-5 shadow-2xl backdrop-blur-2xl pb-[max(1.25rem,env(safe-area-inset-bottom))] sm:rounded-2xl sm:pb-5"
+        className="card-in relative z-10 w-full max-w-sm glass-dark rounded-t-2xl p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] sm:rounded-2xl sm:pb-5"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
           if (e.key === "Enter") confirm();

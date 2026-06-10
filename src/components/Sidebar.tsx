@@ -6,6 +6,7 @@ import type { Library, Space } from "@/lib/types";
 import { createLibrary, createSpace, renameSpace, deleteSpace } from "@/lib/db";
 import { supabase, authToken } from "@/lib/supabase";
 import { ask, confirmDialog, notice } from "./ui";
+import { SparklesIcon, InboxIcon, PhoneIcon } from "./icons";
 
 interface Props {
   libraries: Library[];
@@ -104,7 +105,9 @@ export default function Sidebar({ libraries, spaces, selected, counts, onSelect,
 
       <div className="no-scrollbar flex-1 overflow-y-auto px-2 pb-4">
         <button className={row(selected === "home")} onClick={() => onSelect("home")}>
-          <span>✨ Home</span>
+          <span className="flex items-center gap-2">
+            <SparklesIcon className="h-4 w-4" /> Home
+          </span>
           <span className="text-[10px] text-zinc-700">feed</span>
         </button>
         <button className={row(selected === "all")} onClick={() => onSelect("all")}>
@@ -146,8 +149,10 @@ export default function Sidebar({ libraries, spaces, selected, counts, onSelect,
                         setRenameVal(s.name);
                       }}
                     >
-                      {s.kind === "inbox" ? "📥 " : ""}
-                      {s.name}
+                      <span className="flex items-center gap-1.5">
+                        {s.kind === "inbox" && <InboxIcon className="h-3.5 w-3.5 shrink-0 text-zinc-500" />}
+                        <span className="truncate">{s.name}</span>
+                      </span>
                     </button>
                   )}
                   <span className="flex items-center gap-1">
@@ -181,7 +186,10 @@ export default function Sidebar({ libraries, spaces, selected, counts, onSelect,
           disabled={qrBusy}
           className="w-full rounded-lg px-3 py-1.5 text-left text-xs text-zinc-400 hover:text-zinc-200 disabled:opacity-50"
         >
-          {qrBusy ? "Creating link…" : "📱 Sign in on phone"}
+          <span className="flex items-center gap-2">
+            <PhoneIcon className="h-3.5 w-3.5" />
+            {qrBusy ? "Creating link…" : "Sign in on phone"}
+          </span>
         </button>
         <button
           onClick={() => supabase.auth.signOut()}
@@ -195,7 +203,7 @@ export default function Sidebar({ libraries, spaces, selected, counts, onSelect,
         <div className="fixed inset-0 z-50 grid place-items-center" onClick={() => setQr(null)}>
           <div className="absolute inset-0 bg-black/75 backdrop-blur-sm" />
           <div
-            className="relative z-10 w-[min(360px,92vw)] rounded-2xl border border-white/10 bg-[#141418]/85 p-5 shadow-2xl backdrop-blur-2xl text-center"
+            className="relative z-10 w-[min(360px,92vw)] glass-dark rounded-2xl p-5 text-center"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-1 text-sm font-medium text-zinc-200">Sign in on your phone</div>

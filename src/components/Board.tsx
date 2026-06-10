@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Item, Stack } from "@/lib/types";
 import { updateItem, updateStack } from "@/lib/db";
+import { StackIcon, SparklesIcon } from "./icons";
 
 interface Props {
   items: Item[];
@@ -327,7 +328,7 @@ export default function Board({ items, urls, onOpen, stacks = [], stackThumbs, o
                 <div className="relative h-full w-full p-3">
                   <div className="relative h-[calc(100%-1.6rem)] w-full">
                     {fan.length === 0 ? (
-                      <div className="grid h-full w-full place-items-center rounded-lg bg-white/5 text-2xl">🗂</div>
+                      <div className="grid h-full w-full place-items-center rounded-lg bg-white/5"><StackIcon className="h-8 w-8 text-zinc-600" /></div>
                     ) : (
                       fan.map((t, i) => (
                         // eslint-disable-next-line @next/next/no-img-element
@@ -346,7 +347,7 @@ export default function Board({ items, urls, onOpen, stacks = [], stackThumbs, o
                       ))
                     )}
                   </div>
-                  <div className="mt-1.5 truncate text-center text-[11px] font-medium text-zinc-200">🗂 {stack.name}</div>
+                  <div className="mt-1.5 truncate text-center text-[11px] font-medium text-zinc-200"><span className="flex items-center justify-center gap-1.5"><StackIcon className="h-3.5 w-3.5" /> {stack.name}</span></div>
                 </div>
               ) : thumb ? (
                 // eslint-disable-next-line @next/next/no-img-element
@@ -374,7 +375,7 @@ export default function Board({ items, urls, onOpen, stacks = [], stackThumbs, o
           onClick={tidy}
           className="rounded-full border border-white/10 bg-[#1b1b21]/65 px-4 py-2 text-xs text-zinc-200 backdrop-blur-xl hover:border-white/30"
         >
-          ✨ Tidy
+          <span className="flex items-center gap-1.5"><SparklesIcon className="h-3.5 w-3.5" /> Tidy</span>
         </button>
         <button
           onClick={() => {

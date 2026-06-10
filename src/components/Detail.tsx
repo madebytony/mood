@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Item, Space } from "@/lib/types";
 import { signedUrls, touchViewed, updateItem } from "@/lib/db";
 import { notice } from "./ui";
+import { SparklesIcon, XIcon, ChevronLeftIcon, ChevronRightIcon } from "./icons";
 
 interface Props {
   item: Item;
@@ -144,7 +145,7 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
           onClick={onClose}
           className="fixed right-3 top-3 z-30 grid h-9 w-9 place-items-center rounded-full bg-black/60 text-white backdrop-blur md:hidden"
         >
-          ✕
+          <XIcon className="h-4 w-4" />
         </button>
         <div
           className="group/nav relative flex shrink-0 flex-col bg-black/40 md:min-h-[60dvh] md:flex-1 md:shrink md:overflow-hidden"
@@ -157,7 +158,7 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
               title="Previous (←)"
               className="absolute left-3 top-1/2 z-20 hidden h-10 w-10 -translate-y-1/2 place-items-center rounded-full bg-black/50 text-lg text-white opacity-0 backdrop-blur transition-opacity hover:bg-black/70 group-hover/nav:opacity-100 md:grid"
             >
-              ‹
+              <ChevronLeftIcon className="h-5 w-5" />
             </button>
           )}
           {nextItem && (
@@ -166,7 +167,7 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
               title="Next (→)"
               className="absolute right-3 top-1/2 z-20 hidden h-10 w-10 -translate-y-1/2 place-items-center rounded-full bg-black/50 text-lg text-white opacity-0 backdrop-blur transition-opacity hover:bg-black/70 group-hover/nav:opacity-100 md:grid"
             >
-              ›
+              <ChevronRightIcon className="h-5 w-5" />
             </button>
           )}
           <div className={`md:flex-1 ${scrollMode ? "md:overflow-y-auto" : "md:grid md:place-items-center md:overflow-hidden"}`}>
@@ -243,7 +244,7 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
             <span className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] uppercase tracking-wider text-zinc-500">
               {item.type}
             </span>
-            <button onClick={onClose} className="text-zinc-500 hover:text-zinc-200">✕</button>
+            <button onClick={onClose} className="text-zinc-500 hover:text-zinc-200"><XIcon className="h-4 w-4" /></button>
           </div>
 
           <div>
@@ -260,7 +261,7 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
 
           {item.ai_caption && (
             <div className="rounded-lg border border-white/5 bg-white/[0.03] px-3 py-2 text-xs leading-relaxed text-zinc-400">
-              ✨ {item.ai_caption}
+              <span className="flex gap-2"><SparklesIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" /><span>{item.ai_caption}</span></span>
             </div>
           )}
 
