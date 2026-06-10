@@ -275,14 +275,18 @@ export async function chromiumShot(url: string): Promise<Shot> {
     });
 
     const resp = await page.goto(url, { waitUntil: "networkidle2", timeout: 35000 }).catch(() => null);
-    await page.evaluate(LAZY_SCROLL).catch(() => {});
-    await page.evaluate(CLEAN_PAGE).catch(() => {});
+
+    // Sniff fonts + tech FIRST — scrolling can crash heavy WebGL pages under software
+    // rendering, and we want the metadata even if the screenshot later falls back.
     fonts = (await page.evaluate(FONT_SNIFF).catch(() => [])) as string[];
     const bundleBlob = jsBlobs.join("\n").slice(0, 2_500_000);
     const pageTech = (await page
       .evaluate(`(${TECH_SNIFF})(${JSON.stringify(bundleBlob)})`)
       .catch(() => [])) as string[];
     tech = [...new Set([...pageTech, ...hostingFrom(resp?.headers() ?? {})])];
+
+    await page.evaluate(LAZY_SCROLL).catch(() => {});
+    await page.evaluate(CLEAN_PAGE).catch(() => {});
     await new Promise((r) => setTimeout(r, 350));
     const height = Math.min(
       await page.evaluate("document.body.scrollHeight").then((h) => Number(h) || 960),
