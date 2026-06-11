@@ -873,7 +873,8 @@ export async function corpusSimilar(
   spaceId: string | null,
   count = 24,
   excludeDomains: string[] = [],
-  itemId?: string | null
+  itemId?: string | null,
+  minSimOverride?: number
 ): Promise<Suggestion[]> {
   try {
     let queryVec: unknown = null;
@@ -896,6 +897,7 @@ export async function corpusSimilar(
       });
       if (res.ok) queryVec = (await res.json()).embedding ?? null;
     }
+    if (minSimOverride !== undefined) minSim = minSimOverride;
     if (!queryVec) return [];
     const { data, error } = await supabase.rpc("match_corpus", {
       p_query: queryVec,
@@ -931,26 +933,36 @@ export async function discover(query: string | null, extraExclude: string[] = []
   ]);
   const exclude = [...extraExclude, ...domains, ...seen].slice(0, 400);
 
-  // Corpus first: retrieval over the owned index is instant and deterministic. The live
-  // pipeline below only runs when the index can't fill the request (cold corpus / exhausted
-  // by "Find more"). Type mode keeps its dedicated foundry pipeline.
+  // Corpus retrieval: instant vector hits over the owned index. When a reference image
+  // exists they become CANDIDATES for the server's visual judge (graded 0-10 against the
+  // reference — retrieval proposes, grading decides). Without a reference image there's
+  // nothing to grade against, so confident corpus hits return directly. Type mode keeps
+  // its dedicated foundry pipeline.
+  const graded = !!imageUrl && !!query;
   let corpus: Suggestion[] = [];
   if (mode !== "type") {
     const excludeDomains = [...new Set([...exclude.map(toDomain), ...domains])].filter(Boolean);
-    corpus = await corpusSimilar(query, tasteSpaceId ?? null, 24, excludeDomains, similarToItemId);
-    if (corpus.length >= 10) return corpus;
+    // grading filters junk itself, so feed it a wider, lower-floor candidate set
+    corpus = await corpusSimilar(query, tasteSpaceId ?? null, 24, excludeDomains, similarToItemId, graded ? 0.25 : undefined);
+    if (!graded && corpus.length >= 10) return corpus;
   }
 
-  const params = new URLSearchParams();
-  if (query) params.set("q", query);
-  if (mode) params.set("mode", mode);
-  if (imageUrl) params.set("img", imageUrl);
-  if (taste.length) params.set("taste", taste.join(","));
-  if (exclude.length) params.set("exclude", exclude.join(","));
-  const res = await apiFetch(`/api/discover?${params}`);
+  const res = await apiFetch("/api/discover", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      q: query || undefined,
+      mode,
+      img: imageUrl || undefined,
+      taste,
+      exclude,
+      candidates: graded ? corpus : [],
+    }),
+  });
   if (!res.ok) throw new Error("Discover failed");
   const { items } = await res.json();
   const fromApi = (items ?? []) as Suggestion[];
+  if (graded) return fromApi; // corpus candidates were judged server-side — already included or cut
   const have = new Set(corpus.map((c) => c.domain));
   return [...corpus, ...fromApi.filter((i) => !have.has(i.domain))];
 }

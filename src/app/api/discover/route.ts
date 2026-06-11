@@ -391,14 +391,15 @@ async function visualRank(
   pool: Suggestion[],
   exclude: Set<string>,
 ): Promise<Suggestion[] | null> {
-  // Dedupe by domain, drop excluded; aesthetic-searched web/gallery-mined results get priority
-  // slots, the broad gallery/Are.na pool is shuffled in for breadth ("Find more" stays fresh).
+  // Dedupe by domain, drop excluded; corpus-retrieved (index/*) and aesthetic-searched web
+  // results get priority slots, the broad gallery/Are.na pool is shuffled in for breadth
+  // ("Find more" stays fresh).
   const seen = new Set<string>();
   const web: Suggestion[] = [], rest: Suggestion[] = [];
   for (const c of pool) {
     if (exclude.has(c.domain) || exclude.has(c.url) || seen.has(c.domain)) continue;
     seen.add(c.domain);
-    (c.source === "web" ? web : rest).push(c);
+    (c.source === "web" || c.source.startsWith("index/") ? web : rest).push(c);
   }
   for (let i = rest.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [rest[i], rest[j]] = [rest[j], rest[i]]; }
   const picked = [...web.slice(0, 14), ...rest].slice(0, 36);
@@ -576,16 +577,59 @@ async function enrich(items: Suggestion[]): Promise<Suggestion[]> {
 
 /* ---------------- route ---------------- */
 
+interface RunOpts {
+  query: string | null;
+  mode: string | null;
+  img: string | null;
+  taste: string[];
+  exclude: Set<string>;
+  /** Pre-retrieved corpus candidates (client-side vector hits) — they join the judge pool
+   *  so every suggestion shown is GRADED against the reference, never raw cosine. */
+  candidates: Suggestion[];
+}
+
 export async function GET(req: Request) {
   if (!(await isAuthed(req))) return Response.json({ error: "unauthorized" }, { status: 401 });
-  let query: string | null = null;
-  try {
   const sp = new URL(req.url).searchParams;
-  query = sp.get("q");
-  const mode = sp.get("mode"); // "type" for typography discovery
-  const img = sp.get("img"); // reference image URL for multimodal "more like this"
-  const taste = (sp.get("taste") ?? "").split(",").map((t) => t.trim()).filter(Boolean).slice(0, 30);
-  const exclude = new Set((sp.get("exclude") ?? "").split(",").map((d) => d.trim()).filter(Boolean));
+  return run({
+    query: sp.get("q"),
+    mode: sp.get("mode"),
+    img: sp.get("img"),
+    taste: (sp.get("taste") ?? "").split(",").map((t) => t.trim()).filter(Boolean).slice(0, 30),
+    exclude: new Set((sp.get("exclude") ?? "").split(",").map((d) => d.trim()).filter(Boolean)),
+    candidates: [],
+  });
+}
+
+/** POST variant: same engine, JSON body — used when the client has corpus candidates to
+ *  contribute (too many/too long for a query string). */
+export async function POST(req: Request) {
+  if (!(await isAuthed(req))) return Response.json({ error: "unauthorized" }, { status: 401 });
+  const body = await req.json().catch(() => ({}));
+  const rawCands = Array.isArray(body.candidates) ? body.candidates.slice(0, 30) : [];
+  return run({
+    query: typeof body.q === "string" && body.q ? body.q : null,
+    mode: typeof body.mode === "string" ? body.mode : null,
+    img: typeof body.img === "string" && body.img ? body.img : null,
+    taste: Array.isArray(body.taste) ? body.taste.map(String).slice(0, 30) : [],
+    exclude: new Set(Array.isArray(body.exclude) ? body.exclude.map(String) : []),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    candidates: rawCands.flatMap((c: any) => {
+      if (typeof c?.url !== "string" || typeof c?.domain !== "string") return [];
+      return [{
+        url: c.url,
+        domain: c.domain,
+        title: typeof c.title === "string" ? c.title : null,
+        image: typeof c.image === "string" ? c.image : null,
+        source: typeof c.source === "string" ? c.source : "index",
+        blurb: typeof c.blurb === "string" ? c.blurb : null,
+      } satisfies Suggestion];
+    }),
+  });
+}
+
+async function run({ query, mode, img, taste, exclude, candidates }: RunOpts): Promise<Response> {
+  try {
 
   let cands: Suggestion[];
   let visuallyRanked = false;
@@ -613,12 +657,14 @@ export async function GET(req: Request) {
         arena().catch(() => [] as Suggestion[]),
         aggregate().catch(() => [] as Suggestion[]),
       ]);
-      const ranked = await visualRank(refImage, [...mined, ...web, ...agg, ...arn], exclude);
+      // Corpus candidates lead the pool: they're already taste-near by vector, so the judge
+      // spends its scores on plausible matches first.
+      const ranked = await visualRank(refImage, [...candidates, ...mined, ...web, ...agg, ...arn], exclude);
       if (ranked && ranked.length) { cands = ranked; visuallyRanked = true; }
-      else cands = [...mined, ...web]; // judging unavailable — fall back to the text-ranked path
+      else cands = [...candidates, ...mined, ...web]; // judging unavailable — fall back to the text-ranked path
     } else {
       // No reference image -> the query is a typed brief; a named sector is intentional.
-      cands = await webSearch(searchQuery, !img);
+      cands = [...candidates, ...await webSearch(searchQuery, !img)];
     }
   } else {
     // Discover endless feed: general inspiration — curated Are.na channels + gallery pool
