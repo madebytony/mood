@@ -1,7 +1,7 @@
 import { isAuthed } from "../_lib/auth";
 import { gemini, geminiDisabled, geminiText, hasGeminiKey, parseJson } from "../_lib/gemini";
 
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -331,6 +331,105 @@ async function describeAesthetic(image: { inlineData: { mimeType: string; data: 
   } catch { return null; }
 }
 
+/* ---------------- visual re-rank: judge candidates against the reference pixels ---------------- */
+
+const MSHOT = (u: string) => `https://s.wordpress.com/mshots/v1/${encodeURIComponent(u)}?w=480`;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Fetch a candidate's preview (its own gallery/Are.na screenshot, else an mShots capture) as an
+ *  inline image. mShots serves a tiny placeholder while a fresh capture renders — poll briefly. */
+async function candidateImage(c: Suggestion): Promise<{ mimeType: string; data: string } | null> {
+  const isShot = !c.image;
+  const src = c.image ?? MSHOT(c.url);
+  for (let i = 0; i < (isShot ? 3 : 1); i++) {
+    if (i) await sleep(2200);
+    try {
+      const r = await fetch(src, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(9000) });
+      if (!r.ok) continue;
+      const mimeType = (r.headers.get("content-type") ?? "").split(";")[0];
+      if (!mimeType.startsWith("image/")) return null;
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (buf.byteLength > 600_000) return null; // keep the judge request bounded
+      if (isShot && buf.byteLength < 8_000) continue; // mShots "generating" placeholder
+      if (buf.byteLength < 2_000) return null; // tracking pixel / broken image
+      return { mimeType, data: buf.toString("base64") };
+    } catch { /* retry */ }
+  }
+  return null;
+}
+
+interface JudgedCandidate { c: Suggestion; score: number; why: string | null }
+
+/** Judge one batch of candidates (image each) against the reference. */
+async function judgeBatch(
+  refImage: { inlineData: { mimeType: string; data: string } },
+  batch: { c: Suggestion; img: { mimeType: string; data: string } }[],
+): Promise<JudgedCandidate[]> {
+  const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [
+    { text: "REFERENCE design (the look to match):" },
+    refImage,
+  ];
+  batch.forEach((x, i) => { parts.push({ text: `CANDIDATE ${i}:` }); parts.push({ inlineData: x.img }); });
+  parts.push({ text: `You are judging VISUAL design similarity for a designer's moodboard. For each CANDIDATE, score 0-10 for how closely its DESIGN matches the REFERENCE: colour palette (warmth, saturation, lightness), mood/atmosphere, typography style, layout/composition. IGNORE subject matter entirely — judge only how it looks. Be harsh: 8-10 near-identical aesthetic, 5-7 clearly the same family, 0-4 different. Reply JSON only: [{"i":<candidate index>,"score":<0-10>,"why":"<reason, max 8 words>"}]` });
+  const res = await gemini({
+    contents: [{ role: "user", parts }],
+    generationConfig: { maxOutputTokens: 1500, responseMimeType: "application/json" },
+  });
+  const scores = JSON.parse(geminiText(res)) as { i: number; score: number; why?: string }[];
+  if (!Array.isArray(scores)) return [];
+  return scores
+    .filter((s) => Number.isInteger(s.i) && batch[s.i])
+    .map((s) => ({ c: batch[s.i].c, score: typeof s.score === "number" ? s.score : 0, why: s.why ?? null }));
+}
+
+/** The step that makes "similar" genuinely visual: screenshot every candidate and have the vision
+ *  model score it against the reference image — only confirmed look-matches survive. Judges in
+ *  batches, widening into the pool until enough matches are found. Returns null when judging
+ *  isn't possible so the caller can fall back to the text-ranked path. */
+async function visualRank(
+  refImage: { inlineData: { mimeType: string; data: string } },
+  pool: Suggestion[],
+  exclude: Set<string>,
+): Promise<Suggestion[] | null> {
+  // Dedupe by domain, drop excluded; aesthetic-searched web/gallery-mined results get priority
+  // slots, the broad gallery/Are.na pool is shuffled in for breadth ("Find more" stays fresh).
+  const seen = new Set<string>();
+  const web: Suggestion[] = [], rest: Suggestion[] = [];
+  for (const c of pool) {
+    if (exclude.has(c.domain) || exclude.has(c.url) || seen.has(c.domain)) continue;
+    seen.add(c.domain);
+    (c.source === "web" ? web : rest).push(c);
+  }
+  for (let i = rest.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [rest[i], rest[j]] = [rest[j], rest[i]]; }
+  const picked = [...web.slice(0, 14), ...rest].slice(0, 36);
+  if (!picked.length) return null;
+
+  const fetched = await Promise.all(picked.map(async (c) => ({ c, img: await candidateImage(c) })));
+  const withImg = fetched.filter((x): x is { c: Suggestion; img: { mimeType: string; data: string } } => !!x.img);
+  if (withImg.length < 3) return null;
+
+  // Judge in batches of 18; stop early once enough genuine matches have survived.
+  const judged: JudgedCandidate[] = [];
+  try {
+    for (let i = 0; i < withImg.length && i < 36; i += 18) {
+      judged.push(...await judgeBatch(refImage, withImg.slice(i, i + 18)));
+      if (judged.filter((j) => j.score >= 5).length >= 6) break;
+    }
+  } catch { /* fall through with whatever was judged */ }
+  if (!judged.length) return null;
+  judged.sort((a, b) => b.score - a.score);
+
+  let kept = judged.filter((j) => j.score >= 5);
+  if (kept.length < 4) kept = judged.filter((j) => j.score >= 3).slice(0, 6); // thin pool — near-misses only
+  if (!kept.length) return null; // nothing genuinely close — let the text path try instead
+  return kept.map((j) => ({
+    ...j.c,
+    // pin the preview to the exact image that was judged, so what you see is what matched
+    image: j.c.image ?? MSHOT(j.c.url),
+    blurb: j.why ? `${j.why} — ${j.score}/10 visual match` : j.c.blurb ?? null,
+  }));
+}
+
 async function webSearch(query: string): Promise<Suggestion[]> {
   try {
     const intro = `A designer is hunting for visual web-design inspiration. Their brief describes an AESTHETIC, not a product category: "${query}".\n\nWeight the COLOUR PALETTE and overall MOOD most heavily. If the brief mentions photographic subject/content (a person, place, object, scene), treat that as INCIDENTAL — match the look, palette and feel, never the literal subject. (e.g. a warm yellow moody site of a man writing → return other warm, moody, yellow-toned sites, not sites about writers or poetry.)`;
@@ -350,6 +449,41 @@ async function webSearch(query: string): Promise<Suggestion[]> {
         return [{ url: r.url, title: r.title ?? null, image: null, domain, source: "web", blurb: r.blurb ?? null }];
       } catch { return []; }
     });
+  } catch {
+    return [];
+  }
+}
+
+/** Second sourcing angle: design galleries tag their entries with aesthetic labels ("warm",
+ *  "beige", "serif", "editorial"), making them the one place an aesthetic is searchable TEXT.
+ *  Mine gallery detail pages matching the look, then resolve each to the featured site itself
+ *  via enrich() — which also picks up the gallery's screenshot for the visual judge. */
+async function galleryMine(aesthetic: string): Promise<Suggestion[]> {
+  try {
+    const res = await gemini({
+      tools: [{ google_search: {} }],
+      contents: [{
+        role: "user",
+        parts: [{ text: `Search Google for pages on web-design galleries (siteinspire.com, minimal.gallery, godly.website, land-book.com, httpster.net, curated.design, awwwards.com) that feature websites matching this aesthetic: "${aesthetic}".\n\nUse queries like "siteinspire warm beige editorial serif" — gallery tag and detail pages describe the featured site's look in words. Return the gallery DETAIL-PAGE URLs you find (one per featured site, not tag-listing pages or the gallery home).\n\nReply with JSON only (no markdown): [{"url": "...", "title": "<featured site's name if visible>"}] with up to 10 results.` }],
+      }],
+      generationConfig: { maxOutputTokens: 1500 },
+    });
+    const arr = parseJson(geminiText(res));
+    if (!Array.isArray(arr)) return [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const raw = arr.flatMap((r: any) => {
+      try {
+        const u = new URL(r.url);
+        const host = u.hostname;
+        if (!GALLERY_HOSTS.has(host) && !GALLERY_HOSTS.has(host.replace(/^www\./, ""))) return [];
+        if (u.pathname === "/" || NAV_PATH_RE.test(u.pathname)) return [];
+        return [{ url: r.url, title: r.title ?? null, image: null, domain: host.replace(/^www\./, ""), source: "web", blurb: null } as Suggestion];
+      } catch { return []; }
+    });
+    if (!raw.length) return [];
+    // Resolve detail pages to the real featured site (+ inherit the gallery's og:image screenshot)
+    const resolved = await enrich(raw);
+    return resolved.filter((s) => !GALLERY_HOSTS.has(hostOnly(s.url)));
   } catch {
     return [];
   }
@@ -448,6 +582,7 @@ export async function GET(req: Request) {
   const exclude = new Set((sp.get("exclude") ?? "").split(",").map((d) => d.trim()).filter(Boolean));
 
   let cands: Suggestion[];
+  let visuallyRanked = false;
   if (mode === "type") {
     // Typography discovery: foundry seeds + Are.na type channels + optional query search
     const [arn, searched] = await Promise.all([
@@ -458,13 +593,26 @@ export async function GET(req: Request) {
     ]);
     cands = [...searched, ...arn, ...TYPE_SEEDS];
   } else if (query && hasGeminiKey() && !geminiDisabled()) {
-    // "More like this": when we can fetch the reference image, first read its actual visual
-    // aesthetic (vision pass) and lead the search with that — a true look-match, not just the
-    // stored caption's words. Falls back to the text brief if the image can't be read.
+    // "More like this": when we can fetch the reference image, run the fully VISUAL pipeline —
+    // (1) vision pass reads the image's aesthetic to steer the web search, (2) a wide candidate
+    // pool is gathered (aesthetic web search + gallery/Are.na pools), (3) every candidate's own
+    // screenshot is judged against the reference pixels, and only confirmed look-matches survive.
     const refImage = img ? await fetchImagePart(img) : null;
     const aesthetic = refImage ? await describeAesthetic(refImage) : null;
     const searchQuery = aesthetic ? `${aesthetic} · ${query}`.slice(0, 400) : query;
-    cands = await webSearch(searchQuery);
+    if (refImage) {
+      const [web, mined, arn, agg] = await Promise.all([
+        webSearch(searchQuery),
+        galleryMine(aesthetic ?? query).catch(() => [] as Suggestion[]),
+        arena().catch(() => [] as Suggestion[]),
+        aggregate().catch(() => [] as Suggestion[]),
+      ]);
+      const ranked = await visualRank(refImage, [...mined, ...web, ...agg, ...arn], exclude);
+      if (ranked && ranked.length) { cands = ranked; visuallyRanked = true; }
+      else cands = [...mined, ...web]; // judging unavailable — fall back to the text-ranked path
+    } else {
+      cands = await webSearch(searchQuery);
+    }
   } else {
     // Discover endless feed: general inspiration — curated Are.na channels + gallery pool
     const [agg, arn] = await Promise.all([aggregate(), arena()]);
@@ -482,7 +630,10 @@ export async function GET(req: Request) {
     seen.add(k);
     return true;
   });
-  cands = await (mode === "type" ? rankType(cands, taste, query) : rank(cands, taste, query));
+  // Visually-ranked results are already ordered by judged similarity — text rank would undo that.
+  if (!visuallyRanked) {
+    cands = await (mode === "type" ? rankType(cands, taste, query) : rank(cands, taste, query));
+  }
   // clone: enrich mutates suggestions in place and must never touch cached objects
   const top = await enrich(cands.slice(0, 20).map((c) => ({ ...c })));
   // re-apply exclusions AFTER enrichment — gallery URLs resolve to the real site here,
