@@ -41,6 +41,9 @@ const SEEDS: Suggestion[] = [
 
 const SOCIAL_RE =
   /instagram\.|facebook\.|twitter\.|(^|\.)x\.com|linkedin\.|youtube\.|pinterest\.|tiktok\.|dribbble\.|behance\./i;
+// developer infrastructure — never moodboard material, however nice the og:image
+const DEV_RE =
+  /github\.|gitlab\.|bitbucket\.|npmjs\.|pypi\.|crates\.io|codepen\.io|codesandbox\.|stackblitz\.|stackoverflow\.|dev\.to|css-tricks\.|smashingmagazine\.|developer\.mozilla|w3schools\.|w3\.org|wikipedia\.|medium\.com|substack\.|news\.ycombinator|producthunt\./i;
 const NAV_PATH_RE = /^\/(about|tags?|category|categories|login|sign|privacy|terms|jobs|submit|advertise|contact)\b/i;
 const GALLERY_HOSTS = new Set([
   "siteinspire.com", "www.siteinspire.com", "httpster.net", "minimal.gallery",
@@ -101,7 +104,7 @@ async function arena(query: string | null, taste: string[]): Promise<Suggestion[
           if (b?.class !== "Link" || !b?.source?.url) continue;
           let domain: string;
           try { domain = new URL(b.source.url).hostname.replace(/^www\./, ""); } catch { continue; }
-          if (SOCIAL_RE.test(domain) || GALLERY_HOSTS.has(domain)) continue;
+          if (SOCIAL_RE.test(domain) || DEV_RE.test(domain) || GALLERY_HOSTS.has(domain)) continue;
           out.push({
             url: b.source.url,
             title: b.title || b.generated_title || null,
@@ -135,6 +138,7 @@ async function minimalRss(): Promise<Suggestion[]> {
   for (const m of xml.matchAll(/<item>([\s\S]*?)<\/item>/g)) {
     const x = m[1];
     const title = /<title>([^<]+)<\/title>/.exec(x)?.[1]?.trim() ?? null;
+    if (title && /sponsor/i.test(title)) continue; // paid placements aren't curation
     const detail = /<link>([^<]+)<\/link>/.exec(x)?.[1]?.trim() ?? null;
     const img = /src="([^"]+\/wp-content\/uploads\/[^"]+)"/.exec(x)?.[1] ?? null;
     // screenshot filenames encode the real site: .../bureautonalli.com_.jpg
@@ -170,7 +174,7 @@ function extract(html: string, base: string, source: string): Suggestion[] {
       domain = u.hostname.replace(/^www\./, "");
       path = u.pathname;
     } catch { continue; }
-    if (SOCIAL_RE.test(domain) || NAV_PATH_RE.test(path)) continue;
+    if (SOCIAL_RE.test(domain) || DEV_RE.test(domain) || NAV_PATH_RE.test(path)) continue;
     const key = href.split("?")[0];
     if (seen.has(key)) continue;
     seen.add(key);
@@ -213,7 +217,7 @@ async function webSearch(query: string): Promise<Suggestion[]> {
       messages: [
         {
           role: "user",
-          content: `Find current, genuinely exceptional websites matching this design brief: "${query}". Look for award-calibre, design-led work (typography, art direction, motion, originality) — galleries, studios, portfolios, product sites. After searching, reply with JSON only: [{"url": "...", "title": "...", "blurb": "<why it's exceptional, one short sentence>"}] with up to 12 results. Only include live, specific site URLs (not articles about them).`,
+          content: `A designer is hunting for visual web-design inspiration. Their brief describes an AESTHETIC, not a product category: "${query}".\n\nFind current, genuinely exceptional websites whose DESIGN matches that aesthetic — award-calibre, design-led work (typography, art direction, motion, originality): studios, portfolios, fashion, editorial, cultural sites. Search design showcases (siteinspire, awwwards, godly, klikkentheke, minimal.gallery) rather than product directories.\n\nCRITICAL: do NOT return products/tools that merely BELONG to the category the brief mentions. If the brief says "analytics dashboard", they want sites that LOOK that way, not analytics companies. Never include developer tools, code libraries, docs, UI kits, templates, or SaaS picked for function — a product site qualifies only if it is widely celebrated as a piece of web design itself.\n\nAfter searching, reply with JSON only: [{"url": "...", "title": "...", "blurb": "<why the design is exceptional, one short sentence>"}] with up to 12 results. Only include live, specific site URLs (not articles about them).`,
         },
       ],
     });
@@ -223,7 +227,9 @@ async function webSearch(query: string): Promise<Suggestion[]> {
     return arr.flatMap((r: any) => {
       try {
         const u = new URL(r.url);
-        return [{ url: r.url, title: r.title ?? null, image: null, domain: u.hostname.replace(/^www\./, ""), source: "web", blurb: r.blurb ?? null }];
+        const domain = u.hostname.replace(/^www\./, "");
+        if (SOCIAL_RE.test(domain) || DEV_RE.test(domain)) return [];
+        return [{ url: r.url, title: r.title ?? null, image: null, domain, source: "web", blurb: r.blurb ?? null }];
       } catch { return []; }
     });
   } catch {
@@ -242,7 +248,7 @@ async function rank(cands: Suggestion[], taste: string[], query: string | null):
       messages: [
         {
           role: "user",
-          content: `You curate design inspiration for a senior designer. Their taste profile (from what they save): ${taste.length ? taste.join(", ") : "high-end, typography-led, modern"}.${query ? ` Their current brief OVERRIDES the taste profile: "${query}" — match the brief's specific subject, palette and mood first; prefer "web"-source candidates when they fit the brief.` : ""}\n\nCandidates (index | domain | title | source):\n${list}\n\nPick up to 30 candidates that look like leading-class, moodboard-worthy design work${query ? " matching the brief" : ""}. Cut anything generic. Reply JSON only: {"picks": [indexes, best first]}`,
+          content: `You curate design inspiration for a senior designer. Their taste profile (from what they save): ${taste.length ? taste.join(", ") : "high-end, typography-led, modern"}.${query ? ` Their current brief OVERRIDES the taste profile: "${query}" — match the brief's specific subject, palette and mood first; prefer "web"-source candidates when they fit the brief.` : ""}\n\nCandidates (index | domain | title | source):\n${list}\n\nPick up to 30 candidates that look like leading-class, moodboard-worthy design work${query ? " matching the brief" : ""}. Cut anything generic — and ALWAYS cut developer tools, code libraries, frameworks, documentation, UI kits and SaaS products chosen for what they do rather than how they look. Reply JSON only: {"picks": [indexes, best first]}`,
         },
       ],
     });
@@ -296,7 +302,7 @@ async function enrich(items: Suggestion[]): Promise<Suggestion[]> {
           if (!h) continue;
           const bare = h.replace(/^www\./, "");
           if (bare === galleryHost || bare.endsWith("." + galleryHost)) continue;
-          if (SOCIAL_RE.test(h) || GALLERY_HOSTS.has(h) || GALLERY_HOSTS.has(bare)) continue;
+          if (SOCIAL_RE.test(h) || DEV_RE.test(h) || GALLERY_HOSTS.has(h) || GALLERY_HOSTS.has(bare)) continue;
           if (/google\.|apple\.|cdn\.|cloudfront|unsplash|typekit|fonts\.|webflow\.io$|framer\.com$/i.test(h)) continue;
           found = m[1];
           break;
