@@ -41,6 +41,8 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
   const [saving, setSaving] = useState<string | null>(null);
   const shown = useRef(new Set<string>());      // everything already offered this session
   const seeds = useRef<string[]>([]);            // descriptors of what you engaged with
+  const inflightQ = useRef<string | null>(null); // dedupe double-fired identical loads (StrictMode)
+  const loadSeq = useRef(0);                     // drop responses superseded by a newer load
 
   const isFoundryItem = (item: Item) => (item.type === "site" || item.type === "link") && !!item.source_domain;
   const isFontItem = (item: Item) => (item.fonts?.length ?? 0) > 0;
@@ -72,6 +74,11 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
 
   const load = useCallback(
     async (q: string | null, append = false) => {
+      // An identical load is already running (e.g. effect double-fire) — let it finish alone;
+      // a second racing request would non-deterministically overwrite the first's results.
+      if (!append && inflightQ.current === (q ?? "")) return;
+      inflightQ.current = q ?? "";
+      const seq = ++loadSeq.current;
       setLoading(true);
       try {
         if (!append) shown.current = new Set();
@@ -79,6 +86,7 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
           discover(q, [...shown.current], mode, initialImage, tasteSpaceId),
           q || compact || append ? Promise.resolve([] as Item[]) : resurface(6),
         ]);
+        if (seq !== loadSeq.current) return; // superseded by a newer load
         // belt-and-braces: never show a card twice this session, even if the server re-offers it
         const fresh = suggestions.filter((s) => !shown.current.has(s.url));
         for (const s of fresh) shown.current.add(s.url);
@@ -96,9 +104,10 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
         const paths = gems.map((g) => g.thumb_path).filter(Boolean) as string[];
         if (paths.length) setUrls(await signedUrls(paths));
       } catch (e) {
-        toast((e as Error).message, "error");
+        if (seq === loadSeq.current) toast((e as Error).message, "error");
       } finally {
-        setLoading(false);
+        if (inflightQ.current === (q ?? "")) inflightQ.current = null;
+        if (seq === loadSeq.current) setLoading(false);
       }
     },
     [toast, compact, mode, initialImage, tasteSpaceId]
