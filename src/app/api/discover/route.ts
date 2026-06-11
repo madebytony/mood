@@ -269,7 +269,7 @@ async function enrich(items: Suggestion[]): Promise<Suggestion[]> {
       const res = await fetch(i.url, {
         headers: { "user-agent": UA, accept: "text/html" },
         redirect: "follow",
-        signal: AbortSignal.timeout(3000),
+        signal: AbortSignal.timeout(8000),
       });
       if (!res.ok) {
         if (GALLERY_HOSTS.has(hostOnly(i.url))) dropped.add(i.url);
@@ -320,6 +320,7 @@ async function enrich(items: Suggestion[]): Promise<Suggestion[]> {
 
 export async function GET(req: Request) {
   if (!(await isAuthed(req))) return Response.json({ error: "unauthorized" }, { status: 401 });
+  try {
   const sp = new URL(req.url).searchParams;
   const query = sp.get("q");
   const taste = (sp.get("taste") ?? "").split(",").map((t) => t.trim()).filter(Boolean).slice(0, 30);
@@ -355,11 +356,18 @@ export async function GET(req: Request) {
   const seenDomains = new Set<string>();
   const finalItems = top.filter((s) => {
     if (exclude.has(s.domain) || exclude.has(s.url) || exclude.has(norm(s.url))) return false;
-    // anything still pointing at a directory after enrichment is the directory itself — cut it
-    if (s.source !== "seed" && (CURATION_RE.test(s.domain) || DEV_RE.test(s.domain))) return false;
+    // anything still pointing at a directory after enrichment is the directory itself — cut it.
+    // web-search results are already pre-filtered by CURATION_RE inside webSearch(); don't
+    // double-filter them here or legitimate agency sites with overlapping name patterns get dropped.
+    if (s.source !== "seed" && s.source !== "web" && (CURATION_RE.test(s.domain) || DEV_RE.test(s.domain))) return false;
     if (seenDomains.has(s.domain)) return false;
     seenDomains.add(s.domain);
     return true;
   });
   return Response.json({ items: finalItems });
+  } catch (e) {
+    // never 500 the feed — the SEEDS fallback exists so Discover is always non-empty
+    console.error("discover failed:", e);
+    return Response.json({ items: SEEDS });
+  }
 }

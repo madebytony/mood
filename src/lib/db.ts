@@ -93,6 +93,11 @@ export async function resurface(limit = 8): Promise<Item[]> {
 // ---------- signed URL cache ----------
 
 const urlCache = new Map<string, { url: string; expires: number }>();
+const URL_CACHE_MAX = 2000;
+
+// Signed URLs are scoped to the signed-in session, so drop them on any auth change — otherwise a
+// new account could be served the previous user's URLs until TTL, and the map would grow forever.
+supabase.auth.onAuthStateChange(() => urlCache.clear());
 
 export async function signedUrls(paths: string[]): Promise<Map<string, string>> {
   const out = new Map<string, string>();
@@ -113,6 +118,12 @@ export async function signedUrls(paths: string[]): Promise<Map<string, string>> 
         urlCache.set(row.path, { url: row.signedUrl, expires: now + 60 * 60 * 11 * 1000 });
         out.set(row.path, row.signedUrl);
       }
+    }
+    // bound the cache — evict oldest (insertion-ordered) entries past the cap
+    while (urlCache.size > URL_CACHE_MAX) {
+      const oldest = urlCache.keys().next().value;
+      if (oldest === undefined) break;
+      urlCache.delete(oldest);
     }
   }
   return out;
@@ -280,9 +291,13 @@ export async function deleteItemRow(item: Item): Promise<void> {
   if (error) throw error;
 }
 
-/** Undo: re-insert the row exactly as it was (files weren't touched yet). */
+/** Undo: re-insert the row exactly as it was (files weren't touched yet). `similarity` is an
+ *  RPC-only field (not a real column), so strip it or PostgREST rejects the insert — which would
+ *  silently break Undo for items deleted from a "more like this"/semantic-search view. */
 export async function restoreItem(item: Item): Promise<void> {
-  const { error } = await supabase.from("items").insert(item);
+  const { similarity: _drop, ...row } = item;
+  void _drop;
+  const { error } = await supabase.from("items").insert(row);
   if (error) throw error;
 }
 
@@ -410,7 +425,10 @@ export async function saveBoardPositions(items: BoardItemPos[], stacks: BoardSta
 
 /** Dissolve: items return to the space, stack row removed. */
 export async function deleteStack(id: string): Promise<void> {
-  await supabase.from("items").update({ stack_id: null }).eq("stack_id", id);
+  // Un-stack the items first; if that fails, don't delete the stack row or we'd orphan the items
+  // with a dangling stack_id pointing at a row that no longer exists.
+  const { error: unstackErr } = await supabase.from("items").update({ stack_id: null }).eq("stack_id", id);
+  if (unstackErr) throw unstackErr;
   const { error } = await supabase.from("stacks").delete().eq("id", id);
   if (error) throw error;
 }
@@ -422,13 +440,16 @@ export async function setSpaceView(id: string, view: "grid" | "board"): Promise<
 
 // ---------- AI ----------
 
-let aiAvailable: boolean | null = null;
-const aiDown = () => aiAvailable === false;
+// A 503 (no key / transient outage) backs AI off for a few minutes, then we re-probe — rather than
+// disabling captions+search for the whole page session on a single blip.
+let aiCooldownUntil = 0;
+const AI_COOLDOWN_MS = 5 * 60_000;
+const aiDown = () => Date.now() < aiCooldownUntil;
 
 /** Caption + auto-tag an item in the background. Returns whether it captioned (for backfill
  *  back-off). Silently no-ops without an API key. */
-export async function captionItem(item: Item, onDone?: (updated: Item) => void): Promise<boolean> {
-  if (aiAvailable === false || !item.thumb_path) return false;
+export async function captionItem(item: Item, onDone?: (updated: Item) => void | Promise<void>): Promise<boolean> {
+  if (aiDown() || !item.thumb_path) return false;
   try {
     const urls = await signedUrls([item.thumb_path]);
     const res = await apiFetch("/api/ai/caption", {
@@ -437,16 +458,16 @@ export async function captionItem(item: Item, onDone?: (updated: Item) => void):
       body: JSON.stringify({ imageUrl: urls.get(item.thumb_path), title: item.title }),
     });
     if (res.status === 503) {
-      aiAvailable = false;
+      aiCooldownUntil = Date.now() + AI_COOLDOWN_MS;
       return false;
     }
     if (!res.ok) return false;
-    aiAvailable = true;
+    aiCooldownUntil = 0;
     const { caption, tags } = await res.json();
     if (!caption && !(tags ?? []).length) return false; // nothing useful came back
     const merged = [...new Set([...(item.tags ?? []), ...(tags ?? [])])];
     const updated = await updateItem(item.id, { ai_caption: caption, tags: merged });
-    onDone?.(updated);
+    await onDone?.(updated);
     return true;
   } catch {
     return false; // background job — never surface errors
@@ -475,8 +496,9 @@ export async function aiSearch(query: string, items: Item[]): Promise<string[] |
 
 // ---------- visual embeddings (taste engine) ----------
 
-let voyageAvailable: boolean | null = null;
-const voyageDown = () => voyageAvailable === false;
+let voyageCooldownUntil = 0;
+const VOYAGE_COOLDOWN_MS = 5 * 60_000;
+const voyageDown = () => Date.now() < voyageCooldownUntil;
 
 /** Style-anchored text for the hybrid vector — captions name the aesthetic the pixels show. */
 function embedText(item: Item): string {
@@ -487,7 +509,7 @@ function embedText(item: Item): string {
 
 /** Embed one item (image + caption hybrid) in the background. Silently no-ops without a key. */
 export async function embedItem(item: Item): Promise<boolean> {
-  if (voyageAvailable === false) return false;
+  if (voyageDown()) return false;
   const text = embedText(item);
   if (!item.thumb_path && !text) return false;
   try {
@@ -502,11 +524,11 @@ export async function embedItem(item: Item): Promise<boolean> {
       body: JSON.stringify({ imageUrl, text: text || undefined, input_type: "document" }),
     });
     if (res.status === 503) {
-      voyageAvailable = false;
+      voyageCooldownUntil = Date.now() + VOYAGE_COOLDOWN_MS;
       return false;
     }
     if (!res.ok) return false;
-    voyageAvailable = true;
+    voyageCooldownUntil = 0;
     const { embedding } = await res.json();
     if (!Array.isArray(embedding)) return false;
     const { error } = await supabase.from("items").update({ embedding }).eq("id", item.id);
@@ -520,7 +542,7 @@ let backfillRunning = false;
 
 /** Embed any items still missing vectors, a few at a time. Safe to call on every load. */
 export async function backfillEmbeddings(batch = 12): Promise<void> {
-  if (backfillRunning || voyageAvailable === false) return;
+  if (backfillRunning || voyageDown()) return;
   backfillRunning = true;
   try {
     const { data } = await supabase
@@ -563,8 +585,10 @@ export async function backfillCaptions(onCaptioned?: (item: Item) => void, batch
     let failures = 0;
     for (const item of (data ?? []) as unknown as Item[]) {
       if (aiDown()) break; // key went away / 503 mid-run
-      const ok = await captionItem(item, (updated) => {
-        embedItem(updated); // refresh the vector with the new caption
+      const ok = await captionItem(item, async (updated) => {
+        // awaited so caption→embed runs serially; otherwise a batch fans out concurrent embed
+        // POSTs that burst the Voyage rate limit and trip the cooldown
+        await embedItem(updated);
         onCaptioned?.(updated);
       });
       // back off after repeated failures (e.g. 429 rate limits) — next app load retries
@@ -644,7 +668,7 @@ export async function matchToItem(itemId: string, count = 12): Promise<Item[]> {
 
 /** Semantic text -> image search. Returns null when embeddings are unavailable. */
 export async function semanticSearch(query: string, count = 60): Promise<Item[] | null> {
-  if (voyageAvailable === false) return null;
+  if (voyageDown()) return null;
   try {
     const res = await apiFetch("/api/ai/embed", {
       method: "POST",
@@ -652,11 +676,11 @@ export async function semanticSearch(query: string, count = 60): Promise<Item[] 
       body: JSON.stringify({ text: query, input_type: "query" }),
     });
     if (res.status === 503) {
-      voyageAvailable = false;
+      voyageCooldownUntil = Date.now() + VOYAGE_COOLDOWN_MS;
       return null;
     }
     if (!res.ok) return null;
-    voyageAvailable = true;
+    voyageCooldownUntil = 0;
     const { embedding } = await res.json();
     const { data, error } = await supabase.rpc("match_items", { p_query: embedding, p_count: count });
     if (error) return null;
@@ -678,7 +702,14 @@ export interface Suggestion {
 }
 
 export async function discover(query: string | null, extraExclude: string[] = []): Promise<Suggestion[]> {
-  const [taste, domains, seen] = await Promise.all([tasteTags(), libraryDomains(), seenUrls()]);
+  // For web-similar searches (query set), skip library domain exclusions — the user wants
+  // aesthetic matches even if they've already saved work from those domains.
+  // For Discover (no query), exclude library domains so we don't re-surface known work.
+  const [taste, domains, seen] = await Promise.all([
+    tasteTags(),
+    query ? Promise.resolve([] as string[]) : libraryDomains(),
+    seenUrls(),
+  ]);
   const params = new URLSearchParams();
   if (query) params.set("q", query);
   if (taste.length) params.set("taste", taste.join(","));

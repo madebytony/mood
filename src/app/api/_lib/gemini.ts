@@ -5,8 +5,12 @@ export function hasGeminiKey(): boolean {
   return !!process.env.GEMINI_API_KEY;
 }
 
-let billingDisabled = false;
-export function geminiDisabled(): boolean { return billingDisabled; }
+// Time-boxed circuit breaker: a 402/429/503/529 backs Gemini off for a few minutes rather than
+// for the whole instance lifetime, so a transient quota/overload blip doesn't disable AI until the
+// serverless instance recycles. Re-probes automatically once the window passes.
+let disabledUntil = 0;
+const COOLDOWN_MS = 5 * 60_000;
+export function geminiDisabled(): boolean { return Date.now() < disabledUntil; }
 
 type TextPart = { text: string };
 type ImagePart = { inlineData: { mimeType: string; data: string } };
@@ -20,7 +24,7 @@ interface GeminiBody {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function gemini(body: GeminiBody, timeoutMs = 45000): Promise<any> {
-  if (billingDisabled) throw new Error("gemini disabled: billing");
+  if (geminiDisabled()) throw new Error("gemini disabled: cooling down");
   const url = `${API}/${MODEL}:generateContent?key=${process.env.GEMINI_API_KEY}`;
   // Disable thinking by default — none of our routes benefit from extended reasoning,
   // and thinking tokens slow responses and cost extra on 2.5+ models.
@@ -36,7 +40,8 @@ export async function gemini(body: GeminiBody, timeoutMs = 45000): Promise<any> 
   });
   if (!res.ok) {
     const err = await res.text().catch(() => "");
-    if (res.status === 402) billingDisabled = true;
+    // 402 billing, 429 rate limit, 503/529 overload — all transient enough to warrant a backoff.
+    if ([402, 429, 503, 529].includes(res.status)) disabledUntil = Date.now() + COOLDOWN_MS;
     throw new Error(`gemini ${res.status}: ${err.slice(0, 200)}`);
   }
   return res.json();

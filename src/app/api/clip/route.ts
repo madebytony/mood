@@ -2,8 +2,12 @@ import { createClient } from "@supabase/supabase-js";
 import { bearer, isClipToken } from "../_lib/auth";
 import { captureScreenshot } from "../_lib/capture";
 import { assertPublicUrl, safeFetch } from "../_lib/ssrf";
+import { clientIp, rateLimit, tooManyRequests } from "../_lib/ratelimit";
 
 export const maxDuration = 120;
+
+/** Caller-fault errors (bad body / unsupported input) → 400; everything else is a 502. */
+class ClientError extends Error {}
 
 function admin() {
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -79,6 +83,10 @@ export async function POST(req: Request) {
   if (!isClipToken(bearer(req))) {
     return Response.json({ error: "unauthorized" }, { status: 401, headers: cors });
   }
+  // Each clip can launch a 120s Puppeteer job + storage write — cap so a leaked token can't
+  // spin up unbounded headless-Chrome work or fill storage.
+  const rl = rateLimit(`clip:${clientIp(req)}`, 30, 60_000);
+  if (!rl.ok) return tooManyRequests(rl.retryAfter, cors);
   const db = admin();
   if (!db) {
     return Response.json(
@@ -107,7 +115,7 @@ export async function POST(req: Request) {
       const { data: inbox } = await db.from("spaces").select("id").eq("kind", "inbox").limit(1).single();
       spaceId = inbox?.id ?? null;
     }
-    if (!spaceId) throw new Error("No space found");
+    if (!spaceId) throw new ClientError("No space found");
 
     let bytes: Uint8Array<ArrayBuffer> | null = null;
     let contentType = "image/jpeg";
@@ -118,7 +126,7 @@ export async function POST(req: Request) {
 
     if (body.kind === "image" && body.image?.startsWith("data:")) {
       const m = /^data:([^;]+);base64,(.*)$/.exec(body.image);
-      if (!m) throw new Error("bad data url");
+      if (!m) throw new ClientError("bad data url");
       contentType = m[1];
       // copy into a fresh, exact-size buffer — base64 Buffers can be pool-backed views
       bytes = new Uint8Array(Buffer.from(m[2], "base64"));
@@ -138,7 +146,7 @@ export async function POST(req: Request) {
       sourceUrl = body.url;
       title = title ?? body.url.replace(/^https?:\/\/(www\.)?/, "").split("/")[0];
     } else {
-      throw new Error("unsupported clip");
+      throw new ClientError("unsupported clip");
     }
 
     const ext = extFor(contentType);
@@ -173,7 +181,17 @@ export async function POST(req: Request) {
     if (error) throw error;
     return Response.json({ ok: true, id: item.id }, { headers: cors });
   } catch (e) {
-    return Response.json({ error: (e as Error).message }, { status: 502, headers: cors });
+    const err = e as Error;
+    // Caller-fault and SSRF-blocked URLs are 400s; upstream/DB failures are 502 with a generic
+    // message so Supabase/Postgres internals never leak to the extension.
+    if (err instanceof ClientError) {
+      return Response.json({ error: err.message }, { status: 400, headers: cors });
+    }
+    if (err.message?.startsWith("blocked")) {
+      return Response.json({ error: "url not allowed" }, { status: 400, headers: cors });
+    }
+    console.error("clip POST failed:", err);
+    return Response.json({ error: "clip failed" }, { status: 502, headers: cors });
   }
 }
 

@@ -1,3 +1,5 @@
+import { createHash, timingSafeEqual } from "crypto";
+
 /** Verify the caller's Supabase access token (no extra deps, no service key). */
 export async function isAuthed(req: Request): Promise<boolean> {
   const token = bearer(req);
@@ -21,8 +23,15 @@ export function bearer(req: Request): string | null {
   return req.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? null;
 }
 
-/** The personal token used by the browser extension and iOS Shortcut. */
+/** The personal token used by the browser extension and iOS Shortcut.
+ *  Compared in constant time (over fixed-length SHA-256 digests, so neither the result nor the
+ *  token length leaks via timing) to deny a byte-by-byte guessing oracle. */
 export function isClipToken(token: string | null): boolean {
   const expected = process.env.MOOD_CLIP_TOKEN;
-  return !!expected && !!token && token === expected;
+  if (!expected || !token) return false;
+  return timingSafeEqual(sha256(token), sha256(expected));
+}
+
+function sha256(s: string): Buffer {
+  return createHash("sha256").update(s).digest();
 }

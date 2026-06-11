@@ -1,5 +1,6 @@
 import { isAuthed } from "../_lib/auth";
 import { safeFetch } from "../_lib/ssrf";
+import { clientIp, rateLimit, tooManyRequests } from "../_lib/ratelimit";
 
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -9,6 +10,8 @@ export async function GET(req: Request) {
   if (!(await isAuthed(req))) {
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
+  const rl = rateLimit(`proxy:${clientIp(req)}`, 100, 60_000);
+  if (!rl.ok) return tooManyRequests(rl.retryAfter);
   const url = new URL(req.url).searchParams.get("url");
   if (!url || !/^https?:\/\//i.test(url)) {
     return Response.json({ error: "valid url required" }, { status: 400 });

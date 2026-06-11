@@ -33,7 +33,7 @@ function StackCard({ stack, thumbs, onOpen }: { stack: Stack; thumbs: string[]; 
           thumbs.map((t, i) => (
             // eslint-disable-next-line @next/next/no-img-element
             <img
-              key={i}
+              key={t}
               src={t}
               alt=""
               className="absolute inset-0 h-full w-full rounded-lg border border-white/10 object-cover object-top shadow-lg shadow-black/40 transition-transform duration-300 ease-out [transform:var(--rest)] group-hover:[transform:var(--fan)]"

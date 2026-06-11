@@ -6,6 +6,7 @@ import type { Library, Space } from "@/lib/types";
 import { createLibrary, createSpace, renameSpace, deleteSpace } from "@/lib/db";
 import { supabase, authToken } from "@/lib/supabase";
 import { ask, confirmDialog, notice } from "./ui";
+import { useDialog } from "./useDialog";
 import { SparklesIcon, InboxIcon, PhoneIcon } from "./icons";
 
 interface Props {
@@ -23,6 +24,7 @@ export default function Sidebar({ libraries, spaces, selected, counts, onSelect,
   const [renameVal, setRenameVal] = useState("");
   const [qr, setQr] = useState<{ img: string; link: string } | null>(null);
   const [qrBusy, setQrBusy] = useState(false);
+  const qrRef = useDialog<HTMLDivElement>(() => setQr(null), { active: !!qr });
 
   async function phoneSignIn() {
     setQrBusy(true);
@@ -203,7 +205,12 @@ export default function Sidebar({ libraries, spaces, selected, counts, onSelect,
         <div className="fixed inset-0 z-50 grid place-items-center" onClick={() => setQr(null)}>
           <div className="absolute inset-0 bg-black/75 backdrop-blur-sm" />
           <div
-            className="relative z-10 w-[min(360px,92vw)] glass-dark rounded-2xl p-5 text-center"
+            ref={qrRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Sign in on your phone"
+            tabIndex={-1}
+            className="relative z-10 w-[min(360px,92vw)] glass-dark rounded-2xl p-5 text-center outline-none"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-1 text-sm font-medium text-zinc-200">Sign in on your phone</div>

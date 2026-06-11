@@ -9,6 +9,7 @@ import Feed from "@/components/Feed";
 import Detail from "@/components/Detail";
 import AddMenu from "@/components/AddMenu";
 import { DialogHost, SkeletonGrid, ask, confirmDialog } from "@/components/ui";
+import { useDialog } from "@/components/useDialog";
 import {
   addFromUrl,
   addImageFile,
@@ -87,6 +88,20 @@ function App() {
   const toastId = useRef(0);
   const pendingId = useRef(0);
   const dragDepth = useRef(0);
+  const embedSweepTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /** Coalesce post-add embedding sweeps into a single trailing timer — dropping 30 files at once
+   *  should schedule one sweep, not 30 — and clear it on unmount so it can't setState after logout. */
+  const scheduleEmbedSweep = useCallback(() => {
+    if (embedSweepTimer.current) clearTimeout(embedSweepTimer.current);
+    embedSweepTimer.current = setTimeout(() => {
+      embedSweepTimer.current = null;
+      backfillEmbeddings();
+    }, 12000);
+  }, []);
+  useEffect(() => () => {
+    if (embedSweepTimer.current) clearTimeout(embedSweepTimer.current);
+  }, []);
 
   /** Optimistic ghost card: shows instantly in the grid, vanishes when the real item lands. */
   const trackPending = useCallback((label: string) => {
@@ -130,6 +145,16 @@ function App() {
   const viewCache = useRef(
     new Map<string, { items: Item[]; stacks: Stack[]; urls: Map<string, string>; stackThumbs: Map<string, string[]> }>()
   );
+
+  /** Drop every cached view snapshot. Call before a mutation so switching to another space can't
+   *  paint a stale snapshot that still holds a deleted/moved item or expired signed URLs — the
+   *  following loadItems() repopulates the current key from the network. */
+  const invalidateViewCache = useCallback(() => viewCache.current.clear(), []);
+
+  // Accessible-dialog plumbing (focus trap + Escape + focus restore) for the inline overlays.
+  const filingRef = useDialog<HTMLDivElement>(() => setFiling(null), { active: !!filing });
+  const similarRef = useDialog<HTMLDivElement>(() => setSimilarQuery(null), { active: !!similarQuery });
+  const stackRef = useDialog<HTMLDivElement>(() => setStackView(null), { active: !!stackView });
 
   const loadItems = useCallback(async () => {
     const spaceKey = selected === "home" ? "all" : selected;
@@ -221,6 +246,7 @@ function App() {
   }, []);
 
   const afterAdd = useCallback((item: Item) => {
+    invalidateViewCache(); // the new item belongs in other cached views too
     // caption first so the embedding carries the style description
     captionItem(item, (updated) => {
       embedItem(updated);
@@ -234,26 +260,33 @@ function App() {
       });
     }
     // sweep catches items captioning never reaches (no key, notes, failures)
-    setTimeout(() => backfillEmbeddings(), 12000);
-  }, []);
+    scheduleEmbedSweep();
+  }, [invalidateViewCache]);
 
   // Self-heal items on load: caption uncaptioned images (richer "more like this" + embeddings),
   // then backfill proper thumbnails + colours for clip-route saves (full-image thumbs, no colours),
   // then sweep any item still missing a vector. Patch each result into the grid so it's used now.
   useEffect(() => {
-    const patch = (updated: Item) =>
+    let alive = true; // these sweeps resolve seconds later — don't setState after unmount/logout
+    const patch = (updated: Item) => {
+      if (!alive) return;
       setItems((prev) => prev.map((i) => (i.id === updated.id ? updated : i)));
+    };
     // re-thumb changes thumb_path → sign the new thumb or the card would briefly go blank
     const patchThumb = (updated: Item) => {
+      if (!alive) return;
       patch(updated);
       if (updated.thumb_path)
         signedUrls([updated.thumb_path])
-          .then((m) => setUrls((u) => new Map([...u, ...m])))
+          .then((m) => alive && setUrls((u) => new Map([...u, ...m])))
           .catch(() => {});
     };
     backfillCaptions(patch)
       .finally(() => backfillThumbs(patchThumb))
       .finally(() => backfillEmbeddings());
+    return () => {
+      alive = false;
+    };
   }, []);
 
   const handleFiles = useCallback(
@@ -321,16 +354,22 @@ function App() {
   const handleNote = useCallback(
     async (text: string) => {
       if (!targetSpace) return toast("No space to save into yet", "error");
-      const item = await addNote(text, targetSpace);
-      insertItem(item).catch(() => {}); // optimistic paint
-      loadItems().catch(() => {}); // one reconciling refresh
+      try {
+        const item = await addNote(text, targetSpace);
+        invalidateViewCache();
+        insertItem(item).catch(() => {}); // optimistic paint
+        loadItems().catch(() => {}); // one reconciling refresh
+      } catch (e) {
+        toast(`Note failed: ${(e as Error).message}`, "error");
+      }
     },
-    [targetSpace, loadItems, insertItem, toast]
+    [targetSpace, loadItems, insertItem, toast, invalidateViewCache]
   );
 
   /** Instant delete with a 5s Undo window. The row is deleted immediately (so a refresh
    *  can't resurrect it); Undo re-inserts it. Files are cleared after the window closes. */
   async function softDelete(item: Item) {
+    invalidateViewCache();
     setItems((prev) => prev.filter((i) => i.id !== item.id));
     setAiItems((prev) => (prev ? prev.filter((i) => i.id !== item.id) : prev));
     try {
@@ -342,7 +381,10 @@ function App() {
     }
     const id = ++toastId.current;
     let undone = false;
+    // One timer owns both dismissing the toast and purging storage, so there's no ordering race
+    // between two 5.2s timeouts that could delete the blob out from under a just-restored row.
     const timer = setTimeout(() => {
+      setToasts((t) => t.filter((x) => x.id !== id));
       if (!undone) deleteItemStorage(item).catch(() => {});
     }, 5200);
     setToasts((t) => [
@@ -354,7 +396,7 @@ function App() {
         action: {
           label: "Undo",
           fn: async () => {
-            undone = true;
+            undone = true; // set synchronously before any await so the timer can never purge
             clearTimeout(timer);
             setToasts((ts) => ts.filter((x) => x.id !== id));
             try {
@@ -362,12 +404,12 @@ function App() {
             } catch (e) {
               toast(`Undo failed: ${(e as Error).message}`, "error");
             }
+            invalidateViewCache();
             loadItems();
           },
         },
       },
     ]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 5200);
   }
 
   /** Bulk soft-delete the current selection with one combined Undo (mirrors softDelete). */
@@ -377,6 +419,7 @@ function App() {
     const ids = new Set(victims.map((v) => v.id));
     setSelIds(new Set());
     setConfirmDel(false);
+    invalidateViewCache();
     setItems((prev) => prev.filter((i) => !ids.has(i.id)));
     setAiItems((prev) => (prev ? prev.filter((i) => !ids.has(i.id)) : prev));
     try {
@@ -388,7 +431,9 @@ function App() {
     }
     const id = ++toastId.current;
     let undone = false;
+    // Single timer dismisses the toast and purges storage together (see softDelete).
     const timer = setTimeout(() => {
+      setToasts((t) => t.filter((x) => x.id !== id));
       if (!undone) victims.forEach((v) => deleteItemStorage(v).catch(() => {}));
     }, 5200);
     setToasts((t) => [
@@ -400,7 +445,7 @@ function App() {
         action: {
           label: "Undo",
           fn: async () => {
-            undone = true;
+            undone = true; // synchronous, before any await
             clearTimeout(timer);
             setToasts((ts) => ts.filter((x) => x.id !== id));
             try {
@@ -408,12 +453,12 @@ function App() {
             } catch (e) {
               toast(`Undo failed: ${(e as Error).message}`, "error");
             }
+            invalidateViewCache();
             loadItems();
           },
         },
       },
     ]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 5200);
   }
 
   function toggleSelect(id: string) {
@@ -435,6 +480,7 @@ function App() {
     await createStack(spaceId, name, [...selIds]);
     setSelIds(new Set());
     toast(`Stacked ✓ — ${name}`);
+    invalidateViewCache();
     loadItems();
   }
 
@@ -459,6 +505,7 @@ function App() {
         setStackView({ ...stackView, items: left });
       }
     }
+    invalidateViewCache();
     loadItems();
   }
 
@@ -473,6 +520,7 @@ function App() {
     if (!ok) return;
     await deleteStack(stackView.stack.id);
     setStackView(null);
+    invalidateViewCache();
     loadItems();
   }
 
@@ -576,6 +624,7 @@ function App() {
   }, [handleFiles, handleUrl]);
 
   function onItemChanged(updated: Item | null) {
+    invalidateViewCache(); // an edit/move may belong to (or leave) other cached views
     if (!updated) return loadItems();
     setOpen(updated);
     // Patch the edited item into the current view in place (mirrors softDelete's optimistic
@@ -590,6 +639,7 @@ function App() {
 
   async function fileTo(item: Item, spaceId: string) {
     setFiling(null);
+    invalidateViewCache();
     await updateItem(item.id, { space_id: spaceId });
     toast("Filed ✓");
     loadItems();
@@ -826,7 +876,12 @@ function App() {
         <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center" onClick={() => setFiling(null)}>
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
           <div
-            className="relative z-10 w-full max-w-sm glass-dark rounded-t-2xl p-3 sm:rounded-2xl"
+            ref={filingRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="File to a space"
+            tabIndex={-1}
+            className="relative z-10 w-full max-w-sm glass-dark rounded-t-2xl p-3 outline-none sm:rounded-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="px-2 pb-2 text-xs uppercase tracking-wider text-zinc-500">File to…</div>
@@ -874,7 +929,12 @@ function App() {
         <div className="fixed inset-0 z-40 flex" onClick={() => setSimilarQuery(null)}>
           <div className="absolute inset-0 bg-black/75 backdrop-blur-sm" />
           <div
-            className="relative z-10 m-auto flex h-[90dvh] w-[min(1280px,96vw)] flex-col overflow-hidden glass-dark rounded-2xl"
+            ref={similarRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Similar on the web"
+            tabIndex={-1}
+            className="relative z-10 m-auto flex h-[90dvh] w-[min(1280px,96vw)] flex-col overflow-hidden glass-dark rounded-2xl outline-none"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
@@ -911,7 +971,12 @@ function App() {
         <div className="fixed inset-0 z-40 flex" onClick={() => setStackView(null)}>
           <div className="absolute inset-0 bg-black/75 backdrop-blur-sm" />
           <div
-            className="relative z-10 m-auto flex max-h-[88dvh] w-[min(980px,96vw)] flex-col overflow-hidden glass-dark rounded-2xl"
+            ref={stackRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label={stackView.stack.name || "Stack"}
+            tabIndex={-1}
+            className="relative z-10 m-auto flex max-h-[88dvh] w-[min(980px,96vw)] flex-col overflow-hidden glass-dark rounded-2xl outline-none"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between gap-3 border-b border-white/5 px-5 py-3">

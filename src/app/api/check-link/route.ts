@@ -1,5 +1,6 @@
 import { isAuthed } from "../_lib/auth";
 import { safeFetch } from "../_lib/ssrf";
+import { clientIp, rateLimit, tooManyRequests } from "../_lib/ratelimit";
 
 export const maxDuration = 30;
 
@@ -31,6 +32,8 @@ async function reachable(url: string): Promise<boolean> {
 
 export async function GET(req: Request) {
   if (!(await isAuthed(req))) return Response.json({ error: "unauthorized" }, { status: 401 });
+  const rl = rateLimit(`checklink:${clientIp(req)}`, 120, 60_000);
+  if (!rl.ok) return tooManyRequests(rl.retryAfter);
   const url = new URL(req.url).searchParams.get("url");
   if (!url) return Response.json({ error: "url required" }, { status: 400 });
   try {

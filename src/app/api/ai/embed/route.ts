@@ -1,5 +1,6 @@
 import { isAuthed } from "../../_lib/auth";
 import { hasVoyageKey, voyageEmbed, type VoyageContent } from "../../_lib/voyage";
+import { safeFetch } from "../../_lib/ssrf";
 
 export const maxDuration = 30;
 
@@ -22,7 +23,7 @@ export async function POST(req: Request) {
       content.push({ type: "text", text: text.trim().slice(0, 2000) });
     }
     if (typeof imageUrl === "string" && /^https?:\/\//i.test(imageUrl)) {
-      const img = await fetch(imageUrl, { signal: AbortSignal.timeout(15000) });
+      const img = await safeFetch(imageUrl, { signal: AbortSignal.timeout(15000) });
       if (!img.ok) throw new Error(`image fetch ${img.status}`);
       const buf = await img.arrayBuffer();
       if (buf.byteLength > MAX_IMAGE_BYTES) throw new Error("image too large to embed");

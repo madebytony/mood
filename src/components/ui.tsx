@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useDialog } from "./useDialog";
 
 /* ---------- imperative dialogs (replaces prompt/confirm/alert) ---------- */
 
@@ -57,6 +58,9 @@ export function DialogHost() {
     if (req?.kind === "prompt") setTimeout(() => inputRef.current?.select(), 30);
   }, [req]);
 
+  // Escape is already handled by the panel's onKeyDown below, so the hook only traps focus + restores
+  const panelRef = useDialog<HTMLDivElement>(() => {}, { active: !!req, escape: false });
+
   if (!req) return null;
 
   function finish(result?: unknown) {
@@ -73,7 +77,12 @@ export function DialogHost() {
     <div className="fixed inset-0 z-[70] flex items-end justify-center sm:items-center" onClick={cancel}>
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
       <div
-        className="card-in relative z-10 w-full max-w-sm glass-dark rounded-t-2xl p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] sm:rounded-2xl sm:pb-5"
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={req.title}
+        tabIndex={-1}
+        className="card-in relative z-10 w-full max-w-sm glass-dark rounded-t-2xl p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] sm:rounded-2xl sm:pb-5 outline-none"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
           if (e.key === "Enter") confirm();

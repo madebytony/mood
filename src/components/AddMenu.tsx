@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { PhotoIcon, LinkIcon, CameraIcon, PencilIcon } from "./icons";
+import { useDialog } from "./useDialog";
 
 interface Props {
   onFiles: (files: File[]) => void;
@@ -22,6 +23,8 @@ export default function AddMenu({ onFiles, onUrl, onCapture, onNote, openTick }:
   useEffect(() => {
     if (openTick) setOpen(true);
   }, [openTick]);
+
+  const panelRef = useDialog<HTMLDivElement>(() => close(), { active: open });
 
   function close() {
     setOpen(false);
@@ -68,7 +71,12 @@ export default function AddMenu({ onFiles, onUrl, onCapture, onNote, openTick }:
         <div className="fixed inset-0 z-40 flex items-end justify-center sm:items-center" onClick={close}>
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
           <div
-            className="relative z-10 w-full max-w-md glass-dark rounded-t-2xl p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:rounded-2xl"
+            ref={panelRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Add to Mood"
+            tabIndex={-1}
+            className="relative z-10 w-full max-w-md glass-dark rounded-t-2xl p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:rounded-2xl outline-none"
             onClick={(e) => e.stopPropagation()}
           >
             {mode === "menu" && (

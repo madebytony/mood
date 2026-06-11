@@ -389,7 +389,7 @@ export default function Board({ items, urls, onOpen, stacks = [], stackThumbs, o
                       fan.map((t, i) => (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
-                          key={i}
+                          key={t}
                           src={t}
                           alt=""
                           draggable={false}

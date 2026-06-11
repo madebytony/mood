@@ -1,5 +1,6 @@
 import { isAuthed } from "../../_lib/auth";
 import { gemini, geminiDisabled, geminiText, hasGeminiKey, parseJson } from "../../_lib/gemini";
+import { safeFetch } from "../../_lib/ssrf";
 
 export const maxDuration = 30;
 
@@ -9,7 +10,8 @@ export async function POST(req: Request) {
   const { imageUrl, title } = await req.json();
   if (!imageUrl) return Response.json({ error: "imageUrl required" }, { status: 400 });
   try {
-    const img = await fetch(imageUrl, { signal: AbortSignal.timeout(15000) });
+    const img = await safeFetch(imageUrl, { signal: AbortSignal.timeout(15000) });
+    if (!img.ok) throw new Error(`image fetch ${img.status}`);
     const type = img.headers.get("content-type") ?? "image/webp";
     const b64 = Buffer.from(await img.arrayBuffer()).toString("base64");
     const res = await gemini({

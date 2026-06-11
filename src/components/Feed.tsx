@@ -20,8 +20,8 @@ interface Props {
 
 type FeedCard = { kind: "suggestion"; s: Suggestion } | { kind: "library"; item: Item };
 
-/** Free keyless screenshot fallbacks: mShots first (no watermark), thum.io as last resort. */
-const mshot = (u: string) => `https://s0.wp.com/mshots/v1/${encodeURIComponent(u)}?w=600`;
+/** Screenshot fallback: thum.io returns a real rendered screenshot synchronously (unlike mShots
+ *  which queues captures and returns a tiny placeholder on first hit, breaking the error chain). */
 const thumio = (u: string) => `https://image.thum.io/get/width/600/crop/750/${u}`;
 
 export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, compact = false, initialQuery, defaultSpaceId }: Props) {
@@ -122,9 +122,12 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
     toast("Noted — Find More will lean this way");
   }
 
-  /** Pinterest loop: next batch blends your base query with what you've engaged with. */
+  /** Pinterest loop: next batch blends your base query with what you've engaged with.
+   *  In compact (web-similar) mode the search bar is hidden so `query` is always ""; use
+   *  `initialQuery` as the persistent base so "Find more" keeps the original reference intent. */
   function findMore() {
-    const q = [query.trim(), ...seeds.current].filter(Boolean).join(" ").trim() || null;
+    const base = compact ? (initialQuery?.trim() ?? "") : query.trim();
+    const q = [base, ...seeds.current].filter(Boolean).join(" ").trim() || null;
     load(q, true);
   }
 
@@ -170,23 +173,19 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
               <a href={card.s.url} target="_blank" rel="noreferrer" className="block" onClick={() => engage(card.s)}>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
-                  src={card.s.image ?? mshot(card.s.url)}
+                  src={card.s.image ?? thumio(card.s.url)}
                   alt=""
                   loading="lazy"
                   className="min-h-28 w-full bg-white/[0.04] object-cover object-top opacity-0 transition-opacity duration-500"
                   onLoad={(e) => e.currentTarget.classList.remove("opacity-0")}
                   onError={(e) => {
                     const el = e.currentTarget;
-                    const step = el.dataset.fb ?? "0";
-                    if (step === "0" && card.s.image) {
-                      // a real og:image failed — try the mShot screenshot next
+                    if (!el.dataset.fb && card.s.image) {
+                      // og:image failed — fall back to thumio
                       el.dataset.fb = "1";
-                      el.src = mshot(card.s.url);
-                    } else if (step !== "2") {
-                      // mShot was already the source (or just failed) — skip straight to thum.io
-                      el.dataset.fb = "2";
                       el.src = thumio(card.s.url);
                     }
+                    // else: thumio was already the source (no og:image) and also failed → give up
                   }}
                 />
                 <div className="px-3 py-2.5">

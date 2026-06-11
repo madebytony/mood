@@ -1,6 +1,7 @@
 import { isAuthed } from "../_lib/auth";
 import { captureScreenshot } from "../_lib/capture";
 import { assertPublicUrl } from "../_lib/ssrf";
+import { clientIp, rateLimit, tooManyRequests } from "../_lib/ratelimit";
 
 export const maxDuration = 120; // crash-retry + fallback chain on heavy WebGL sites needs headroom
 
@@ -8,6 +9,8 @@ export async function GET(req: Request) {
   if (!(await isAuthed(req))) {
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
+  const rl = rateLimit(`capture:${clientIp(req)}`, 15, 60_000);
+  if (!rl.ok) return tooManyRequests(rl.retryAfter);
   const url = new URL(req.url).searchParams.get("url");
   if (!url || !/^https?:\/\//i.test(url)) {
     return Response.json({ error: "valid url required" }, { status: 400 });

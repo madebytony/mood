@@ -1,4 +1,5 @@
 import fs from "fs";
+import { safeFetch } from "./ssrf";
 
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -377,9 +378,8 @@ export async function chromiumShot(url: string): Promise<Shot> {
 /** Browserless metadata sniff from raw HTML — for sites that crash headless Chrome. */
 async function staticSniff(url: string): Promise<{ fonts: string[]; tech: string[] }> {
   try {
-    const res = await fetch(url, {
+    const res = await safeFetch(url, {
       headers: { "user-agent": UA, accept: "text/html" },
-      redirect: "follow",
       signal: AbortSignal.timeout(10000),
     });
     const html = (await res.text()).slice(0, 900_000);

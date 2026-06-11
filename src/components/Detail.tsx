@@ -5,6 +5,7 @@ import type { Item, Space } from "@/lib/types";
 import { matchToItem, signedUrls, touchViewed, updateItem } from "@/lib/db";
 import { paletteSimilar } from "@/lib/media";
 import { notice } from "./ui";
+import { useDialog } from "./useDialog";
 import { SparklesIcon, XIcon, ChevronLeftIcon, ChevronRightIcon, WarningIcon } from "./icons";
 
 interface Props {
@@ -48,6 +49,8 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
   const [zoomed, setZoomed] = useState(false);
   const tall = !!(item.width && item.height && item.height / item.width > 1.6);
   const scrollMode = tall ? !zoomed : zoomed; // tall pages default to full-width scroll
+  // focus trap + restore; Escape/arrows are handled by the window keydown listener below
+  const panelRef = useDialog<HTMLDivElement>(onClose, { escape: false });
 
   const [rel, setRel] = useState<Item[]>([]);
   const [relUrls, setRelUrls] = useState<Map<string, string>>(new Map());
@@ -184,7 +187,12 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
     <div className="fixed inset-0 z-40 flex" onClick={onClose}>
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
       <div
-        className="card-in no-scrollbar relative z-10 m-auto flex h-dvh w-screen flex-col overflow-y-auto bg-[#141418]/85 backdrop-blur-2xl md:h-auto md:shadow-2xl md:max-h-[94dvh] md:w-[min(1200px,96vw)] md:flex-row md:overflow-hidden md:rounded-2xl md:border md:border-white/10"
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={item.title ?? "Item detail"}
+        tabIndex={-1}
+        className="card-in no-scrollbar relative z-10 m-auto flex h-dvh w-screen flex-col overflow-y-auto bg-[#141418]/85 backdrop-blur-2xl outline-none md:h-auto md:shadow-2xl md:max-h-[94dvh] md:w-[min(1200px,96vw)] md:flex-row md:overflow-hidden md:rounded-2xl md:border md:border-white/10"
         onClick={(e) => e.stopPropagation()}
       >
         <button
