@@ -11,15 +11,17 @@ import { SparklesIcon, InboxIcon, PhoneIcon } from "./icons";
 
 interface Props {
   libraries: Library[];
+  libraryModes: Record<string, "default" | "type">;
   spaces: Space[];
   selected: string | "all" | "home";
   counts: Map<string, number>;
   onSelect: (id: string | "all" | "home") => void;
+  onSetLibraryMode: (libraryId: string, mode: "default" | "type") => void;
   onChanged: () => void;
   onClose?: () => void;
 }
 
-export default function Sidebar({ libraries, spaces, selected, counts, onSelect, onChanged, onClose }: Props) {
+export default function Sidebar({ libraries, libraryModes, spaces, selected, counts, onSelect, onSetLibraryMode, onChanged, onClose }: Props) {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameVal, setRenameVal] = useState("");
   const [qr, setQr] = useState<{ img: string; link: string } | null>(null);
@@ -51,6 +53,11 @@ export default function Sidebar({ libraries, spaces, selected, counts, onSelect,
       }
       const img = await QRCode.toDataURL(out.link, { width: 480, margin: 1 });
       setQr({ img, link: out.link });
+    } catch (e) {
+      await notice({
+        title: "Couldn't create link",
+        body: (e as Error).message || "Network error while creating sign-in link",
+      });
     } finally {
       setQrBusy(false);
     }
@@ -120,14 +127,29 @@ export default function Sidebar({ libraries, spaces, selected, counts, onSelect,
         {libraries.map((lib) => (
           <div key={lib.id} className="mt-4">
             <div className="flex items-center justify-between px-3 pb-1">
-              <span className="text-[11px] font-medium uppercase tracking-wider text-zinc-600">{lib.name}</span>
-              <button
-                onClick={() => addSpace(lib.id)}
-                title="New space"
-                className="rounded px-1 text-zinc-600 hover:text-zinc-300"
-              >
-                +
-              </button>
+              <span className="truncate text-[11px] font-medium uppercase tracking-wider text-zinc-600">{lib.name}</span>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() =>
+                    onSetLibraryMode(lib.id, (libraryModes[lib.id] ?? "default") === "type" ? "default" : "type")
+                  }
+                  title="Toggle design/type mode"
+                  className={`rounded-full border px-2 py-0.5 text-[10px] ${
+                    (libraryModes[lib.id] ?? "default") === "type"
+                      ? "border-amber-300/40 bg-amber-500/15 text-amber-100"
+                      : "border-white/10 text-zinc-500 hover:text-zinc-300"
+                  }`}
+                >
+                  {(libraryModes[lib.id] ?? "default") === "type" ? "Type" : "Design"}
+                </button>
+                <button
+                  onClick={() => addSpace(lib.id)}
+                  title="New space"
+                  className="rounded px-1 text-zinc-600 hover:text-zinc-300"
+                >
+                  +
+                </button>
+              </div>
             </div>
             {spaces
               .filter((s) => s.library_id === lib.id)

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Item, Space } from "@/lib/types";
 import { addFromUrl, discover, markSeen, resurface, signedUrls, type Suggestion } from "@/lib/db";
 import { SkeletonGrid } from "./ui";
@@ -15,24 +15,51 @@ interface Props {
   /** Embedded inside a space: no search bar, no library gems, saves go straight to defaultSpaceId. */
   compact?: boolean;
   initialQuery?: string;
+  /** Reference image URL for multimodal "more like this" web-similar searches. */
+  initialImage?: string | null;
   defaultSpaceId?: string;
+  mode?: "type";
 }
 
 type FeedCard = { kind: "suggestion"; s: Suggestion } | { kind: "library"; item: Item };
+type TypeTab = "foundries" | "fonts" | "inuse";
 
-/** Screenshot fallback: thum.io returns a real rendered screenshot synchronously (unlike mShots
- *  which queues captures and returns a tiny placeholder on first hit, breaking the error chain). */
-const thumio = (u: string) => `https://image.thum.io/get/width/600/crop/750/${u}`;
+/** Screenshot fallback for results without an og:image. WordPress mShots is genuinely free
+ *  (thum.io's free tier returns a "sign up for a paid account" watermark). mShots returns a small
+ *  grey placeholder while it generates the capture, so we retry once to pull the finished shot. */
+const shot = (u: string) => `https://s.wordpress.com/mshots/v1/${encodeURIComponent(u)}?w=600&h=750`;
 
-export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, compact = false, initialQuery, defaultSpaceId }: Props) {
+export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, compact = false, initialQuery, initialImage, defaultSpaceId, mode }: Props) {
   const [cards, setCards] = useState<FeedCard[]>([]);
   const [urls, setUrls] = useState<Map<string, string>>(new Map());
   const [query, setQuery] = useState("");
+  const [typeTab, setTypeTab] = useState<TypeTab>("foundries");
   const [loading, setLoading] = useState(false);
   const [picking, setPicking] = useState<Suggestion | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
   const shown = useRef(new Set<string>());      // everything already offered this session
   const seeds = useRef<string[]>([]);            // descriptors of what you engaged with
+
+  const isFoundryItem = (item: Item) => (item.type === "site" || item.type === "link") && !!item.source_domain;
+  const isFontItem = (item: Item) => (item.fonts?.length ?? 0) > 0;
+  const isInUseItem = (item: Item) => item.type === "image" || item.type === "site";
+
+  const filteredCards = useMemo(() => {
+    if (mode !== "type") return cards;
+    return cards.filter((card) => {
+      if (typeTab === "foundries") {
+        return card.kind === "suggestion" || isFoundryItem(card.item);
+      }
+      if (typeTab === "fonts") {
+        return card.kind === "library" && isFontItem(card.item);
+      }
+      return card.kind === "library" && isInUseItem(card.item);
+    });
+  }, [cards, mode, typeTab]);
+
+  useEffect(() => {
+    if (mode !== "type") setTypeTab("foundries");
+  }, [mode]);
 
   function engage(s: Suggestion) {
     const words = (s.title ?? s.domain).replace(/[|–—·•].*/, "").trim();
@@ -47,7 +74,7 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
       try {
         if (!append) shown.current = new Set();
         const [suggestions, gems] = await Promise.all([
-          discover(q, [...shown.current]),
+          discover(q, [...shown.current], mode, initialImage),
           q || compact || append ? Promise.resolve([] as Item[]) : resurface(6),
         ]);
         // belt-and-braces: never show a card twice this session, even if the server re-offers it
@@ -72,7 +99,7 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
         setLoading(false);
       }
     },
-    [toast, compact]
+    [toast, compact, mode, initialImage]
   );
 
   useEffect(() => {
@@ -155,15 +182,45 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
       </form>
       )}
 
-      {loading && !cards.length && (
+      {mode === "type" && (
+        <div className="mx-auto mb-3 flex w-full max-w-xl gap-1 rounded-xl border border-white/10 bg-white/[0.03] p-1">
+          {([
+            { id: "foundries", label: "Foundries" },
+            { id: "fonts", label: "Fonts" },
+            { id: "inuse", label: "In Use" },
+          ] as const).map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTypeTab(t.id)}
+              className={`flex-1 rounded-lg px-3 py-1.5 text-xs ${
+                typeTab === t.id
+                  ? "bg-white text-black"
+                  : "text-zinc-300 hover:bg-white/10 hover:text-white"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {loading && !filteredCards.length && (
         <div>
           <div className="pb-3 text-center text-xs text-zinc-600">Curating fresh inspiration…</div>
           <SkeletonGrid count={10} />
         </div>
       )}
 
+      {!loading && mode === "type" && !filteredCards.length && cards.length > 0 && (
+        <div className="pb-3 text-center text-xs text-zinc-600">
+          {typeTab === "foundries" && "No foundry cards in this batch yet. Try Find more."}
+          {typeTab === "fonts" && "No font-tagged items yet. Save more specimens or review AI font guesses."}
+          {typeTab === "inuse" && "No in-use items yet. Save screenshots or captures to build this lane."}
+        </div>
+      )}
+
       <div className="columns-2 gap-3 sm:columns-3 lg:columns-4 xl:columns-5">
-        {cards.map((card, i) =>
+        {filteredCards.map((card) =>
           card.kind === "suggestion" ? (
             <div
               key={`s-${card.s.url}`}
@@ -173,19 +230,27 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
               <a href={card.s.url} target="_blank" rel="noreferrer" className="block" onClick={() => engage(card.s)}>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
-                  src={card.s.image ?? thumio(card.s.url)}
+                  src={card.s.image ?? shot(card.s.url)}
                   alt=""
                   loading="lazy"
                   className="min-h-28 w-full bg-white/[0.04] object-cover object-top opacity-0 transition-opacity duration-500"
-                  onLoad={(e) => e.currentTarget.classList.remove("opacity-0")}
+                  onLoad={(e) => {
+                    const el = e.currentTarget;
+                    // mShots serves a ~400px grey placeholder while generating — retry once for the real shot.
+                    if (el.src.includes("mshots") && el.naturalWidth > 0 && el.naturalWidth < 600 && !el.dataset.retry) {
+                      el.dataset.retry = "1";
+                      setTimeout(() => { el.src = `${shot(card.s.url)}&retry=1`; }, 2800);
+                      return;
+                    }
+                    el.classList.remove("opacity-0");
+                  }}
                   onError={(e) => {
                     const el = e.currentTarget;
                     if (!el.dataset.fb && card.s.image) {
-                      // og:image failed — fall back to thumio
+                      // og:image failed — fall back to a screenshot
                       el.dataset.fb = "1";
-                      el.src = thumio(card.s.url);
+                      el.src = shot(card.s.url);
                     }
-                    // else: thumio was already the source (no og:image) and also failed → give up
                   }}
                 />
                 <div className="px-3 py-2.5">
@@ -231,7 +296,7 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
         )}
       </div>
 
-      {cards.length > 0 && (
+      {filteredCards.length > 0 && (
         <div className="flex justify-center pb-6 pt-4">
           <button
             onClick={findMore}

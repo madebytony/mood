@@ -1,9 +1,11 @@
 export type ItemType = "image" | "site" | "link" | "note" | "todo";
+export type LibraryMode = "default" | "type";
 
 export interface Library {
   id: string;
   user_id: string;
   name: string;
+  mode?: LibraryMode | null;
   sort: number;
   created_at: string;
 }
@@ -26,6 +28,7 @@ export interface Item {
   type: ItemType;
   storage_path: string | null;
   thumb_path: string | null;
+  /** For notes this holds rich-text HTML (legacy notes hold plain text); for todos, a JSON array. */
   content: string | null;
   title: string | null;
   source_url: string | null;
@@ -39,11 +42,15 @@ export interface Item {
   board_x: number | null;
   board_y: number | null;
   board_w: number | null;
+  /** Manual card height (notes/cards the user dragged taller); null = derive from content. */
+  board_h: number | null;
   ai_caption: string | null;
   stack_id: string | null;
   stack_order: number | null;
   board_z: number | null;
   collapsed: boolean;
+  /** Milanote-style card tint key (e.g. "amber", "blue"); null = default dark card. */
+  card_color: string | null;
   /** Set true by a background reachability check when the source URL fails to load. */
   dead_link: boolean;
   created_at: string;
@@ -62,6 +69,8 @@ export interface Stack {
   board_y: number | null;
   board_w: number | null;
   board_z: number | null;
+  /** Column minimised to just its header. */
+  collapsed: boolean;
   created_at: string;
 }
 

@@ -2,8 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Item, Space } from "@/lib/types";
-import { matchToItem, signedUrls, touchViewed, updateItem } from "@/lib/db";
+import { matchToItem, noteTitle, signedUrls, touchViewed, updateItem } from "@/lib/db";
 import { paletteSimilar } from "@/lib/media";
+import { isHtmlNote, plainToHtml } from "@/lib/noteHtml";
+import NoteEditor from "./NoteEditor";
 import { notice } from "./ui";
 import { useDialog } from "./useDialog";
 import { SparklesIcon, XIcon, ChevronLeftIcon, ChevronRightIcon, WarningIcon } from "./icons";
@@ -18,7 +20,7 @@ interface Props {
   onClose: () => void;
   onChanged: (item: Item | null) => void;
   onOpenItem: (item: Item) => void;
-  onWebSimilar: (query: string) => void;
+  onWebSimilar: (query: string, imageUrl?: string | null) => void;
   onDelete: (item: Item) => void;
 }
 
@@ -239,7 +241,15 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
                 }
               />
             ) : item.type === "note" ? (
-              <div className="max-w-prose whitespace-pre-wrap p-8 text-sm leading-relaxed text-zinc-200">{item.content}</div>
+              <div className="mx-auto h-[60dvh] w-full max-w-prose p-8">
+                <NoteEditor
+                  key={item.id}
+                  html={isHtmlNote(item.content) ? item.content! : plainToHtml(item.content ?? "")}
+                  cardColor={item.card_color}
+                  onCardColor={async (c) => onChanged(await updateItem(item.id, { card_color: c }))}
+                  onChange={async (html) => onChanged(await updateItem(item.id, { content: html, title: noteTitle(html) || "Note" }))}
+                />
+              </div>
             ) : (
               <div className="text-zinc-700">No preview</div>
             )}
@@ -261,16 +271,22 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
                     </button>
                   )}
                   {(() => {
+                    // Lead with the visual aesthetic (palette + style tags); the caption's literal
+                    // scene is incidental and otherwise drags results toward subject matter.
+                    const palette = (item.colors ?? []).filter((c) => c !== "dark" && c !== "light");
+                    const styleTags = (item.tags ?? []).filter((t) => !/^(website|site|web|image|photo)$/i.test(t));
                     const q = [
+                      palette.length ? `${palette.slice(0, 4).join(", ")} palette` : null,
+                      ...styleTags.slice(0, 5),
                       item.ai_caption ?? item.title,
-                      ...(item.tags ?? []).slice(0, 3),
-                      ...(item.colors ?? []).filter((c) => c !== "dark" && c !== "light").slice(0, 2),
                     ]
                       .filter(Boolean)
-                      .join(" ")
+                      .join(" · ")
                       .slice(0, 220);
+                    // Ground the search on the actual image for visual cards; notes/todos stay text-only.
+                    const refImage = item.type === "note" || item.type === "todo" ? null : fullUrl;
                     return q ? (
-                      <button onClick={() => onWebSimilar(q)} className="text-[11px] text-zinc-200 hover:underline">
+                      <button onClick={() => onWebSimilar(q, refImage)} className="text-[11px] text-zinc-200 hover:underline">
                         Search the web for similar →
                       </button>
                     ) : null;
@@ -356,7 +372,8 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
                     provider === "google" ? "Google Fonts" :
                     provider === "adobe" ? "Adobe Fonts" :
                     provider === "fontshare" ? "Fontshare" :
-                    provider === "myfonts" ? "MyFonts" : "Search the web";
+                    provider === "myfonts" ? "MyFonts" :
+                    provider === "ai" ? "AI guess" : "Search the web";
                   return (
                     <a
                       key={f}
@@ -364,10 +381,15 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
                       target="_blank"
                       rel="noreferrer"
                       title={`Open in ${label}`}
-                      className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] text-zinc-300 hover:border-white/30 hover:text-white"
+                      className={`rounded-full border bg-white/[0.03] px-2.5 py-1 text-[11px] hover:text-white ${
+                        provider === "ai"
+                          ? "border-amber-300/30 text-amber-100 hover:border-amber-200/50"
+                          : "border-white/10 text-zinc-300 hover:border-white/30"
+                      }`}
                     >
                       <span className="mr-1 font-serif italic text-zinc-500">Aa</span>
                       {name}
+                      {provider === "ai" && <span className="ml-1 text-amber-200">AI</span>}
                       <span className="ml-1 text-zinc-600">↗</span>
                     </a>
                   );

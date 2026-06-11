@@ -10,6 +10,8 @@ interface Props {
   onUrl: (url: string) => void;
   onCapture: (url: string) => void;
   onNote: (text: string) => void;
+  /** When true (board view), "Quick note" creates an empty note to edit inline rather than a compose box. */
+  noteInline?: boolean;
   onColumn?: (name: string) => void;
   onTodo?: (title: string) => void;
   /** Increment to open the menu from outside (mobile tab bar). */
@@ -18,7 +20,7 @@ interface Props {
 
 type Mode = "menu" | "url" | "capture" | "note" | "column" | "todo";
 
-export default function AddMenu({ onFiles, onUrl, onCapture, onNote, onColumn, onTodo, openTick }: Props) {
+export default function AddMenu({ onFiles, onUrl, onCapture, onNote, noteInline, onColumn, onTodo, openTick }: Props) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<Mode>("menu");
   const [text, setText] = useState("");
@@ -110,7 +112,10 @@ export default function AddMenu({ onFiles, onUrl, onCapture, onNote, onColumn, o
                 <button className={itemBtn} onClick={() => setMode("capture")}>
                   <CameraIcon className="h-5 w-5 text-zinc-400" /><span>Capture a site <span className="text-zinc-500">— full-page screenshot</span></span>
                 </button>
-                <button className={itemBtn} onClick={() => setMode("note")}>
+                <button
+                  className={itemBtn}
+                  onClick={() => { if (noteInline) { onNote(""); close(); } else setMode("note"); }}
+                >
                   <PencilIcon className="h-5 w-5 text-zinc-400" /> Quick note
                 </button>
                 {onColumn && (

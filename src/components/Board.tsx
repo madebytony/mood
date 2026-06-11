@@ -2,8 +2,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Item, Stack } from "@/lib/types";
-import { saveBoardPositions, updateItem, updateStack, type BoardItemPos, type BoardStackPos } from "@/lib/db";
+import { saveBoardPositions, updateItem, updateStack, noteTitle, type BoardItemPos, type BoardStackPos } from "@/lib/db";
 import { StackIcon, SparklesIcon, WarningIcon } from "./icons";
+import { cardSurface, CARD_TINTS } from "@/lib/cardColors";
+import { noteToSafeHtml, isHtmlNote, plainToHtml } from "@/lib/noteHtml";
+import NoteEditor from "./NoteEditor";
+import { ColumnItemsSortable, TodosSortable } from "./BoardSortables";
 
 interface Props {
   items: Item[];
@@ -19,6 +23,18 @@ interface Props {
   /** Called after local optimistic update so parent state stays in sync. */
   onItemUpdate?: (id: string, patch: Partial<Item>) => void;
   onStackUpdate?: (id: string, patch: Partial<Stack>) => void;
+  /** Called when an item card is dropped onto a column. */
+  onDropToColumn?: (item: Item, columnStackId: string) => void;
+  /** Called when the × button on a column item is clicked to return it to the board. */
+  onRemoveFromColumn?: (item: Item) => void;
+  /** Called when column items are reordered; receives the column's stack id and new item-id order. */
+  onReorderColumn?: (columnStackId: string, orderedIds: string[]) => void;
+  /** A freshly-created note id to open directly in inline edit mode. */
+  autoEditId?: string | null;
+  /** Called once the autoEditId has been consumed so the parent can clear it. */
+  onAutoEditConsumed?: () => void;
+  /** Quick-add a note card into a column (the + at the column's foot). */
+  onAddNoteToColumn?: (columnStackId: string, text: string) => void;
 }
 
 const CARD_W = 260;
@@ -33,52 +49,26 @@ function parseTodos(c: string | null): TodoItem[] {
 
 function cardHeight(node: Item | Stack, w: number, colCount = 0): number {
   if (!("width" in node)) {
-    if ((node as Stack).kind === "column") return Math.max(180, 60 + colCount * 72 + 48);
+    const s = node as Stack;
+    if (s.kind === "column") {
+      if (s.collapsed) return 52;
+      return Math.max(180, 60 + colCount * 72 + 48);
+    }
     return w * 0.85;
   }
   const item = node as Item;
   if (item.collapsed) return 40;
+  if (item.board_h != null) return item.board_h;
   if (item.type === "todo") {
     const todos = parseTodos(item.content);
     return Math.max(100, 52 + todos.length * 32 + 36);
   }
-  if (item.type === "note") return Math.max(100, 56 + (item.content?.length ?? 0) * 0.4);
+  if (item.type === "note") {
+    const plainLen = (item.content ?? "").replace(/<[^>]*>/g, " ").length;
+    return Math.max(100, 56 + plainLen * 0.55);
+  }
   if (item.width && item.height) return (item.height / item.width) * w;
   return w * 0.75;
-}
-
-// ---- Markdown inline renderer ------------------------------------------------
-function renderInline(text: string): React.ReactNode[] {
-  const parts = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*)/g);
-  return parts.map((p, i) => {
-    if (p.startsWith("**") && p.endsWith("**")) return <strong key={i}>{p.slice(2, -2)}</strong>;
-    if (p.startsWith("*") && p.endsWith("*")) return <em key={i}>{p.slice(1, -1)}</em>;
-    return <span key={i}>{p}</span>;
-  });
-}
-
-function MarkdownContent({ text }: { text: string }) {
-  const lines = (text ?? "").split("\n");
-  return (
-    <div className="space-y-0.5 text-xs leading-relaxed text-zinc-300">
-      {lines.map((line, i) => {
-        if (/^#{1,2}\s/.test(line)) {
-          const t = line.replace(/^#+\s/, "");
-          return <p key={i} className="font-semibold text-zinc-100">{renderInline(t)}</p>;
-        }
-        if (/^[-*]\s/.test(line)) {
-          return (
-            <div key={i} className="flex gap-1.5">
-              <span className="mt-0.5 shrink-0 text-zinc-500">•</span>
-              <span>{renderInline(line.slice(2))}</span>
-            </div>
-          );
-        }
-        if (!line.trim()) return <div key={i} className="h-1.5" />;
-        return <p key={i}>{renderInline(line)}</p>;
-      })}
-    </div>
-  );
 }
 
 // ---- Context menu -----------------------------------------------------------
@@ -86,12 +76,16 @@ interface CtxMenu { key: string; x: number; y: number; }
 
 export default function Board({
   items, urls, onOpen, stacks = [], stackThumbs, columnItems, onOpenStack,
-  selected, onMarquee, onItemUpdate, onStackUpdate,
+  selected, onMarquee, onItemUpdate, onStackUpdate, onDropToColumn, onRemoveFromColumn, onReorderColumn,
+  autoEditId, onAutoEditConsumed, onAddNoteToColumn,
 }: Props) {
   const wrap = useRef<HTMLDivElement>(null);
   const layer = useRef<HTMLDivElement>(null);
   const view = useRef({ x: 60, y: 60, k: 1 });
   const [positions, setPositions] = useState<Map<string, Pos>>(new Map());
+  // Mirror of `positions` for the layout effect to read without a stale closure.
+  const positionsRef = useRef(positions);
+  useEffect(() => { positionsRef.current = positions; }, [positions]);
   const [tidying, setTidying] = useState(false);
   const [selectMode, setSelectMode] = useState(false);
   const [band, setBand] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
@@ -100,14 +94,24 @@ export default function Board({
   const [zOverrides, setZOverrides] = useState<Map<string, number>>(new Map());
   // Inline todo-add state: key → draft text
   const [todoInput, setTodoInput] = useState<Record<string, string>>({});
+  // Inline column quick-add state: stack id → draft text
+  const [colInput, setColInput] = useState<Record<string, string>>({});
   // Inline column-rename state
   const [renamingCol, setRenamingCol] = useState<string | null>(null);
+  // Which note is in inline-edit mode (card key)
+  const [editingNote, setEditingNote] = useState<string | null>(null);
+  // Drag-lift visuals: the card currently being dragged, and the one briefly settling on release
+  const [draggingKey, setDraggingKey] = useState<string | null>(null);
+  const [settlingKey, setSettlingKey] = useState<string | null>(null);
+  // Drop-to-column: track which column key is being hovered during a card drag
+  const dropTargetRef = useRef<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
 
   const drag = useRef<{
     mode: "pan" | "card" | "pinch" | "resize" | "marquee" | null;
     key?: string;
     startX: number; startY: number; origX: number; origY: number; moved: boolean;
-    startDist?: number; startK?: number; origW?: number;
+    startDist?: number; startK?: number; origW?: number; origH?: number;
   }>({ mode: null, startX: 0, startY: 0, origX: 0, origY: 0, moved: false });
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const velSample = useRef<{ x: number; y: number; t: number } | null>(null);
@@ -164,6 +168,19 @@ export default function Board({
     onItemUpdate?.(item.id, patch);
   }
 
+  function toggleColumnCollapse(stack: Stack) {
+    const patch = { collapsed: !stack.collapsed } as Partial<Stack>;
+    updateStack(stack.id, patch).catch(() => {});
+    onStackUpdate?.(stack.id, patch);
+  }
+
+  function commitColInput(stack: Stack) {
+    const text = (colInput[stack.id] ?? "").trim();
+    if (!text) { setColInput((c) => ({ ...c, [stack.id]: "" })); return; }
+    onAddNoteToColumn?.(stack.id, text);
+    setColInput((c) => ({ ...c, [stack.id]: "" }));
+  }
+
   function toggleTodo(item: Item, todoId: string) {
     const todos = parseTodos(item.content).map((t) => t.id === todoId ? { ...t, done: !t.done } : t);
     const patch = { content: JSON.stringify(todos) } as Partial<Item>;
@@ -175,10 +192,33 @@ export default function Board({
     const text = (todoInput[item.id] ?? "").trim();
     if (!text) { setTodoInput((t) => ({ ...t, [item.id]: "" })); return; }
     const todos = [...parseTodos(item.content), { id: crypto.randomUUID(), text, done: false }];
+    saveTodos(item, todos);
+    setTodoInput((t) => ({ ...t, [item.id]: "" }));
+  }
+
+  function saveTodos(item: Item, todos: TodoItem[]) {
     const patch = { content: JSON.stringify(todos) } as Partial<Item>;
     updateItem(item.id, patch).catch(() => {});
     onItemUpdate?.(item.id, patch);
-    setTodoInput((t) => ({ ...t, [item.id]: "" }));
+  }
+  function editTodo(item: Item, id: string, text: string) {
+    const t = text.trim();
+    const todos = parseTodos(item.content).flatMap((x) => x.id === id ? (t ? [{ ...x, text: t }] : []) : [x]);
+    saveTodos(item, todos);
+  }
+  function deleteTodo(item: Item, id: string) {
+    saveTodos(item, parseTodos(item.content).filter((x) => x.id !== id));
+  }
+  function reorderTodos(item: Item, orderedIds: string[]) {
+    const map = new Map(parseTodos(item.content).map((t) => [t.id, t]));
+    saveTodos(item, orderedIds.map((id) => map.get(id)!).filter(Boolean));
+  }
+
+  /** Set (or clear) a card's Milanote tint. Items only — stacks/columns keep the default surface. */
+  function setCardColor(key: string, color: string | null) {
+    if (key.startsWith("stk:")) return;
+    updateItem(key, { card_color: color }).catch(() => {});
+    onItemUpdate?.(key, { card_color: color });
   }
 
   function persistPos(key: string, patch: { board_x?: number; board_y?: number; board_w?: number }) {
@@ -215,22 +255,54 @@ export default function Board({
   }
 
   useEffect(() => {
-    const placed = new Map<string, Pos>();
+    // Merge with what we already have so tidy/move/edit don't get clobbered when `items`
+    // or `stacks` change identity. Only genuinely new keys get a fresh position.
+    const prev = positionsRef.current;
+    const placed = new Map(prev);
+    const liveKeys = new Set(nodes.map((n) => n.key));
+    for (const key of [...placed.keys()]) if (!liveKeys.has(key)) placed.delete(key);
+
+    const isInitial = prev.size === 0;
     let maxX = 0;
     const unplaced: Node[] = [];
     for (const n of nodes) {
+      if (placed.has(n.key)) { const p = placed.get(n.key)!; maxX = Math.max(maxX, p.x + p.w); continue; }
       const b = n.node;
       if (b.board_x != null && b.board_y != null) {
         placed.set(n.key, { x: b.board_x, y: b.board_y, w: b.board_w ?? CARD_W });
         maxX = Math.max(maxX, b.board_x + (b.board_w ?? CARD_W));
       } else { unplaced.push(n); }
     }
-    const auto = masonry(unplaced);
-    const offsetX = maxX > 0 ? maxX + GAP * 2 : 0;
-    for (const [key, p] of auto) placed.set(key, { ...p, x: p.x + offsetX });
+    if (unplaced.length) {
+      // Bulk (first load, or a large batch) → masonry. A few new cards mid-session → drop into view.
+      if (isInitial || unplaced.length > 4) {
+        const auto = masonry(unplaced);
+        const offsetX = maxX > 0 ? maxX + GAP * 2 : 0;
+        for (const [key, p] of auto) placed.set(key, { ...p, x: p.x + offsetX });
+      } else {
+        const c = viewportCenterBoard();
+        unplaced.forEach((n, i) => {
+          const w = (n.node.board_w ?? CARD_W);
+          const x = Math.round(c.x - w / 2 + i * 28), y = Math.round(c.y - 40 + i * 28);
+          placed.set(n.key, { x, y, w });
+          persistPos(n.key, { board_x: x, board_y: y, board_w: w }); // sticky across reloads
+        });
+      }
+    }
     setPositions(placed);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, stacks]);
+
+  // Open a freshly-created note straight into inline edit mode.
+  useEffect(() => {
+    if (!autoEditId) return;
+    if (items.some((i) => i.id === autoEditId && i.type === "note")) {
+      setEditingNote(autoEditId);
+      bringToFront(autoEditId);
+      onAutoEditConsumed?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoEditId, items]);
 
   function applyView() {
     if (layer.current) {
@@ -260,6 +332,35 @@ export default function Board({
   }, []);
 
   function clampW(w: number) { return Math.min(900, Math.max(140, w)); }
+  function clampH(h: number) { return Math.min(1400, Math.max(60, h)); }
+
+  /** Board-space coordinates of the current viewport centre (where new cards should land). */
+  function viewportCenterBoard(): { x: number; y: number } {
+    const el = wrap.current;
+    const v = view.current;
+    const cw = el?.clientWidth ?? 1200, ch = el?.clientHeight ?? 800;
+    return { x: (cw / 2 - v.x) / v.k, y: (ch / 2 - v.y) / v.k };
+  }
+
+  /** Return the node key of a stack OR column whose bounding box contains (nx, ny), or null.
+   *  Both store membership via the dropped item's stack_id, so a fan stack is a valid drop target too. */
+  function findDropStack(nx: number, ny: number, dragKey: string): string | null {
+    if (dragKey.startsWith("stk:")) return null; // stacks/columns can't be dropped into stacks
+    for (const { key, node } of nodes) {
+      if (!key.startsWith("stk:")) continue;
+      const s = node as Stack;
+      const p = positions.get(key);
+      if (!p) continue;
+      const h = cardHeight(s, p.w, columnItems?.get(s.id)?.length ?? 0);
+      if (nx >= p.x && nx <= p.x + p.w && ny >= p.y && ny <= p.y + h) return key;
+    }
+    return null;
+  }
+
+  function clearDropTarget() {
+    dropTargetRef.current = null;
+    setDropTarget(null);
+  }
 
   function onPointerDown(e: React.PointerEvent, key?: string) {
     cancelAnimationFrame(momentumRaf.current);
@@ -275,13 +376,18 @@ export default function Board({
     if (key) {
       const p = positions.get(key);
       if (!p) return;
+      if (editingNote && editingNote !== key) setEditingNote(null);
       drag.current = { mode: "card", key, startX: e.clientX, startY: e.clientY, origX: p.x, origY: p.y, moved: false };
+      setSettlingKey(null);
+      setDraggingKey(key);
+      bringToFront(key);
     } else if (onMarquee && (selectMode || e.shiftKey)) {
       const rect = wrap.current!.getBoundingClientRect();
       const x = e.clientX - rect.left, y = e.clientY - rect.top;
       drag.current = { mode: "marquee", startX: x, startY: y, origX: 0, origY: 0, moved: false };
       setBand({ x1: x, y1: y, x2: x, y2: y });
     } else {
+      if (editingNote) setEditingNote(null);
       drag.current = { mode: "pan", startX: e.clientX, startY: e.clientY, origX: view.current.x, origY: view.current.y, moved: false };
     }
   }
@@ -290,7 +396,10 @@ export default function Board({
     (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
     const p = positions.get(key);
     if (!p) return;
-    drag.current = { mode: "resize", key, startX: e.clientX, startY: e.clientY, origX: p.x, origY: p.y, moved: false, origW: p.w };
+    const node = nodeOf(key);
+    const colCount = key.startsWith("stk:") ? (columnItems?.get(key.slice(4))?.length ?? 0) : 0;
+    const origH = node ? cardHeight(node, p.w, colCount) : 0;
+    drag.current = { mode: "resize", key, startX: e.clientX, startY: e.clientY, origX: p.x, origY: p.y, moved: false, origW: p.w, origH };
   }
 
   function nodeOf(key: string): Item | Stack | undefined {
@@ -326,15 +435,23 @@ export default function Board({
       velSample.current = { x: e.clientX, y: e.clientY, t: now }; applyView();
     } else if (d.mode === "card" && d.key) {
       const k = view.current.k;
+      const nx = d.origX + dx / k, ny = d.origY + dy / k;
       const el = document.getElementById(`card-${d.key}`);
-      if (el) el.style.transform = `translate(${d.origX + dx / k}px, ${d.origY + dy / k}px)`;
+      if (el) el.style.transform = `translate(${nx}px, ${ny}px) scale(1.03)`;
+      if (d.moved && !d.key.startsWith("stk:")) {
+        const col = findDropStack(nx, ny, d.key);
+        if (col !== dropTargetRef.current) { dropTargetRef.current = col; setDropTarget(col); }
+      }
     } else if (d.mode === "resize" && d.key) {
       const k = view.current.k;
       const nw = clampW((d.origW ?? CARD_W) + dx / k);
       const el = document.getElementById(`card-${d.key}`);
       const node = nodeOf(d.key);
-      const colCount = d.key.startsWith("stk:") ? (columnItems?.get(d.key.slice(4))?.length ?? 0) : 0;
-      if (el && node) { el.style.width = `${nw}px`; el.style.height = `${cardHeight(node, nw, colCount)}px`; }
+      if (el && node) {
+        el.style.width = `${nw}px`;
+        // Items get a free, draggable height; columns/stacks keep their derived height.
+        if (!d.key.startsWith("stk:")) el.style.height = `${clampH((d.origH ?? 0) + dy / k)}px`;
+      }
     }
   }
 
@@ -348,22 +465,47 @@ export default function Board({
       return;
     }
     if (d.mode === "resize" && d.key) {
-      const nw = clampW((d.origW ?? CARD_W) + (e.clientX - d.startX) / view.current.k);
+      const k = view.current.k;
+      const nw = clampW((d.origW ?? CARD_W) + (e.clientX - d.startX) / k);
       const p = positions.get(d.key);
-      if (p) { setPositions(new Map(positions).set(d.key, { ...p, w: nw })); persistPos(d.key, { board_w: nw }); }
+      if (p) { setPositions(new Map(positions).set(d.key, { ...p, w: nw })); }
+      if (d.key.startsWith("stk:")) {
+        persistPos(d.key, { board_w: nw });
+      } else {
+        // Items also persist a manual height so notes/cards stay the size the user dragged.
+        const nh = clampH((d.origH ?? 0) + (e.clientY - d.startY) / k);
+        updateItem(d.key, { board_w: nw, board_h: nh }).catch(() => {});
+        onItemUpdate?.(d.key, { board_w: nw, board_h: nh });
+      }
     } else if (d.mode === "card" && d.key) {
       const dx = e.clientX - d.startX, dy = e.clientY - d.startY;
       const k = view.current.k;
+      const dropped = d.key;
+      setDraggingKey(null);
       if (d.moved) {
-        const nx = d.origX + dx / k, ny = d.origY + dy / k;
-        const p = positions.get(d.key)!;
-        setPositions(new Map(positions).set(d.key, { ...p, x: nx, y: ny }));
-        persistPos(d.key, { board_x: nx, board_y: ny, board_w: p.w });
+        const col = dropTargetRef.current;
+        clearDropTarget();
+        if (col && !dropped.startsWith("stk:")) {
+          // Drop into column — snap card back then let parent remove it from the board
+          const el = document.getElementById(`card-${dropped}`);
+          if (el) el.style.transform = `translate(${d.origX}px, ${d.origY}px)`;
+          const item = nodeOf(dropped) as Item;
+          if (item) onDropToColumn?.(item, col.slice(4));
+        } else {
+          const nx = d.origX + dx / k, ny = d.origY + dy / k;
+          const p = positions.get(dropped)!;
+          setPositions(new Map(positions).set(dropped, { ...p, x: nx, y: ny }));
+          persistPos(dropped, { board_x: nx, board_y: ny, board_w: p.w });
+          // brief settle: animate scale-down/position into place
+          setSettlingKey(dropped);
+          setTimeout(() => setSettlingKey((s) => (s === dropped ? null : s)), 200);
+        }
       } else {
-        const node = nodeOf(d.key);
+        clearDropTarget();
+        const node = nodeOf(dropped);
         if (node) {
-          bringToFront(d.key);
-          if (d.key.startsWith("stk:")) onOpenStack?.(node as Stack);
+          if (dropped.startsWith("stk:")) onOpenStack?.(node as Stack);
+          else if ((node as Item).type === "note") setEditingNote(dropped);
           else onOpen(node as Item);
         }
       }
@@ -420,6 +562,9 @@ export default function Board({
           const colItems = isColumn ? (columnItems?.get(stack!.id) ?? []) : [];
           const h = cardHeight(node, p.w, colItems.length);
           const thumb = item?.thumb_path ? urls.get(item.thumb_path) : null;
+          // Prefer full-res for image/site cards so larger cards stay crisp; thumb is the instant fallback.
+          const fullImg = item?.storage_path ? urls.get(item.storage_path) : null;
+          const cardImg = fullImg ?? thumb;
           const fan = (stack && !isColumn) ? (stackThumbs?.get(stack.id) ?? []) : [];
           const isCollapsed = item?.collapsed === true;
           const isTodo = item?.type === "todo";
@@ -429,16 +574,27 @@ export default function Board({
             <div
               key={key}
               id={`card-${key}`}
-              className={`group absolute left-0 top-0 cursor-grab bg-[#17171c] shadow-lg shadow-black/40 active:cursor-grabbing
+              className={`group absolute left-0 top-0 cursor-grab shadow-lg shadow-black/40 active:cursor-grabbing
                 ${isColumn
-                  ? "rounded-2xl border border-white/15"
+                  ? "rounded-2xl border bg-[#17171c] transition-colors duration-150"
                   : stack
-                  ? "rounded-xl border border-white/10"
-                  : "overflow-hidden rounded-xl border border-white/10"}
+                  ? "rounded-xl border border-white/10 bg-[#17171c]"
+                  : isNote
+                  ? `rounded-xl border ${cardSurface(item!.card_color)}`
+                  : `overflow-hidden rounded-xl border ${cardSurface(item!.card_color)}`}
+                ${isColumn && dropTarget === key ? "border-violet-500/70 bg-violet-500/5 shadow-violet-500/20" : isColumn ? "border-white/15" : ""}
+                ${stack && !isColumn && dropTarget === key ? "!border-violet-500/70 shadow-violet-500/20 ring-2 ring-violet-500/40" : ""}
                 ${selected?.has(key) ? "ring-2 ring-white/80" : ""}
-                ${tidying ? "transition-transform duration-300" : ""}
+                ${draggingKey === key ? "!shadow-2xl !shadow-black/60" : ""}
+                ${tidying || settlingKey === key ? "transition-[transform,box-shadow] duration-200 ease-out" : ""}
               `}
-              style={{ width: p.w, height: h, transform: `translate(${p.x}px, ${p.y}px)`, zIndex: getZ(key) }}
+              style={{
+                width: p.w,
+                height: h,
+                transform: `translate(${p.x}px, ${p.y}px)${draggingKey === key ? " scale(1.03)" : ""}`,
+                zIndex: draggingKey === key ? 9999 : getZ(key),
+                willChange: draggingKey === key ? "transform" : undefined,
+              }}
               onPointerDown={(e) => { e.stopPropagation(); onPointerDown(e, key); }}
               onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setCtxMenu({ key, x: e.clientX, y: e.clientY }); }}
             >
@@ -472,42 +628,52 @@ export default function Board({
                       </button>
                     )}
                     <span className="ml-2 shrink-0 rounded-full bg-white/8 px-1.5 py-0.5 text-[10px] text-zinc-500">{colItems.length}</span>
+                    <button
+                      className="ml-1 shrink-0 text-zinc-500 hover:text-zinc-200"
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => { e.stopPropagation(); toggleColumnCollapse(stack); }}
+                      title={stack.collapsed ? "Expand column" : "Minimise column"}
+                    >
+                      <svg className={`h-3.5 w-3.5 transition-transform ${stack.collapsed ? "-rotate-90" : ""}`} viewBox="0 0 14 14" fill="none"><path d="M3 5l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                    </button>
                   </div>
 
-                  {/* Column body */}
-                  <div
-                    className="flex-1 space-y-2 overflow-y-auto px-2 pb-2"
-                    onPointerDown={(e) => e.stopPropagation()}
-                  >
-                    {colItems.length === 0 && (
-                      <div className="grid h-16 place-items-center rounded-xl border border-dashed border-white/10 text-xs text-zinc-600">
-                        Drop items here
-                      </div>
-                    )}
-                    {colItems.map((ci) => {
-                      const ciThumb = ci.thumb_path ? urls.get(ci.thumb_path) : null;
-                      return (
-                        <button
-                          key={ci.id}
-                          className="w-full overflow-hidden rounded-xl border border-white/8 bg-white/[0.03] text-left hover:bg-white/[0.06]"
-                          onClick={() => onOpen(ci)}
-                        >
-                          {ciThumb && (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img src={ciThumb} alt="" className="h-20 w-full object-cover object-top" />
-                          )}
-                          <div className="px-2.5 py-2">
-                            <div className="truncate text-xs font-medium text-zinc-200">
-                              {ci.title ?? ci.source_domain ?? ci.type}
-                            </div>
-                            {ci.content && !ciThumb && (
-                              <div className="mt-0.5 line-clamp-2 text-[11px] text-zinc-500">{ci.content.slice(0, 100)}</div>
-                            )}
+                  {/* Column body (hidden when minimised) */}
+                  {!stack.collapsed && (
+                    <>
+                      <div
+                        className="flex-1 space-y-2 overflow-y-auto px-2 pb-2"
+                        onPointerDown={(e) => e.stopPropagation()}
+                      >
+                        {colItems.length === 0 ? (
+                          <div className={`grid h-16 place-items-center rounded-xl border border-dashed text-xs transition-colors duration-150 ${dropTarget === key ? "border-violet-500/50 text-violet-400" : "border-white/10 text-zinc-600"}`}>
+                            {dropTarget === key ? "Release to add" : "Drop items here"}
                           </div>
-                        </button>
-                      );
-                    })}
-                  </div>
+                        ) : (
+                          <ColumnItemsSortable
+                            items={colItems}
+                            urls={urls}
+                            onOpen={onOpen}
+                            onRemove={(ci) => onRemoveFromColumn?.(ci)}
+                            onReorder={(ids) => onReorderColumn?.(stack.id, ids)}
+                          />
+                        )}
+                      </div>
+                      {/* Quick-add a note to the column */}
+                      <div className="shrink-0 px-2 pb-2" onPointerDown={(e) => e.stopPropagation()}>
+                        <div className="flex items-center gap-2 rounded-xl border border-dashed border-white/10 px-2.5 py-2 text-zinc-500 focus-within:border-white/25">
+                          <svg className="h-3.5 w-3.5 shrink-0" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
+                          <input
+                            value={colInput[stack.id] ?? ""}
+                            onChange={(e) => setColInput((c) => ({ ...c, [stack.id]: e.target.value }))}
+                            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); commitColInput(stack); } }}
+                            placeholder="Add a note…"
+                            className="w-full bg-transparent text-xs text-zinc-300 outline-none placeholder:text-zinc-600"
+                          />
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
 
@@ -522,13 +688,15 @@ export default function Board({
                     ) : fan.map((t, i) => (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img key={t} src={t} alt="" draggable={false}
-                        className="absolute inset-0 h-full w-full select-none rounded-lg border border-white/10 object-cover object-top transition-transform duration-300 ease-out [transform:var(--rest)] group-hover:[transform:var(--fan)]"
+                        className={`absolute inset-0 h-full w-full select-none rounded-lg border border-white/10 object-cover object-top transition-transform duration-300 ease-out group-hover:[transform:var(--fan)] ${dropTarget === key ? "[transform:var(--fan)]" : "[transform:var(--rest)]"}`}
                         style={{ ["--rest" as string]: `rotate(${(i - 1) * 5}deg)`, ["--fan" as string]: `rotate(${(i - 1) * 12}deg) translateX(${(i - 1) * 14}px) scale(1.03)`, zIndex: i }}
                       />
                     ))}
                   </div>
                   <div className="mt-1.5 truncate text-center text-[11px] font-medium text-zinc-200">
-                    <span className="flex items-center justify-center gap-1.5"><StackIcon className="h-3.5 w-3.5" /> {stack.name}</span>
+                    <span className="flex items-center justify-center gap-1.5">
+                      <StackIcon className="h-3.5 w-3.5" /> {dropTarget === key ? "Release to add" : stack.name}
+                    </span>
                   </div>
                 </div>
               )}
@@ -561,20 +729,16 @@ export default function Board({
                       <span className="text-[10px] text-zinc-600">{done}/{todos.length}</span>
                     </div>
                     <div
-                      className="flex-1 space-y-0.5 overflow-y-auto px-2 py-1.5"
+                      className="flex-1 overflow-y-auto px-2 py-1.5"
                       onPointerDown={(e) => e.stopPropagation()}
                     >
-                      {todos.map((t) => (
-                        <label key={t.id} className="flex cursor-pointer items-start gap-2 rounded-lg px-1 py-1 hover:bg-white/5">
-                          <input
-                            type="checkbox"
-                            checked={t.done}
-                            onChange={() => toggleTodo(item, t.id)}
-                            className="mt-0.5 shrink-0 cursor-pointer accent-violet-500"
-                          />
-                          <span className={`text-xs leading-snug ${t.done ? "text-zinc-600 line-through" : "text-zinc-300"}`}>{t.text}</span>
-                        </label>
-                      ))}
+                      <TodosSortable
+                        todos={todos}
+                        onToggle={(id) => toggleTodo(item, id)}
+                        onEdit={(id, text) => editTodo(item, id, text)}
+                        onDelete={(id) => deleteTodo(item, id)}
+                        onReorder={(ids) => reorderTodos(item, ids)}
+                      />
                     </div>
                     <div className="shrink-0 border-t border-white/8 px-2 py-1.5" onPointerDown={(e) => e.stopPropagation()}>
                       <input
@@ -589,22 +753,34 @@ export default function Board({
                 );
               })()}
 
-              {/* ---- NOTE (markdown) ---- */}
+              {/* ---- NOTE (rich text) ---- */}
               {item && !isCollapsed && isNote && (
-                <div className="flex h-full flex-col overflow-hidden p-3">
-                  {item.title && (
-                    <div className="mb-1.5 shrink-0 truncate text-xs font-semibold text-zinc-100">{item.title}</div>
+                <div className="flex h-full flex-col p-3">
+                  {editingNote === key ? (
+                    <NoteEditor
+                      html={isHtmlNote(item.content) ? item.content! : plainToHtml(item.content ?? "")}
+                      autoFocus
+                      cardColor={item.card_color}
+                      onCardColor={(c) => setCardColor(key, c)}
+                      onChange={(html) => {
+                        const patch = { content: html, title: noteTitle(html) || "Note" } as Partial<Item>;
+                        updateItem(key, patch).catch(() => {});
+                        onItemUpdate?.(key, patch);
+                      }}
+                    />
+                  ) : (
+                    <div
+                      className="note-prose note-readonly min-h-0 flex-1 overflow-hidden"
+                      dangerouslySetInnerHTML={{ __html: noteToSafeHtml(item.content) }}
+                    />
                   )}
-                  <div className="min-h-0 flex-1 overflow-hidden">
-                    <MarkdownContent text={item.content ?? ""} />
-                  </div>
                 </div>
               )}
 
               {/* ---- IMAGE / SITE / LINK ---- */}
               {item && !isCollapsed && !isTodo && !isNote && (
-                thumb
-                  ? <img src={thumb} alt="" draggable={false} className="h-full w-full select-none object-cover object-top" />
+                cardImg
+                  ? <img src={cardImg} alt="" draggable={false} className="h-full w-full select-none object-cover object-top" />
                   : <div className="h-full w-full p-3 text-xs leading-relaxed text-zinc-300">{(item.content ?? item.title ?? item.source_domain ?? "").slice(0, 200)}</div>
               )}
 
@@ -662,6 +838,23 @@ export default function Board({
             onClick={() => { sendToBack(ctxMenu.key); setCtxMenu(null); }}>
             Send to back
           </button>
+          {!ctxMenu.key.startsWith("stk:") && (
+            <div className="flex items-center gap-1.5 border-t border-white/10 px-3 py-2">
+              {CARD_TINTS.map((t) => (
+                <button
+                  key={t.key}
+                  title={t.label}
+                  onClick={() => { setCardColor(ctxMenu.key, t.key); setCtxMenu(null); }}
+                  className={`h-4 w-4 rounded-full ${t.swatch} opacity-80 hover:opacity-100`}
+                />
+              ))}
+              <button
+                title="No colour"
+                onClick={() => { setCardColor(ctxMenu.key, null); setCtxMenu(null); }}
+                className="grid h-4 w-4 place-items-center rounded-full border border-white/25 text-[10px] text-zinc-400 hover:text-white"
+              >×</button>
+            </div>
+          )}
         </div>
       )}
 

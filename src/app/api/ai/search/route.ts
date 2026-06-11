@@ -11,12 +11,12 @@ export async function POST(req: Request) {
   try {
     const summaries = items.slice(0, 250).map(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (i: any) => `${i.id} | ${i.title ?? ""} | ${(i.tags ?? []).join(",")} | ${i.caption ?? ""} | ${i.domain ?? ""}`
+      (i: any) => `${i.id} | ${i.title ?? ""} | ${(i.tags ?? []).join(",")} | ${(i.fonts ?? []).join(",")} | ${i.caption ?? ""} | ${i.domain ?? ""}`
     ).join("\n");
     const res = await gemini({
       contents: [{
         role: "user",
-        parts: [{ text: `A designer is searching their moodboard library for: "${query}"\n\nItems (id | title | tags | caption | source):\n${summaries}\n\nReply with JSON only: {"ids": ["<ids of matching items, best first, max 40 — only genuinely relevant ones>"]}` }],
+        parts: [{ text: `A designer is searching their moodboard library for: "${query}"\n\nItems (id | title | tags | fonts | caption | source):\n${summaries}\n\nReply with JSON only: {"ids": ["<ids of matching items, best first, max 40 — only genuinely relevant ones>"]}` }],
       }],
       generationConfig: { maxOutputTokens: 800, responseMimeType: "application/json" },
     });

@@ -22,6 +22,7 @@ import {
   captionItem,
   captureSite,
   checkLink,
+  addNoteToColumn,
   createColumn,
   createStack,
   deleteItemRow,
@@ -37,7 +38,9 @@ import {
   fetchStackItems,
   fetchStacks,
   renameStack,
+  reorderColumnItems,
   semanticSearch,
+  setLibraryMode as setLibraryModeDb,
   setSpaceView,
   signedUrls,
   stackThumbPaths,
@@ -46,7 +49,7 @@ import {
   updateStack,
 } from "@/lib/db";
 import { COLOR_NAMES, COLOR_HEX } from "@/lib/media";
-import type { Item, Library, Space, Stack } from "@/lib/types";
+import type { Item, Library, LibraryMode, Space, Stack } from "@/lib/types";
 import { SparklesIcon, HomeIcon, GridIcon, BoardIcon, MenuIcon, PlusIcon, GlobeIcon, StackIcon, UnstackIcon, TrashIcon } from "@/components/icons";
 
 function safeHost(url: string): string {
@@ -55,6 +58,25 @@ function safeHost(url: string): string {
   } catch {
     return "Link";
   }
+}
+
+const TYPE_MODE_RE = /\b(type|typography|font|foundry)\b/i;
+
+function splitFontToken(token: string): { name: string; provider: string | null } {
+  const i = token.lastIndexOf("@");
+  if (i <= 0) return { name: token.trim(), provider: null };
+  return { name: token.slice(0, i).trim(), provider: token.slice(i + 1).trim().toLowerCase() || null };
+}
+
+function fontGuessConfidence(token: string): number {
+  const { provider } = splitFontToken(token);
+  if (provider === "ai") return 0.58;
+  if (provider) return 0.93;
+  return 0.72;
+}
+
+function isTypeModeLabel(v: string | null | undefined): boolean {
+  return !!v && TYPE_MODE_RE.test(v);
 }
 
 interface Toast {
@@ -68,15 +90,20 @@ function App() {
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [items, setItems] = useState<Item[]>([]);
+  // A freshly-created note id the Board should open straight into inline edit mode.
+  const [autoEditId, setAutoEditId] = useState<string | null>(null);
   const [spaceCounts, setSpaceCounts] = useState<Map<string, number>>(new Map());
   const [urls, setUrls] = useState<Map<string, string>>(new Map());
   const [selected, setSelected] = useState<string | "all" | "home">("home");
   const [search, setSearch] = useState("");
   const [colorFilter, setColorFilter] = useState<string | null>(null);
+  const [typeTab, setTypeTab] = useState<"foundries" | "fonts" | "inuse">("foundries");
   const [open, setOpen] = useState<Item | null>(null);
   const [filing, setFiling] = useState<Item | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [similarQuery, setSimilarQuery] = useState<string | null>(null);
+  // Reference image URL for multimodal "more like this" (null = text-only).
+  const [similarImage, setSimilarImage] = useState<string | null>(null);
   const [stacks, setStacks] = useState<Stack[]>([]);
   const [stackThumbs, setStackThumbs] = useState<Map<string, string[]>>(new Map());
   const [columnItems, setColumnItems] = useState<Map<string, Item[]>>(new Map());
@@ -90,6 +117,8 @@ function App() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [pending, setPending] = useState<{ id: number; label: string }[]>([]);
   const [addTick, setAddTick] = useState(0);
+  const [fontReviewOpen, setFontReviewOpen] = useState(false);
+  const [reviewBusy, setReviewBusy] = useState<string | null>(null);
   const toastId = useRef(0);
   const pendingId = useRef(0);
   const dragDepth = useRef(0);
@@ -160,6 +189,7 @@ function App() {
   const filingRef = useDialog<HTMLDivElement>(() => setFiling(null), { active: !!filing });
   const similarRef = useDialog<HTMLDivElement>(() => setSimilarQuery(null), { active: !!similarQuery });
   const stackRef = useDialog<HTMLDivElement>(() => setStackView(null), { active: !!stackView });
+  const reviewRef = useDialog<HTMLDivElement>(() => setFontReviewOpen(false), { active: !!fontReviewOpen });
 
   const loadItems = useCallback(async () => {
     const spaceKey = selected === "home" ? "all" : selected;
@@ -181,6 +211,8 @@ function App() {
     const colThumbPaths = [...colMap.values()].flat().map((i) => i.thumb_path).filter(Boolean) as string[];
     const paths = [
       ...(data.map((i) => i.thumb_path).filter(Boolean) as string[]),
+      // Full-res for image/site cards so larger board cards stay crisp (bytes load only when rendered).
+      ...(data.filter((i) => i.type === "image" || i.type === "site").map((i) => i.storage_path).filter(Boolean) as string[]),
       ...[...fan.values()].flat(),
       ...colThumbPaths,
     ];
@@ -230,12 +262,58 @@ function App() {
     [spaces, selected]
   );
   const targetSpace = currentSpace?.id ?? inbox?.id;
+  const effectiveLibraryModes = useMemo<Record<string, LibraryMode>>(() => {
+    const out: Record<string, LibraryMode> = {};
+    for (const lib of libraries) {
+      out[lib.id] = lib.mode === "type" ? "type" : (isTypeModeLabel(lib.name) ? "type" : "default");
+    }
+    return out;
+  }, [libraries]);
+  const spacesById = useMemo(() => new Map(spaces.map((s) => [s.id, s])), [spaces]);
+
+  const setLibraryMode = useCallback(async (libraryId: string, mode: LibraryMode) => {
+    const prev = effectiveLibraryModes[libraryId] ?? "default";
+    if (prev === mode) return;
+
+    setLibraries((libs) => libs.map((l) => (l.id === libraryId ? { ...l, mode } : l)));
+    try {
+      await setLibraryModeDb(libraryId, mode);
+    } catch (e) {
+      setLibraries((libs) => libs.map((l) => (l.id === libraryId ? { ...l, mode: prev } : l)));
+      toast(`Library mode update failed: ${(e as Error).message}`, "error");
+    }
+  }, [effectiveLibraryModes, toast]);
+
+  const spaceCaptionKind = useCallback(
+    (spaceId: string | null | undefined): "type" | undefined => {
+      if (!spaceId) return undefined;
+      const sp = spacesById.get(spaceId);
+      if (!sp) return undefined;
+      if ((effectiveLibraryModes[sp.library_id] ?? "default") === "type") return "type";
+      return isTypeModeLabel(sp.name) ? "type" : undefined;
+    },
+    [spacesById, effectiveLibraryModes]
+  );
+  const currentFeedMode = useMemo(() => spaceCaptionKind(currentSpace?.id), [spaceCaptionKind, currentSpace?.id]);
+
+  useEffect(() => {
+    setTypeTab("foundries");
+  }, [selected, currentFeedMode]);
 
   const baseItems = aiItems ?? items;
   const visibleItems = useMemo(
     () => (colorFilter ? baseItems.filter((i) => i.colors?.includes(colorFilter)) : baseItems),
     [baseItems, colorFilter]
   );
+
+  const typedVisibleItems = useMemo(() => {
+    if (currentFeedMode !== "type") return visibleItems;
+    return visibleItems.filter((i) => {
+      if (typeTab === "foundries") return (i.type === "site" || i.type === "link") && !!i.source_domain;
+      if (typeTab === "fonts") return (i.fonts?.length ?? 0) > 0;
+      return i.type === "image" || i.type === "site";
+    });
+  }, [visibleItems, currentFeedMode, typeTab]);
 
   const counts = useMemo(() => {
     const m = new Map(spaceCounts);
@@ -244,6 +322,58 @@ function App() {
     m.set("all", total);
     return m;
   }, [spaceCounts]);
+
+  const patchItemEverywhere = useCallback((updated: Item) => {
+    setItems((prev) => prev.map((i) => (i.id === updated.id ? updated : i)));
+    setAiItems((prev) => (prev ? prev.map((i) => (i.id === updated.id ? updated : i)) : prev));
+    setOpen((prev) => (prev?.id === updated.id ? updated : prev));
+  }, []);
+
+  const typeScopeItems = useMemo(() => {
+    if (selected === "home") return [] as Item[];
+    const scoped = selected === "all" ? items : items.filter((i) => i.space_id === selected);
+    return scoped.filter((i) => spaceCaptionKind(i.space_id) === "type");
+  }, [items, selected, spaceCaptionKind]);
+
+  const fontReviewQueue = useMemo(() => {
+    return typeScopeItems
+      .map((item) => ({
+        item,
+        pending: (item.fonts ?? []).filter((f) => splitFontToken(f).provider === "ai"),
+      }))
+      .filter((x) => x.pending.length)
+      .sort((a, b) => b.item.created_at.localeCompare(a.item.created_at));
+  }, [typeScopeItems]);
+
+  const reviewCount = useMemo(
+    () => fontReviewQueue.reduce((n, x) => n + x.pending.length, 0),
+    [fontReviewQueue]
+  );
+
+  const reviewFontGuess = useCallback(
+    async (item: Item, token: string, action: "approve" | "reject") => {
+      const busyKey = `${item.id}:${token}:${action}`;
+      setReviewBusy(busyKey);
+      try {
+        const nextByBase = new Map<string, string>();
+        for (const raw of item.fonts ?? []) {
+          if (raw === token && action === "reject") continue;
+          const normalized = raw === token && action === "approve" ? splitFontToken(raw).name : raw;
+          const base = splitFontToken(normalized).name.toLowerCase();
+          if (!base) continue;
+          const prev = nextByBase.get(base);
+          if (!prev || splitFontToken(prev).provider === "ai") nextByBase.set(base, normalized);
+        }
+        const updated = await updateItem(item.id, { fonts: [...nextByBase.values()] });
+        patchItemEverywhere(updated);
+      } catch (e) {
+        toast(`Font review failed: ${(e as Error).message}`, "error");
+      } finally {
+        setReviewBusy(null);
+      }
+    },
+    [patchItemEverywhere, toast]
+  );
 
   // ---------- capture handlers ----------
 
@@ -264,7 +394,7 @@ function App() {
       embedItem(updated);
       // patch the caption/tags into the current view in place — no full reload
       setItems((prev) => prev.map((i) => (i.id === updated.id ? updated : i)));
-    });
+    }, spaceCaptionKind(item.space_id));
     // background reachability check for links/sites — flags dead_link without blocking the save
     if (item.source_url) {
       checkLink(item).then((updated) => {
@@ -273,12 +403,13 @@ function App() {
     }
     // sweep catches items captioning never reaches (no key, notes, failures)
     scheduleEmbedSweep();
-  }, [invalidateViewCache]);
+  }, [invalidateViewCache, scheduleEmbedSweep, spaceCaptionKind]);
 
   // Self-heal items on load: caption uncaptioned images (richer "more like this" + embeddings),
   // then backfill proper thumbnails + colours for clip-route saves (full-image thumbs, no colours),
   // then sweep any item still missing a vector. Patch each result into the grid so it's used now.
   useEffect(() => {
+    if (!spaces.length || !libraries.length) return;
     let alive = true; // these sweeps resolve seconds later — don't setState after unmount/logout
     const patch = (updated: Item) => {
       if (!alive) return;
@@ -293,13 +424,13 @@ function App() {
           .then((m) => alive && setUrls((u) => new Map([...u, ...m])))
           .catch(() => {});
     };
-    backfillCaptions(patch)
+    backfillCaptions(patch, 8, (item) => spaceCaptionKind(item.space_id))
       .finally(() => backfillThumbs(patchThumb))
       .finally(() => backfillEmbeddings());
     return () => {
       alive = false;
     };
-  }, []);
+  }, [libraries.length, spaceCaptionKind, spaces.length]);
 
   const handleFiles = useCallback(
     async (files: File[]) => {
@@ -370,12 +501,14 @@ function App() {
         const item = await addNote(text, targetSpace);
         invalidateViewCache();
         insertItem(item).catch(() => {}); // optimistic paint
+        // On the board, open the new note straight into inline rich-text editing.
+        if (currentSpace?.view === "board") setAutoEditId(item.id);
         loadItems().catch(() => {}); // one reconciling refresh
       } catch (e) {
         toast(`Note failed: ${(e as Error).message}`, "error");
       }
     },
-    [targetSpace, loadItems, insertItem, toast, invalidateViewCache]
+    [targetSpace, loadItems, insertItem, toast, invalidateViewCache, currentSpace]
   );
 
   const handleColumn = useCallback(
@@ -681,6 +814,92 @@ function App() {
     setStacks((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   }
 
+  /** Optimistically move an item from the board into a column, then persist. */
+  async function handleDropToColumn(item: Item, columnStackId: string) {
+    // Remove from board items immediately
+    setItems((prev) => prev.filter((i) => i.id !== item.id));
+    // Add to column items immediately
+    setColumnItems((prev) => {
+      const next = new Map(prev);
+      const arr = next.get(columnStackId) ?? [];
+      if (!arr.some((i) => i.id === item.id)) next.set(columnStackId, [...arr, { ...item, stack_id: columnStackId }]);
+      return next;
+    });
+    invalidateViewCache();
+    try {
+      await updateItem(item.id, { stack_id: columnStackId });
+    } catch {
+      // Revert on failure
+      setItems((prev) => [item, ...prev]);
+      setColumnItems((prev) => {
+        const next = new Map(prev);
+        const arr = next.get(columnStackId) ?? [];
+        next.set(columnStackId, arr.filter((i) => i.id !== item.id));
+        return next;
+      });
+    }
+    // Refresh to get proper stack_order etc.
+    loadItems().catch(() => {});
+  }
+
+  /** Optimistically move an item back to the board from a column. */
+  async function handleRemoveFromColumn(item: Item) {
+    const colId = item.stack_id;
+    // Remove from column immediately
+    setColumnItems((prev) => {
+      const next = new Map(prev);
+      if (colId) next.set(colId, (next.get(colId) ?? []).filter((i) => i.id !== item.id));
+      return next;
+    });
+    // Add back to board immediately (stack_id cleared)
+    const restored = { ...item, stack_id: null };
+    setItems((prev) => [restored, ...prev]);
+    invalidateViewCache();
+    try {
+      await updateItem(item.id, { stack_id: null });
+    } catch {
+      // Revert on failure
+      setItems((prev) => prev.filter((i) => i.id !== item.id));
+      setColumnItems((prev) => {
+        const next = new Map(prev);
+        if (colId) next.set(colId, [...(next.get(colId) ?? []), item]);
+        return next;
+      });
+    }
+    loadItems().catch(() => {});
+  }
+
+  /** Quick-add a note card to a column (the + at its foot), optimistic then persisted. */
+  async function handleAddNoteToColumn(columnStackId: string, text: string) {
+    const stack = stacks.find((s) => s.id === columnStackId);
+    const spaceId = stack?.space_id ?? targetSpace;
+    if (!spaceId) return;
+    try {
+      const item = await addNoteToColumn(columnStackId, spaceId, text);
+      setColumnItems((prev) => {
+        const next = new Map(prev);
+        next.set(columnStackId, [...(next.get(columnStackId) ?? []), item]);
+        return next;
+      });
+      invalidateViewCache();
+    } catch (e) {
+      toast(`Add failed: ${(e as Error).message}`, "error");
+    }
+  }
+
+  /** Optimistically reorder items inside a column, then persist sequential stack_order. */
+  function handleReorderColumn(columnStackId: string, orderedIds: string[]) {
+    setColumnItems((prev) => {
+      const next = new Map(prev);
+      const arr = next.get(columnStackId) ?? [];
+      const byId = new Map(arr.map((i) => [i.id, i]));
+      next.set(columnStackId, orderedIds.map((id) => byId.get(id)!).filter(Boolean));
+      return next;
+    });
+    invalidateViewCache();
+    reorderColumnItems(orderedIds).catch(() => loadItems());
+  }
+
   function onItemChanged(updated: Item | null) {
     invalidateViewCache(); // an edit/move may belong to (or leave) other cached views
     if (!updated) return loadItems();
@@ -713,6 +932,7 @@ function App() {
   const currentName =
     selected === "home" ? "Home" : selected === "all" ? "Everything" : currentSpace?.name ?? "";
   const showBoard = currentSpace?.view === "board";
+  const masonryItems = currentFeedMode === "type" && selected !== "home" && !showBoard ? typedVisibleItems : visibleItems;
 
   // Mirror the active view into the URL (?s, ?q, ?c, ?v) so refresh/bookmark/share restore it.
   // ?v reflects the current space's grid/board mode — the DB stays the source of truth on load.
@@ -730,6 +950,7 @@ function App() {
       <aside className="hidden w-60 shrink-0 border-r border-white/5 bg-[#121216]/55 backdrop-blur-2xl backdrop-saturate-150 md:block">
         <Sidebar
           libraries={libraries}
+          libraryModes={effectiveLibraryModes}
           spaces={spaces}
           selected={selected}
           counts={counts}
@@ -737,6 +958,7 @@ function App() {
             setSelected(id);
             setColorFilter(null);
           }}
+          onSetLibraryMode={setLibraryMode}
           onChanged={loadStructure}
         />
       </aside>
@@ -746,6 +968,7 @@ function App() {
           <aside className="absolute left-0 top-0 h-full w-72 border-r border-white/10 bg-[#121216]/75 backdrop-blur-2xl backdrop-saturate-150">
             <Sidebar
               libraries={libraries}
+              libraryModes={effectiveLibraryModes}
               spaces={spaces}
               selected={selected}
               counts={counts}
@@ -754,6 +977,7 @@ function App() {
                 setColorFilter(null);
                 setSidebarOpen(false);
               }}
+              onSetLibraryMode={setLibraryMode}
               onChanged={loadStructure}
               onClose={() => setSidebarOpen(false)}
             />
@@ -771,6 +995,15 @@ function App() {
               title="Toggle grid / board"
             >
               <span className="flex items-center gap-1.5">{showBoard ? <GridIcon className="h-3.5 w-3.5" /> : <BoardIcon className="h-3.5 w-3.5" />}{showBoard ? "Grid" : "Board"}</span>
+            </button>
+          )}
+          {selected !== "home" && currentFeedMode === "type" && (
+            <button
+              onClick={() => setFontReviewOpen(true)}
+              className="rounded-lg border border-amber-300/30 bg-amber-500/10 px-2.5 py-1 text-[11px] text-amber-100 hover:border-amber-200/50"
+              title="Review AI-detected font guesses"
+            >
+              Review fonts {reviewCount ? `(${reviewCount})` : ""}
             </button>
           )}
           {selected !== "home" && (
@@ -815,6 +1048,28 @@ function App() {
           </div>
         )}
 
+        {selected !== "home" && !showBoard && currentFeedMode === "type" && (
+          <div className="no-scrollbar flex items-center gap-1.5 overflow-x-auto px-4 pb-2">
+            {([
+              { id: "foundries", label: "Foundries" },
+              { id: "fonts", label: "Fonts" },
+              { id: "inuse", label: "In Use" },
+            ] as const).map((t) => (
+              <button
+                key={t.id}
+                onClick={() => setTypeTab(t.id)}
+                className={`rounded-full border px-3 py-1 text-[11px] ${
+                  typeTab === t.id
+                    ? "border-amber-300/40 bg-amber-500/15 text-amber-100"
+                    : "border-white/10 text-zinc-400 hover:border-white/30 hover:text-zinc-200"
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        )}
+
         <div className={`flex-1 ${showBoard && selected !== "home" ? "overflow-hidden" : "no-scrollbar overflow-y-auto"}`}>
           {selected === "home" ? (
             <Feed
@@ -839,6 +1094,12 @@ function App() {
               }
               onItemUpdate={handleItemUpdate}
               onStackUpdate={handleStackUpdate}
+              onDropToColumn={handleDropToColumn}
+              onRemoveFromColumn={handleRemoveFromColumn}
+              onReorderColumn={handleReorderColumn}
+              onAddNoteToColumn={handleAddNoteToColumn}
+              autoEditId={autoEditId}
+              onAutoEditConsumed={() => setAutoEditId(null)}
             />
           ) : !ready ? (
             <SkeletonGrid />
@@ -852,25 +1113,33 @@ function App() {
                   </button>
                 </div>
               )}
-              <Masonry
-                items={visibleItems}
-                urls={urls}
-                onOpen={setOpen}
-                onFile={currentSpace?.kind === "inbox" ? (i) => setFiling(i) : undefined}
-                stacks={aiItems ? [] : stacks}
-                stackThumbs={stackThumbs}
-                onOpenStack={openStack}
-                selected={selIds}
-                onToggleSelect={toggleSelect}
-                onMarquee={(ids, additive) =>
-                  setSelIds((prev) => new Set(additive ? [...prev, ...ids] : ids))
-                }
-                ghosts={pending}
-              />
+              {currentFeedMode === "type" && !masonryItems.length ? (
+                <div className="px-4 pb-6 text-xs text-zinc-500">
+                  {typeTab === "foundries" && "No foundry cards in this space yet. Save foundry sites or links to build this lane."}
+                  {typeTab === "fonts" && "No font-tagged cards yet. Review AI guesses or save more specimens."}
+                  {typeTab === "inuse" && "No in-use cards yet. Save screenshots or captures with typography in context."}
+                </div>
+              ) : (
+                <Masonry
+                  items={masonryItems}
+                  urls={urls}
+                  onOpen={setOpen}
+                  onFile={currentSpace?.kind === "inbox" ? (i) => setFiling(i) : undefined}
+                  stacks={aiItems ? [] : stacks}
+                  stackThumbs={stackThumbs}
+                  onOpenStack={openStack}
+                  selected={selIds}
+                  onToggleSelect={toggleSelect}
+                  onMarquee={(ids, additive) =>
+                    setSelIds((prev) => new Set(additive ? [...prev, ...ids] : ids))
+                  }
+                  ghosts={pending}
+                />
+              )}
               {search.trim() && (
                 <div className="px-3 pb-24">
                   <button
-                    onClick={() => setSimilarQuery(search.trim())}
+                    onClick={() => { setSimilarImage(null); setSimilarQuery(search.trim()); }}
                     className="mx-auto block rounded-full border border-white/10 bg-white/[0.03] px-5 py-2.5 text-xs text-zinc-200 hover:border-white/30"
                   >
                     <span className="flex items-center justify-center gap-2"><GlobeIcon className="h-4 w-4" /> Search the web for “{search.trim()}”</span>
@@ -887,6 +1156,7 @@ function App() {
         onUrl={handleUrl}
         onCapture={handleCapture}
         onNote={handleNote}
+        noteInline={showBoard}
         onColumn={showBoard ? handleColumn : undefined}
         onTodo={showBoard ? handleTodo : undefined}
         openTick={addTick}
@@ -928,13 +1198,14 @@ function App() {
           item={open}
           spaces={spaces}
           allItems={items}
-          siblings={visibleItems}
+          siblings={masonryItems}
           urls={urls}
           onClose={() => setOpen(null)}
           onChanged={onItemChanged}
           onOpenItem={(i) => setOpen(i)}
-          onWebSimilar={(q) => {
+          onWebSimilar={(q, imageUrl) => {
             setOpen(null);
+            setSimilarImage(imageUrl ?? null);
             setSimilarQuery(q);
           }}
           onDelete={softDelete}
@@ -963,6 +1234,87 @@ function App() {
                 >
                   {s.name}
                 </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {fontReviewOpen && (
+        <div className="fixed inset-0 z-40 flex" onClick={() => setFontReviewOpen(false)}>
+          <div className="absolute inset-0 bg-black/75 backdrop-blur-sm" />
+          <div
+            ref={reviewRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Typography font review"
+            tabIndex={-1}
+            className="relative z-10 m-auto flex h-[88dvh] w-[min(900px,96vw)] flex-col overflow-hidden glass-dark rounded-2xl outline-none"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
+              <div className="min-w-0">
+                <div className="truncate text-sm font-medium text-zinc-200">Font Review Queue</div>
+                <div className="truncate text-[11px] text-zinc-600">
+                  {reviewCount} pending AI font guess{reviewCount === 1 ? "" : "es"}
+                </div>
+              </div>
+              <button onClick={() => setFontReviewOpen(false)} className="ml-4 text-zinc-500 hover:text-zinc-200">
+                ✕
+              </button>
+            </div>
+            <div className="no-scrollbar flex-1 space-y-3 overflow-y-auto p-4">
+              {!fontReviewQueue.length && (
+                <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4 text-sm text-zinc-400">
+                  No pending AI font guesses in this view.
+                </div>
+              )}
+              {fontReviewQueue.map(({ item, pending }) => (
+                <div key={item.id} className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
+                  <button
+                    onClick={() => {
+                      setFontReviewOpen(false);
+                      setOpen(item);
+                    }}
+                    className="text-left text-sm font-medium text-zinc-200 hover:underline"
+                  >
+                    {item.title ?? item.source_domain ?? "Untitled item"}
+                  </button>
+                  <div className="mt-0.5 text-[11px] text-zinc-600">
+                    {item.source_domain ?? "uploaded image"}
+                  </div>
+                  <div className="mt-2 space-y-2">
+                    {pending.map((token) => {
+                      const busyApprove = reviewBusy === `${item.id}:${token}:approve`;
+                      const busyReject = reviewBusy === `${item.id}:${token}:reject`;
+                      const { name } = splitFontToken(token);
+                      return (
+                        <div key={`${item.id}:${token}`} className="flex items-center justify-between gap-3 rounded-lg border border-white/8 px-3 py-2">
+                          <div className="min-w-0">
+                            <div className="truncate text-sm text-zinc-200">{name}</div>
+                            <div className="text-[11px] text-amber-200/90">AI guess · {Math.round(fontGuessConfidence(token) * 100)}%</div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => reviewFontGuess(item, token, "approve")}
+                              disabled={!!reviewBusy}
+                              className="rounded-lg border border-emerald-300/30 bg-emerald-500/15 px-2.5 py-1 text-[11px] text-emerald-100 hover:border-emerald-200/50 disabled:opacity-50"
+                            >
+                              {busyApprove ? "Saving…" : "Approve"}
+                            </button>
+                            <button
+                              onClick={() => reviewFontGuess(item, token, "reject")}
+                              disabled={!!reviewBusy}
+                              className="rounded-lg border border-red-300/30 bg-red-500/15 px-2.5 py-1 text-[11px] text-red-100 hover:border-red-200/50 disabled:opacity-50"
+                            >
+                              {busyReject ? "Saving…" : "Reject"}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
               ))}
             </div>
           </div>
@@ -1021,6 +1373,8 @@ function App() {
               <Feed
                 compact
                 initialQuery={similarQuery}
+                initialImage={similarImage}
+                mode={currentFeedMode}
                 defaultSpaceId={targetSpace}
                 spaces={spaces}
                 inboxId={inbox?.id}

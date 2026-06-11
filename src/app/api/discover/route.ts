@@ -297,14 +297,30 @@ async function aggregate(): Promise<Suggestion[]> {
 
 /* ---------------- web search via Gemini + Google Search grounding ---------------- */
 
-async function webSearch(query: string): Promise<Suggestion[]> {
+/** Fetch a reference image and return it as a Gemini inlineData part (or null on failure). */
+async function fetchImagePart(url: string): Promise<{ inlineData: { mimeType: string; data: string } } | null> {
   try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return null;
+    const mimeType = res.headers.get("content-type")?.split(";")[0] || "image/jpeg";
+    if (!mimeType.startsWith("image/")) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.byteLength > 4_000_000) return null; // keep the request light
+    return { inlineData: { mimeType, data: buf.toString("base64") } };
+  } catch { return null; }
+}
+
+async function webSearch(query: string, image?: { inlineData: { mimeType: string; data: string } } | null): Promise<Suggestion[]> {
+  try {
+    const intro = image
+      ? `A designer wants visual web-design inspiration that matches the REFERENCE IMAGE shown above. Study its colour palette, tonal range, mood, typography and composition. (Text notes from the designer, secondary to the image: "${query}".)\n\nMatch the IMAGE's look and feel — its exact palette (warmth, saturation, lightness), mood and design language. Ignore any literal photographic subject in the image (a person, place, object); we want sites that FEEL like it, not sites about that subject.`
+      : `A designer is hunting for visual web-design inspiration. Their brief describes an AESTHETIC, not a product category: "${query}".\n\nWeight the COLOUR PALETTE and overall MOOD most heavily. If the brief mentions photographic subject/content (a person, place, object, scene), treat that as INCIDENTAL — match the look, palette and feel, never the literal subject. (e.g. a warm yellow moody site of a man writing → return other warm, moody, yellow-toned sites, not sites about writers or poetry.)`;
+    const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
+    if (image) parts.push(image);
+    parts.push({ text: `${intro}\n\nSearch Google to find current, genuinely exceptional websites whose DESIGN matches — award-calibre, design-led work (typography, art direction, motion, originality): studios, portfolios, fashion, editorial, cultural sites. Design showcases (siteinspire, awwwards, godly, minimal.gallery) are useful for FINDING the work, but return the featured site itself — NEVER a gallery, award, directory or curation page URL as a result.\n\nCRITICAL: do NOT return products/tools that merely BELONG to a category the notes mention. They want sites that LOOK the part, not companies in that sector. Never include developer tools, code libraries, docs, UI kits, or SaaS picked for function.\n\nReply with JSON only (no markdown): [{"url": "...", "title": "...", "blurb": "<why the design is exceptional, one short sentence>"}] with up to 12 results. Only live, specific site URLs.` });
     const res = await gemini({
       tools: [{ google_search: {} }],
-      contents: [{
-        role: "user",
-        parts: [{ text: `A designer is hunting for visual web-design inspiration. Their brief describes an AESTHETIC, not a product category: "${query}".\n\nSearch Google to find current, genuinely exceptional websites whose DESIGN matches that aesthetic — award-calibre, design-led work (typography, art direction, motion, originality): studios, portfolios, fashion, editorial, cultural sites. Design showcases (siteinspire, awwwards, godly, minimal.gallery) are useful for FINDING the work, but return the featured site itself — NEVER a gallery, award, directory or curation page URL as a result.\n\nCRITICAL: do NOT return products/tools that merely BELONG to the category the brief mentions. If the brief says "analytics dashboard", they want sites that LOOK that way, not analytics companies. Never include developer tools, code libraries, docs, UI kits, or SaaS picked for function.\n\nReply with JSON only (no markdown): [{"url": "...", "title": "...", "blurb": "<why the design is exceptional, one short sentence>"}] with up to 12 results. Only live, specific site URLs.` }],
-      }],
+      contents: [{ role: "user", parts }],
       generationConfig: { maxOutputTokens: 2000 },
     });
     const arr = parseJson(geminiText(res));
@@ -411,6 +427,7 @@ export async function GET(req: Request) {
   const sp = new URL(req.url).searchParams;
   const query = sp.get("q");
   const mode = sp.get("mode"); // "type" for typography discovery
+  const img = sp.get("img"); // reference image URL for multimodal "more like this"
   const taste = (sp.get("taste") ?? "").split(",").map((t) => t.trim()).filter(Boolean).slice(0, 30);
   const exclude = new Set((sp.get("exclude") ?? "").split(",").map((d) => d.trim()).filter(Boolean));
 
@@ -425,9 +442,10 @@ export async function GET(req: Request) {
     ]);
     cands = [...searched, ...arn, ...TYPE_SEEDS];
   } else if (query && hasGeminiKey() && !geminiDisabled()) {
-    // "More like this": drive purely off the reference image's taste (caption/tags/colours)
-    // via web search. The generic Are.na pool is Discover's inspo, not a match for one image.
-    cands = await webSearch(query);
+    // "More like this": drive off the reference image. When we can fetch the actual image we
+    // ground the web search on it (true visual match); otherwise fall back to the text brief.
+    const refImage = img ? await fetchImagePart(img) : null;
+    cands = await webSearch(query, refImage);
   } else {
     // Discover endless feed: general inspiration — curated Are.na channels + gallery pool
     const [agg, arn] = await Promise.all([aggregate(), arena()]);
@@ -463,8 +481,12 @@ export async function GET(req: Request) {
   });
   return Response.json({ items: finalItems });
   } catch (e) {
-    // never 500 the feed — the SEEDS fallback exists so Discover is always non-empty
-    console.error("discover failed:", e);
+    // never 500 the feed — the SEEDS fallback exists so Discover is always non-empty.
+    // Remote source fetches can fail transiently; avoid noisy console stack traces for those.
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!/failed to fetch|fetch failed|network/i.test(msg)) {
+      console.error("discover failed:", e);
+    }
     return Response.json({ items: SEEDS });
   }
 }
