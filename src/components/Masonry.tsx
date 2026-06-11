@@ -3,7 +3,7 @@
 import { useRef, useState } from "react";
 import type { Item, Stack } from "@/lib/types";
 import { THUMB_W, THUMB_MAX_H, dominantHex } from "@/lib/media";
-import { StackIcon, LinkIcon } from "./icons";
+import { StackIcon, LinkIcon, WarningIcon } from "./icons";
 
 interface Props {
   items: Item[];
@@ -123,6 +123,14 @@ function Card({
         >
           ✓
         </button>
+      )}
+      {item.dead_link && (
+        <div
+          title="Link may be dead — source didn't respond"
+          className="pointer-events-none absolute bottom-2 right-2 z-10 grid h-5 w-5 place-items-center rounded-full bg-amber-500/90 text-black shadow"
+        >
+          <WarningIcon className="h-3.5 w-3.5" />
+        </div>
       )}
       {onFile && (
         <button

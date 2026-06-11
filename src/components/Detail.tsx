@@ -3,8 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { Item, Space } from "@/lib/types";
 import { matchToItem, signedUrls, touchViewed, updateItem } from "@/lib/db";
+import { paletteSimilar } from "@/lib/media";
 import { notice } from "./ui";
-import { SparklesIcon, XIcon, ChevronLeftIcon, ChevronRightIcon } from "./icons";
+import { SparklesIcon, XIcon, ChevronLeftIcon, ChevronRightIcon, WarningIcon } from "./icons";
 
 interface Props {
   item: Item;
@@ -50,6 +51,10 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
 
   const [rel, setRel] = useState<Item[]>([]);
   const [relUrls, setRelUrls] = useState<Map<string, string>>(new Map());
+  const [paletteMode, setPaletteMode] = useState(false); // swap the rail to colour-palette neighbours
+  const hasColor = (item.colors ?? []).some((c) => c !== "dark" && c !== "light");
+  const palette = paletteMode ? paletteSimilar(item, allItems) : [];
+  const shown = paletteMode ? palette : rel;
 
   const idx = siblings ? siblings.findIndex((s) => s.id === item.id) : -1;
   const prevItem = idx > 0 ? siblings![idx - 1] : null;
@@ -60,10 +65,19 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
     setTags(item.tags.join(", "));
     setFullUrl(null);
     setZoomed(false);
+    setPaletteMode(false);
     const path = item.storage_path ?? item.thumb_path;
     if (path) signedUrls([path]).then((m) => setFullUrl(m.get(path) ?? null));
     touchViewed(item.id).catch(() => {});
   }, [item]);
+
+  // Sign any palette-neighbour thumbnails not already covered by the grid's signed URLs.
+  useEffect(() => {
+    if (!paletteMode) return;
+    const paths = palette.map((r) => r.thumb_path).filter(Boolean) as string[];
+    if (paths.length) signedUrls(paths).then((m) => setRelUrls((u) => new Map([...u, ...m]))).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paletteMode, item]);
 
   // True visual similarity (library-wide kNN); falls back to tag/colour overlap pre-embedding.
   useEffect(() => {
@@ -116,11 +130,17 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
   }
 
   async function save() {
+    const nextTitle = title.trim() || null;
+    const nextTags = tags.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean);
+    const curTags = item.tags ?? [];
+    // Dirty-check: a blur that changed nothing skips the write (and the refresh) entirely.
+    const unchanged =
+      nextTitle === (item.title ?? null) &&
+      nextTags.length === curTags.length &&
+      nextTags.every((t, i) => t === curTags[i]);
+    if (unchanged) return;
     setBusy(true);
-    const updated = await updateItem(item.id, {
-      title: title.trim() || null,
-      tags: tags.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean),
-    });
+    const updated = await updateItem(item.id, { title: nextTitle, tags: nextTags });
     setBusy(false);
     onChanged(updated);
   }
@@ -217,29 +237,41 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
             )}
           </div>
 
-          {(rel.length > 0 || item.title || item.tags.length > 0) && (
+          {(rel.length > 0 || hasColor || item.title || item.tags.length > 0) && (
             <div className="border-t border-white/5 p-3">
-              <div className="mb-2 flex items-center justify-between">
-                <span className="text-[11px] uppercase tracking-wider text-zinc-600">More like this</span>
-                {(() => {
-                  const q = [
-                    item.ai_caption ?? item.title,
-                    ...(item.tags ?? []).slice(0, 3),
-                    ...(item.colors ?? []).filter((c) => c !== "dark" && c !== "light").slice(0, 2),
-                  ]
-                    .filter(Boolean)
-                    .join(" ")
-                    .slice(0, 220);
-                  return q ? (
-                    <button onClick={() => onWebSimilar(q)} className="text-[11px] text-zinc-200 hover:underline">
-                      Search the web for similar →
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <span className="shrink-0 text-[11px] uppercase tracking-wider text-zinc-600">
+                  {paletteMode ? "Similar palette" : "More like this"}
+                </span>
+                <div className="flex items-center gap-3">
+                  {hasColor && (
+                    <button
+                      onClick={() => setPaletteMode((m) => !m)}
+                      className="text-[11px] text-zinc-200 hover:underline"
+                    >
+                      {paletteMode ? "Visual matches" : "By palette"}
                     </button>
-                  ) : null;
-                })()}
+                  )}
+                  {(() => {
+                    const q = [
+                      item.ai_caption ?? item.title,
+                      ...(item.tags ?? []).slice(0, 3),
+                      ...(item.colors ?? []).filter((c) => c !== "dark" && c !== "light").slice(0, 2),
+                    ]
+                      .filter(Boolean)
+                      .join(" ")
+                      .slice(0, 220);
+                    return q ? (
+                      <button onClick={() => onWebSimilar(q)} className="text-[11px] text-zinc-200 hover:underline">
+                        Search the web for similar →
+                      </button>
+                    ) : null;
+                  })()}
+                </div>
               </div>
-              {rel.length > 0 ? (
+              {shown.length > 0 ? (
                 <div className="no-scrollbar flex gap-2 overflow-x-auto">
-                  {rel.map((r) => (
+                  {shown.map((r) => (
                     <button
                       key={r.id}
                       onClick={() => onOpenItem(r)}
@@ -261,7 +293,9 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
                   ))}
                 </div>
               ) : (
-                <div className="text-xs text-zinc-700">Nothing related in your library yet.</div>
+                <div className="text-xs text-zinc-700">
+                  {paletteMode ? "No close palette matches in your library yet." : "Nothing related in your library yet."}
+                </div>
               )}
             </div>
           )}
@@ -377,6 +411,11 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
               <a href={item.source_url} target="_blank" rel="noreferrer" className="block truncate text-sm text-zinc-200 hover:underline">
                 {item.source_domain ?? item.source_url}
               </a>
+              {item.dead_link && (
+                <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-amber-300/90">
+                  <WarningIcon className="h-3.5 w-3.5 shrink-0" /> This link may be dead — the source didn’t respond.
+                </div>
+              )}
             </div>
           )}
 

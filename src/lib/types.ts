@@ -41,6 +41,8 @@ export interface Item {
   board_w: number | null;
   ai_caption: string | null;
   stack_id: string | null;
+  /** Set true by a background reachability check when the source URL fails to load. */
+  dead_link: boolean;
   created_at: string;
   last_viewed_at: string | null;
   /** Cosine similarity, present only on rows returned by the match_* RPCs. */

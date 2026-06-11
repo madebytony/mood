@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Item, Stack } from "@/lib/types";
-import { updateItem, updateStack } from "@/lib/db";
-import { StackIcon, SparklesIcon } from "./icons";
+import { saveBoardPositions, updateItem, updateStack, type BoardItemPos, type BoardStackPos } from "@/lib/db";
+import { StackIcon, SparklesIcon, WarningIcon } from "./icons";
 
 interface Props {
   items: Item[];
@@ -12,10 +12,13 @@ interface Props {
   stacks?: Stack[];
   stackThumbs?: Map<string, string[]>;
   onOpenStack?: (s: Stack) => void;
+  selected?: Set<string>;
+  /** Rubber-band selection (replaces, or merges when shift is held on release). */
+  onMarquee?: (ids: string[], additive: boolean) => void;
 }
 
 const CARD_W = 260;
-const GAP = 24;
+const GAP = 48; // breathing room between auto-placed / tidied cards (manual positions are untouched)
 
 interface Pos {
   x: number;
@@ -29,14 +32,17 @@ function cardHeight(node: Item | Stack, w: number): number {
   return ("type" in node && node.type === "note") ? 140 : w * 0.75;
 }
 
-export default function Board({ items, urls, onOpen, stacks = [], stackThumbs, onOpenStack }: Props) {
+export default function Board({ items, urls, onOpen, stacks = [], stackThumbs, onOpenStack, selected, onMarquee }: Props) {
   const wrap = useRef<HTMLDivElement>(null);
   const layer = useRef<HTMLDivElement>(null);
   const view = useRef({ x: 60, y: 60, k: 1 });
   const [positions, setPositions] = useState<Map<string, Pos>>(new Map());
   const [tidying, setTidying] = useState(false);
+  const [selectMode, setSelectMode] = useState(false);
+  // Rubber-band rect in wrap-relative px while dragging a selection.
+  const [band, setBand] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
   const drag = useRef<{
-    mode: "pan" | "card" | "pinch" | "resize" | null;
+    mode: "pan" | "card" | "pinch" | "resize" | "marquee" | null;
     key?: string;
     startX: number;
     startY: number;
@@ -90,6 +96,26 @@ export default function Board({ items, urls, onOpen, stacks = [], stackThumbs, o
       const c = heights.indexOf(Math.min(...heights));
       out.set(key, { x: c * (CARD_W + GAP), y: heights[c], w: CARD_W });
       heights[c] += cardHeight(node, CARD_W) + GAP;
+    }
+    return out;
+  }
+
+  /** Item keys whose card rect intersects the rubber-band (band is wrap-relative px; card rects are
+   *  board px transformed by the current pan/zoom). Stacks are skipped — selection acts on items. */
+  function idsInBand(b: { x1: number; y1: number; x2: number; y2: number }): string[] {
+    const left = Math.min(b.x1, b.x2), right = Math.max(b.x1, b.x2);
+    const top = Math.min(b.y1, b.y2), bottom = Math.max(b.y1, b.y2);
+    const v = view.current;
+    const out: string[] = [];
+    for (const { key, node } of nodes) {
+      if (key.startsWith("stk:")) continue;
+      const p = positions.get(key);
+      if (!p) continue;
+      const cx = v.x + p.x * v.k;
+      const cy = v.y + p.y * v.k;
+      const cw = p.w * v.k;
+      const ch = cardHeight(node, p.w) * v.k;
+      if (cx < right && cx + cw > left && cy < bottom && cy + ch > top) out.push(key);
     }
     return out;
   }
@@ -173,6 +199,13 @@ export default function Board({ items, urls, onOpen, stacks = [], stackThumbs, o
       const p = positions.get(key);
       if (!p) return;
       drag.current = { mode: "card", key, startX: e.clientX, startY: e.clientY, origX: p.x, origY: p.y, moved: false };
+    } else if (onMarquee && (selectMode || e.shiftKey)) {
+      // empty-space drag draws a selection box instead of panning
+      const rect = wrap.current!.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      drag.current = { mode: "marquee", startX: x, startY: y, origX: 0, origY: 0, moved: false };
+      setBand({ x1: x, y1: y, x2: x, y2: y });
     } else {
       drag.current = { mode: "pan", startX: e.clientX, startY: e.clientY, origX: view.current.x, origY: view.current.y, moved: false };
     }
@@ -209,6 +242,11 @@ export default function Board({ items, urls, onOpen, stacks = [], stackThumbs, o
       applyView();
       return;
     }
+    if (d.mode === "marquee") {
+      const rect = wrap.current!.getBoundingClientRect();
+      setBand((b) => (b ? { ...b, x2: e.clientX - rect.left, y2: e.clientY - rect.top } : b));
+      return;
+    }
     const dx = e.clientX - d.startX;
     const dy = e.clientY - d.startY;
     if (Math.abs(dx) + Math.abs(dy) > 4) d.moved = true;
@@ -242,6 +280,14 @@ export default function Board({ items, urls, onOpen, stacks = [], stackThumbs, o
   function onPointerUp(e: React.PointerEvent) {
     pointers.current.delete(e.pointerId);
     const d = drag.current;
+    if (d.mode === "marquee") {
+      const b = band;
+      setBand(null);
+      drag.current = { mode: null, startX: 0, startY: 0, origX: 0, origY: 0, moved: false };
+      // ignore a near-stationary press so a stray click doesn't wipe the selection
+      if (b && (Math.abs(b.x2 - b.x1) > 4 || Math.abs(b.y2 - b.y1) > 4)) onMarquee?.(idsInBand(b), e.shiftKey);
+      return;
+    }
     if (d.mode === "resize" && d.key) {
       const k = view.current.k;
       const nw = clampW((d.origW ?? CARD_W) + (e.clientX - d.startX) / k);
@@ -283,19 +329,29 @@ export default function Board({ items, urls, onOpen, stacks = [], stackThumbs, o
     });
     const next = masonry(ordered);
     setPositions(next);
-    await Promise.all(
-      [...next.entries()].map(([key, p]) => {
-        persistPos(key, { board_x: p.x, board_y: p.y, board_w: p.w });
-        return Promise.resolve();
-      })
-    );
+    // one upsert per table instead of a PATCH per card
+    const itemRows: BoardItemPos[] = [];
+    const stackRows: BoardStackPos[] = [];
+    for (const { key, node } of nodes) {
+      const p = next.get(key);
+      if (!p) continue;
+      if (key.startsWith("stk:")) {
+        const s = node as Stack;
+        stackRows.push({ id: s.id, user_id: s.user_id, space_id: s.space_id, name: s.name, created_at: s.created_at, board_x: p.x, board_y: p.y, board_w: p.w });
+      } else {
+        const it = node as Item;
+        itemRows.push({ id: it.id, user_id: it.user_id, space_id: it.space_id, type: it.type, created_at: it.created_at, board_x: p.x, board_y: p.y, board_w: p.w });
+      }
+    }
+    // positions are already applied locally; a failed persist self-heals on next load
+    await saveBoardPositions(itemRows, stackRows).catch(() => {});
     setTimeout(() => setTidying(false), 400);
   }
 
   return (
     <div
       ref={wrap}
-      className="relative h-full touch-none overflow-hidden bg-[radial-gradient(circle_at_1px_1px,rgba(255,255,255,0.05)_1px,transparent_0)] [background-size:28px_28px]"
+      className={`relative h-full touch-none overflow-hidden bg-[radial-gradient(circle_at_1px_1px,rgba(255,255,255,0.05)_1px,transparent_0)] [background-size:28px_28px] ${selectMode ? "cursor-crosshair" : ""}`}
       onPointerDown={(e) => onPointerDown(e)}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -317,7 +373,7 @@ export default function Board({ items, urls, onOpen, stacks = [], stackThumbs, o
               id={`card-${key}`}
               className={`group absolute left-0 top-0 cursor-grab overflow-hidden rounded-xl border bg-[#17171c] shadow-lg shadow-black/40 active:cursor-grabbing ${
                 isStack ? "border-white/20" : "border-white/10"
-              } ${tidying ? "transition-transform duration-300" : ""}`}
+              } ${selected?.has(key) ? "ring-2 ring-white/80" : ""} ${tidying ? "transition-transform duration-300" : ""}`}
               style={{ width: p.w, height: h, transform: `translate(${p.x}px, ${p.y}px)` }}
               onPointerDown={(e) => {
                 e.stopPropagation();
@@ -357,6 +413,11 @@ export default function Board({ items, urls, onOpen, stacks = [], stackThumbs, o
                   {(item?.content ?? item?.title ?? item?.source_domain ?? "").slice(0, 200)}
                 </div>
               )}
+              {item?.dead_link && (
+                <div title="Link may be dead — source didn't respond" className="absolute left-1.5 top-1.5 grid h-5 w-5 place-items-center rounded-full bg-amber-500/90 text-black shadow">
+                  <WarningIcon className="h-3.5 w-3.5" />
+                </div>
+              )}
               <div
                 onPointerDown={(e) => {
                   e.stopPropagation();
@@ -370,7 +431,32 @@ export default function Board({ items, urls, onOpen, stacks = [], stackThumbs, o
         })}
       </div>
 
+      {band && (
+        <div
+          className="pointer-events-none absolute z-20 rounded border border-white/70 bg-white/10"
+          style={{
+            left: Math.min(band.x1, band.x2),
+            top: Math.min(band.y1, band.y2),
+            width: Math.abs(band.x2 - band.x1),
+            height: Math.abs(band.y2 - band.y1),
+          }}
+        />
+      )}
+
       <div className="absolute bottom-20 left-1/2 z-10 flex -translate-x-1/2 gap-2 md:bottom-5">
+        {onMarquee && (
+          <button
+            onClick={() => setSelectMode((m) => !m)}
+            title="Drag empty space to select (or hold Shift)"
+            className={`rounded-full border px-4 py-2 text-xs backdrop-blur-xl ${
+              selectMode
+                ? "border-white/40 bg-white/15 text-white"
+                : "border-white/10 bg-[#1b1b21]/65 text-zinc-200 hover:border-white/30"
+            }`}
+          >
+            {selectMode ? "Select ✓" : "Select"}
+          </button>
+        )}
         <button
           onClick={tidy}
           className="rounded-full border border-white/10 bg-[#1b1b21]/65 px-4 py-2 text-xs text-zinc-200 backdrop-blur-xl hover:border-white/30"

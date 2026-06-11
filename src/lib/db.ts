@@ -1,11 +1,11 @@
 import { supabase, authToken } from "./supabase";
-import { processImage, uploadProcessed } from "./media";
-import type { Item, Library, LinkMeta, Space, Stack } from "./types";
+import { makeThumb, processImage, uploadProcessed } from "./media";
+import type { Item, ItemType, Library, LinkMeta, Space, Stack } from "./types";
 
 /** All item columns EXCEPT the 1024-dim embedding vector (too heavy to ship to the client). */
 const ITEM_COLS: string =
   "id,space_id,user_id,type,storage_path,thumb_path,content,title,source_url,source_domain," +
-  "tags,colors,width,height,board_x,board_y,board_w,ai_caption,stack_id,created_at,last_viewed_at";
+  "tags,colors,fonts,tech,width,height,board_x,board_y,board_w,ai_caption,stack_id,dead_link,created_at,last_viewed_at";
 
 // ---------- reads ----------
 
@@ -19,6 +19,17 @@ export async function fetchSpaces(): Promise<Space[]> {
   const { data, error } = await supabase.from("spaces").select("*").order("sort").order("created_at");
   if (error) throw error;
   return data ?? [];
+}
+
+/** Unstacked-item count per space_id — drives the sidebar tallies (matches what each space's grid shows). */
+export async function fetchSpaceCounts(): Promise<Map<string, number>> {
+  const { data, error } = await supabase.from("items").select("space_id").is("stack_id", null).limit(10000);
+  if (error) throw error;
+  const m = new Map<string, number>();
+  for (const row of (data ?? []) as { space_id: string | null }[]) {
+    if (row.space_id) m.set(row.space_id, (m.get(row.space_id) ?? 0) + 1);
+  }
+  return m;
 }
 
 export async function fetchItems(spaceId: string | "all", search: string): Promise<Item[]> {
@@ -382,6 +393,21 @@ export async function updateStack(id: string, patch: Partial<Stack>): Promise<vo
   if (error) throw error;
 }
 
+export interface BoardItemPos { id: string; user_id: string; space_id: string; type: ItemType; created_at: string; board_x: number; board_y: number; board_w: number; }
+export interface BoardStackPos { id: string; user_id: string; space_id: string; name: string; created_at: string; board_x: number; board_y: number; board_w: number; }
+
+/** Persist many board positions in one upsert per table — replaces a PATCH-per-card storm on Tidy.
+ *  Identity + NOT NULL columns are included so the upsert's INSERT arm is valid; content columns
+ *  (title, tags, content, …) are deliberately omitted so a tidy can never clobber a concurrent edit. */
+export async function saveBoardPositions(items: BoardItemPos[], stacks: BoardStackPos[]): Promise<void> {
+  const [ir, sr] = await Promise.all([
+    items.length ? supabase.from("items").upsert(items, { onConflict: "id" }) : null,
+    stacks.length ? supabase.from("stacks").upsert(stacks, { onConflict: "id" }) : null,
+  ]);
+  if (ir?.error) throw ir.error;
+  if (sr?.error) throw sr.error;
+}
+
 /** Dissolve: items return to the space, stack row removed. */
 export async function deleteStack(id: string): Promise<void> {
   await supabase.from("items").update({ stack_id: null }).eq("stack_id", id);
@@ -397,10 +423,12 @@ export async function setSpaceView(id: string, view: "grid" | "board"): Promise<
 // ---------- AI ----------
 
 let aiAvailable: boolean | null = null;
+const aiDown = () => aiAvailable === false;
 
-/** Caption + auto-tag an item in the background. Silently no-ops without an API key. */
-export async function captionItem(item: Item, onDone?: (updated: Item) => void): Promise<void> {
-  if (aiAvailable === false || !item.thumb_path) return;
+/** Caption + auto-tag an item in the background. Returns whether it captioned (for backfill
+ *  back-off). Silently no-ops without an API key. */
+export async function captionItem(item: Item, onDone?: (updated: Item) => void): Promise<boolean> {
+  if (aiAvailable === false || !item.thumb_path) return false;
   try {
     const urls = await signedUrls([item.thumb_path]);
     const res = await apiFetch("/api/ai/caption", {
@@ -410,16 +438,18 @@ export async function captionItem(item: Item, onDone?: (updated: Item) => void):
     });
     if (res.status === 503) {
       aiAvailable = false;
-      return;
+      return false;
     }
-    if (!res.ok) return;
+    if (!res.ok) return false;
     aiAvailable = true;
     const { caption, tags } = await res.json();
+    if (!caption && !(tags ?? []).length) return false; // nothing useful came back
     const merged = [...new Set([...(item.tags ?? []), ...(tags ?? [])])];
     const updated = await updateItem(item.id, { ai_caption: caption, tags: merged });
     onDone?.(updated);
+    return true;
   } catch {
-    /* background job — never surface errors */
+    return false; // background job — never surface errors
   }
 }
 
@@ -513,6 +543,98 @@ export async function backfillEmbeddings(batch = 12): Promise<void> {
   }
 }
 
+let captionBackfillRunning = false;
+
+/** Caption + tag any image items still missing an ai_caption, a few per load, re-embedding each
+ *  so its vector carries the style words. Closes the gap for pre-AI / failed-caption saves whose
+ *  thin metadata makes weak "more like this" queries. `onCaptioned` lets the caller patch live
+ *  state so an immediate "more like this" uses the fresh caption. No key -> no-op. */
+export async function backfillCaptions(onCaptioned?: (item: Item) => void, batch = 8): Promise<void> {
+  if (captionBackfillRunning || aiDown()) return;
+  captionBackfillRunning = true;
+  try {
+    const { data } = await supabase
+      .from("items")
+      .select(ITEM_COLS)
+      .is("ai_caption", null)
+      .not("thumb_path", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(batch);
+    let failures = 0;
+    for (const item of (data ?? []) as unknown as Item[]) {
+      if (aiDown()) break; // key went away / 503 mid-run
+      const ok = await captionItem(item, (updated) => {
+        embedItem(updated); // refresh the vector with the new caption
+        onCaptioned?.(updated);
+      });
+      // back off after repeated failures (e.g. 429 rate limits) — next app load retries
+      if (!ok && ++failures >= 2) break;
+      if (ok) failures = 0;
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  } finally {
+    captionBackfillRunning = false;
+  }
+}
+
+let thumbBackfillRunning = false;
+
+/** Regenerate a proper 480px thumbnail + colour palette for one item from its stored full image,
+ *  without touching the full. Leaves storage_path alone; only adds a thumb + colours + dims. */
+async function reThumb(item: Item, onThumb?: (item: Item) => void): Promise<boolean> {
+  if (!item.storage_path) return false;
+  try {
+    const urls = await signedUrls([item.storage_path]);
+    const fullUrl = urls.get(item.storage_path);
+    if (!fullUrl) return false;
+    const res = await fetch(fullUrl);
+    if (!res.ok) return false;
+    const { thumbBlob, colors, width, height, ext } = await makeThumb(await res.blob());
+    const base = item.storage_path.split("/").pop()!.replace(/\.[^.]+$/, ""); // content hash
+    const thumb_path = `thumbs/${base}.${ext}`;
+    const up = await supabase.storage
+      .from("media")
+      .upload(thumb_path, thumbBlob, { upsert: true, contentType: thumbBlob.type });
+    if (up.error) return false;
+    const updated = await updateItem(item.id, {
+      thumb_path,
+      colors,
+      width: item.width ?? width,
+      height: item.height ?? height,
+    });
+    onThumb?.(updated);
+    return true;
+  } catch {
+    return false; // background job — never surface errors
+  }
+}
+
+/** Backfill proper thumbnails + colours for image items stored without them — clip-route saves use
+ *  the full image as the thumb and skip colour extraction (heavy grids + no colour filter). Runs a
+ *  few per load, downloading each full image once. `onThumb` lets the caller patch live state. */
+export async function backfillThumbs(onThumb?: (item: Item) => void, batch = 4): Promise<void> {
+  if (thumbBackfillRunning) return;
+  thumbBackfillRunning = true;
+  try {
+    const { data } = await supabase
+      .from("items")
+      .select(ITEM_COLS)
+      .not("thumb_path", "is", null)
+      .not("storage_path", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(200);
+    const broken = ((data ?? []) as unknown as Item[])
+      .filter((i) => (i.colors?.length ?? 0) === 0 || i.thumb_path === i.storage_path)
+      .slice(0, batch);
+    for (const item of broken) {
+      await reThumb(item, onThumb);
+      await new Promise((r) => setTimeout(r, 600));
+    }
+  } finally {
+    thumbBackfillRunning = false;
+  }
+}
+
 /** Visual nearest-neighbours for an item, library-wide. Empty when not yet embedded. */
 export async function matchToItem(itemId: string, count = 12): Promise<Item[]> {
   const { data, error } = await supabase.rpc("match_to_item", { p_item_id: itemId, p_count: count });
@@ -584,4 +706,23 @@ export async function markSeen(url: string, verdict: "seen" | "liked" | "dislike
 
 export async function touchViewed(id: string): Promise<void> {
   await supabase.from("items").update({ last_viewed_at: new Date().toISOString() }).eq("id", id);
+}
+
+// ---------- dead-link check ----------
+
+/** Background reachability check for an item's source URL. Fire-and-forget: returns the patched
+ *  item if it flips dead_link (so callers can update state in place), else null. Never throws —
+ *  the server does the SSRF-guarded fetch with a retry; some valid sites block HEAD, so a save is
+ *  never blocked on this. */
+export async function checkLink(item: Item): Promise<Item | null> {
+  if (!item.source_url) return null;
+  try {
+    const res = await apiFetch(`/api/check-link?url=${encodeURIComponent(item.source_url)}`);
+    if (!res.ok) return null; // our own endpoint failed — don't mark anything
+    const { dead } = (await res.json()) as { dead?: boolean };
+    if (dead === undefined || dead === item.dead_link) return null;
+    return await updateItem(item.id, { dead_link: dead });
+  } catch {
+    return null;
+  }
 }

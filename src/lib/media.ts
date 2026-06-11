@@ -4,6 +4,7 @@
  * Also extracts a small named-colour palette for colour search.
  */
 import { supabase } from "./supabase";
+import type { Item } from "./types";
 
 const MAX_FULL = 2400;
 const MAX_THUMB = 480;
@@ -122,6 +123,39 @@ export const COLOR_NAMES = [
   "green", "teal", "blue", "purple", "pink", "brown",
 ] as const;
 
+/** Hue buckets only — tone tokens (dark/light) are near-universal and would relate everything. */
+function hueBuckets(colors: string[] | null | undefined): string[] {
+  return (colors ?? []).filter((c) => c !== "dark" && c !== "light");
+}
+
+/**
+ * Rank library items by how close their colour palette is to `item`'s, using Jaccard overlap of the
+ * extracted hue buckets (with a small nudge for sharing the same dark/light tone). Coarse by design —
+ * the palette is ≤3 named buckets — but enough to surface "same colour family" neighbours cheaply,
+ * client-side, with no extra round-trip. Returns [] when the item has no chromatic colour.
+ */
+export function paletteSimilar(item: Item, all: Item[], limit = 12): Item[] {
+  const target = hueBuckets(item.colors);
+  if (!target.length) return [];
+  const tset = new Set(target);
+  const tone = (item.colors ?? []).find((c) => c === "dark" || c === "light");
+  return all
+    .filter((i) => i.id !== item.id)
+    .map((i) => {
+      const cs = hueBuckets(i.colors);
+      if (!cs.length) return { i, score: 0 };
+      const shared = cs.filter((c) => tset.has(c)).length;
+      const union = new Set([...target, ...cs]).size;
+      let score = union ? shared / union : 0;
+      if (shared && tone && (i.colors ?? []).includes(tone)) score += 0.15; // same tone tie-break
+      return { i, score };
+    })
+    .filter((r) => r.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map((r) => r.i);
+}
+
 function nameOf(r: number, g: number, b: number): string {
   const mx = Math.max(r, g, b) / 255;
   const mn = Math.min(r, g, b) / 255;
@@ -206,6 +240,20 @@ export async function processImage(blob: Blob): Promise<ProcessedImage> {
     hash,
     colors,
   };
+}
+
+/** Just the 480px thumbnail + colour palette + dims from a full image — WITHOUT re-encoding or
+ *  re-uploading the full. For backfilling items stored with the full image as their thumbnail
+ *  (clip-route saves). Goes through a Blob, so the canvas isn't CORS-tainted. */
+export async function makeThumb(
+  blob: Blob
+): Promise<{ thumbBlob: Blob; colors: string[]; width: number; height: number; ext: string }> {
+  const src = await decode(blob);
+  const { w, h } = dims(src);
+  const thumbCanvas = drawThumb(src);
+  const colors = extractColors(thumbCanvas);
+  const { blob: thumbBlob, ext } = await encode(thumbCanvas, 0.75);
+  return { thumbBlob, colors, width: w, height: h, ext };
 }
 
 export interface UploadedMedia {

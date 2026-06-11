@@ -14,9 +14,12 @@ import {
   addImageFile,
   addNote,
   aiSearch,
+  backfillCaptions,
   backfillEmbeddings,
+  backfillThumbs,
   captionItem,
   captureSite,
+  checkLink,
   createStack,
   deleteItemRow,
   deleteItemStorage,
@@ -26,6 +29,7 @@ import {
   fetchItems,
   fetchLibraries,
   fetchSpaces,
+  fetchSpaceCounts,
   fetchStackItems,
   fetchStacks,
   renameStack,
@@ -38,7 +42,7 @@ import {
 } from "@/lib/db";
 import { COLOR_NAMES, COLOR_HEX } from "@/lib/media";
 import type { Item, Library, Space, Stack } from "@/lib/types";
-import { SparklesIcon, HomeIcon, GridIcon, BoardIcon, MenuIcon, PlusIcon, GlobeIcon, StackIcon, UnstackIcon } from "@/components/icons";
+import { SparklesIcon, HomeIcon, GridIcon, BoardIcon, MenuIcon, PlusIcon, GlobeIcon, StackIcon, UnstackIcon, TrashIcon } from "@/components/icons";
 
 function safeHost(url: string): string {
   try {
@@ -59,6 +63,7 @@ function App() {
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [items, setItems] = useState<Item[]>([]);
+  const [spaceCounts, setSpaceCounts] = useState<Map<string, number>>(new Map());
   const [urls, setUrls] = useState<Map<string, string>>(new Map());
   const [selected, setSelected] = useState<string | "all" | "home">("home");
   const [search, setSearch] = useState("");
@@ -70,6 +75,7 @@ function App() {
   const [stacks, setStacks] = useState<Stack[]>([]);
   const [stackThumbs, setStackThumbs] = useState<Map<string, string[]>>(new Map());
   const [selIds, setSelIds] = useState<Set<string>>(new Set());
+  const [confirmDel, setConfirmDel] = useState(false); // bulk-delete arms on first click
   const [aiItems, setAiItems] = useState<Item[] | null>(null); // AI search results overlay
   const [stackView, setStackView] = useState<{ stack: Stack; items: Item[] } | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -89,17 +95,24 @@ function App() {
     return () => setPending((p) => p.filter((x) => x.id !== id));
   }, []);
 
-  // ---------- URL state: refresh / share keeps the current view ----------
+  // ---------- URL state: refresh / share restores the view ----------
+  // Read once on mount: ?s=<space|all|home>&q=<search>&c=<colour>. Falls back to the legacy
+  // #s/<id> hash so older bookmarks still resolve. The write-back effect lives lower, after
+  // `showBoard` is known (so it can mirror grid/board into ?v).
   useEffect(() => {
-    const h = decodeURIComponent(window.location.hash.slice(1));
-    if (h === "all" || h === "home") setSelected(h);
-    else if (h.startsWith("s/")) setSelected(h.slice(2));
+    const p = new URLSearchParams(window.location.search);
+    const s = p.get("s");
+    if (s) setSelected(s);
+    else {
+      const h = decodeURIComponent(window.location.hash.slice(1));
+      if (h === "all" || h === "home") setSelected(h);
+      else if (h.startsWith("s/")) setSelected(h.slice(2));
+    }
+    const q = p.get("q");
+    if (q) setSearch(q);
+    const c = p.get("c");
+    if (c) setColorFilter(c);
   }, []);
-
-  useEffect(() => {
-    const h = selected === "home" || selected === "all" ? selected : `s/${selected}`;
-    history.replaceState(null, "", `#${h}`);
-  }, [selected]);
 
   const toast = useCallback((text: string, kind: Toast["kind"] = "info") => {
     const id = ++toastId.current;
@@ -144,6 +157,8 @@ function App() {
     setUrls(map);
     setStackThumbs(fanUrls);
     setReady(true);
+    // sidebar tallies are library-wide (not just this view) — refresh in the background
+    fetchSpaceCounts().then(setSpaceCounts).catch(() => {});
   }, [selected, search]);
 
   useEffect(() => {
@@ -162,6 +177,8 @@ function App() {
     setSelIds(new Set()); // clear selection + AI results when the view changes
     setAiItems(null);
   }, [search, selected]);
+
+  useEffect(() => setConfirmDel(false), [selIds]); // re-arm delete whenever the selection changes
 
   useEffect(() => {
     // skeletons only for views we've never seen this session
@@ -184,29 +201,59 @@ function App() {
   );
 
   const counts = useMemo(() => {
-    const m = new Map<string, number>();
-    m.set("all", items.length);
+    const m = new Map(spaceCounts);
+    let total = 0;
+    for (const n of spaceCounts.values()) total += n;
+    m.set("all", total);
     return m;
-  }, [items]);
+  }, [spaceCounts]);
 
   // ---------- capture handlers ----------
 
-  const afterAdd = useCallback(
-    (item: Item) => {
-      // caption first so the embedding carries the style description
-      captionItem(item, (updated) => {
-        embedItem(updated);
-        loadItems().catch(() => {});
-      });
-      // sweep catches items captioning never reaches (no key, notes, failures)
-      setTimeout(() => backfillEmbeddings(), 12000);
-    },
-    [loadItems]
-  );
+  /** Paint a freshly-saved item into the current view immediately, signing its thumb —
+   *  so adds feel instant without a full reload per file. */
+  const insertItem = useCallback(async (item: Item) => {
+    if (item.thumb_path) {
+      const m = await signedUrls([item.thumb_path]);
+      setUrls((u) => new Map([...u, ...m]));
+    }
+    setItems((prev) => (prev.some((i) => i.id === item.id) ? prev : [item, ...prev]));
+  }, []);
 
-  // Quietly embed anything still missing a vector (new installs, clipped items, pre-AI saves)
+  const afterAdd = useCallback((item: Item) => {
+    // caption first so the embedding carries the style description
+    captionItem(item, (updated) => {
+      embedItem(updated);
+      // patch the caption/tags into the current view in place — no full reload
+      setItems((prev) => prev.map((i) => (i.id === updated.id ? updated : i)));
+    });
+    // background reachability check for links/sites — flags dead_link without blocking the save
+    if (item.source_url) {
+      checkLink(item).then((updated) => {
+        if (updated) setItems((prev) => prev.map((i) => (i.id === updated.id ? updated : i)));
+      });
+    }
+    // sweep catches items captioning never reaches (no key, notes, failures)
+    setTimeout(() => backfillEmbeddings(), 12000);
+  }, []);
+
+  // Self-heal items on load: caption uncaptioned images (richer "more like this" + embeddings),
+  // then backfill proper thumbnails + colours for clip-route saves (full-image thumbs, no colours),
+  // then sweep any item still missing a vector. Patch each result into the grid so it's used now.
   useEffect(() => {
-    backfillEmbeddings();
+    const patch = (updated: Item) =>
+      setItems((prev) => prev.map((i) => (i.id === updated.id ? updated : i)));
+    // re-thumb changes thumb_path → sign the new thumb or the card would briefly go blank
+    const patchThumb = (updated: Item) => {
+      patch(updated);
+      if (updated.thumb_path)
+        signedUrls([updated.thumb_path])
+          .then((m) => setUrls((u) => new Map([...u, ...m])))
+          .catch(() => {});
+    };
+    backfillCaptions(patch)
+      .finally(() => backfillThumbs(patchThumb))
+      .finally(() => backfillEmbeddings());
   }, []);
 
   const handleFiles = useCallback(
@@ -214,20 +261,23 @@ function App() {
       if (!targetSpace) return toast("No space to save into yet", "error");
       const images = files.filter((f) => f.type.startsWith("image/"));
       if (!images.length) return;
+      let added = 0;
       for (const f of images) {
         const done = trackPending(f.name || "Image");
         try {
           const item = await addImageFile(f, targetSpace);
+          insertItem(item).catch(() => {}); // optimistic paint
           afterAdd(item);
-          await loadItems();
+          added++;
         } catch (e) {
           toast(`Failed: ${(e as Error).message}`, "error");
         } finally {
           done();
         }
       }
+      if (added) loadItems().catch(() => {}); // single reconciling refresh for the whole batch
     },
-    [targetSpace, toast, loadItems, afterAdd, trackPending]
+    [targetSpace, toast, loadItems, afterAdd, insertItem, trackPending]
   );
 
   const handleUrl = useCallback(
@@ -237,15 +287,16 @@ function App() {
       const done = trackPending(safeHost(url));
       try {
         const item = await addFromUrl(url, targetSpace);
+        insertItem(item).catch(() => {}); // optimistic paint
         afterAdd(item);
-        await loadItems();
+        loadItems().catch(() => {}); // one reconciling refresh
       } catch (e) {
         toast(`Import failed: ${(e as Error).message}`, "error");
       } finally {
         done();
       }
     },
-    [targetSpace, toast, loadItems, afterAdd, trackPending]
+    [targetSpace, toast, loadItems, afterAdd, insertItem, trackPending]
   );
 
   const handleCapture = useCallback(
@@ -255,24 +306,26 @@ function App() {
       const done = trackPending(`${safeHost(url)} — capturing…`);
       try {
         const item = await captureSite(url, targetSpace);
+        insertItem(item).catch(() => {}); // optimistic paint
         afterAdd(item);
-        await loadItems();
+        loadItems().catch(() => {}); // one reconciling refresh
       } catch (e) {
         toast(`Capture failed: ${(e as Error).message}`, "error");
       } finally {
         done();
       }
     },
-    [targetSpace, toast, loadItems, afterAdd, trackPending]
+    [targetSpace, toast, loadItems, afterAdd, insertItem, trackPending]
   );
 
   const handleNote = useCallback(
     async (text: string) => {
       if (!targetSpace) return toast("No space to save into yet", "error");
-      await addNote(text, targetSpace);
-      loadItems();
+      const item = await addNote(text, targetSpace);
+      insertItem(item).catch(() => {}); // optimistic paint
+      loadItems().catch(() => {}); // one reconciling refresh
     },
-    [targetSpace, loadItems, toast]
+    [targetSpace, loadItems, insertItem, toast]
   );
 
   /** Instant delete with a 5s Undo window. The row is deleted immediately (so a refresh
@@ -306,6 +359,52 @@ function App() {
             setToasts((ts) => ts.filter((x) => x.id !== id));
             try {
               await restoreItem(item);
+            } catch (e) {
+              toast(`Undo failed: ${(e as Error).message}`, "error");
+            }
+            loadItems();
+          },
+        },
+      },
+    ]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 5200);
+  }
+
+  /** Bulk soft-delete the current selection with one combined Undo (mirrors softDelete). */
+  async function bulkDelete() {
+    const victims = baseItems.filter((i) => selIds.has(i.id));
+    if (!victims.length) return;
+    const ids = new Set(victims.map((v) => v.id));
+    setSelIds(new Set());
+    setConfirmDel(false);
+    setItems((prev) => prev.filter((i) => !ids.has(i.id)));
+    setAiItems((prev) => (prev ? prev.filter((i) => !ids.has(i.id)) : prev));
+    try {
+      await Promise.all(victims.map((v) => deleteItemRow(v)));
+    } catch (e) {
+      toast(`Delete failed: ${(e as Error).message}`, "error");
+      loadItems();
+      return;
+    }
+    const id = ++toastId.current;
+    let undone = false;
+    const timer = setTimeout(() => {
+      if (!undone) victims.forEach((v) => deleteItemStorage(v).catch(() => {}));
+    }, 5200);
+    setToasts((t) => [
+      ...t,
+      {
+        id,
+        text: `${victims.length} deleted`,
+        kind: "info",
+        action: {
+          label: "Undo",
+          fn: async () => {
+            undone = true;
+            clearTimeout(timer);
+            setToasts((ts) => ts.filter((x) => x.id !== id));
+            try {
+              await Promise.all(victims.map((v) => restoreItem(v)));
             } catch (e) {
               toast(`Undo failed: ${(e as Error).message}`, "error");
             }
@@ -477,8 +576,16 @@ function App() {
   }, [handleFiles, handleUrl]);
 
   function onItemChanged(updated: Item | null) {
-    if (updated) setOpen(updated);
-    loadItems();
+    if (!updated) return loadItems();
+    setOpen(updated);
+    // Patch the edited item into the current view in place (mirrors softDelete's optimistic
+    // path) — title/tag/space edits no longer trigger a full reload. A space move that takes
+    // the item out of the current space drops it from the grid.
+    const inView = selected === "all" || selected === "home" || updated.space_id === selected;
+    setItems((prev) =>
+      inView ? prev.map((i) => (i.id === updated.id ? updated : i)) : prev.filter((i) => i.id !== updated.id)
+    );
+    setAiItems((prev) => (prev ? prev.map((i) => (i.id === updated.id ? updated : i)) : prev));
   }
 
   async function fileTo(item: Item, spaceId: string) {
@@ -498,6 +605,17 @@ function App() {
   const currentName =
     selected === "home" ? "Home" : selected === "all" ? "Everything" : currentSpace?.name ?? "";
   const showBoard = currentSpace?.view === "board";
+
+  // Mirror the active view into the URL (?s, ?q, ?c, ?v) so refresh/bookmark/share restore it.
+  // ?v reflects the current space's grid/board mode — the DB stays the source of truth on load.
+  useEffect(() => {
+    const p = new URLSearchParams();
+    p.set("s", selected);
+    if (search.trim()) p.set("q", search.trim());
+    if (colorFilter) p.set("c", colorFilter);
+    if (showBoard) p.set("v", "board");
+    history.replaceState(null, "", `?${p.toString()}`);
+  }, [selected, search, colorFilter, showBoard]);
 
   return (
     <div className="flex h-dvh overflow-hidden">
@@ -606,6 +724,10 @@ function App() {
               stacks={stacks}
               stackThumbs={stackThumbs}
               onOpenStack={openStack}
+              selected={selIds}
+              onMarquee={(ids, additive) =>
+                setSelIds((prev) => new Set(additive ? [...prev, ...ids] : ids))
+              }
             />
           ) : !ready ? (
             <SkeletonGrid />
@@ -731,6 +853,16 @@ function App() {
             className="rounded-full bg-white px-4 py-1.5 text-xs font-medium text-black hover:bg-zinc-200"
           >
             <span className="flex items-center gap-1.5"><StackIcon className="h-4 w-4" /> Stack</span>
+          </button>
+          <button
+            onClick={() => (confirmDel ? bulkDelete() : setConfirmDel(true))}
+            className={`rounded-full px-4 py-1.5 text-xs font-medium ${
+              confirmDel
+                ? "bg-red-500 text-white hover:bg-red-400"
+                : "border border-white/10 text-red-300 hover:border-red-400/40"
+            }`}
+          >
+            <span className="flex items-center gap-1.5"><TrashIcon className="h-4 w-4" /> {confirmDel ? "Confirm delete" : "Delete"}</span>
           </button>
           <button onClick={() => setSelIds(new Set())} className="px-2 text-xs text-zinc-500 hover:text-zinc-200">
             Clear
