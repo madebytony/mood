@@ -31,8 +31,25 @@ export async function GET(req: Request) {
   });
 
   const sp = new URL(req.url).searchParams;
+  const self = new URL(req.url).origin;
+  // Only redirect to trusted origins — an attacker-supplied `to` on a magic link is a
+  // token-leak vector. Allow same-origin, the prod deploy, and any configured extras.
+  const allowed = new Set<string>([self]);
+  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
+    allowed.add(`https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`);
+  }
+  for (const o of (process.env.MOOD_ALLOWED_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean)) {
+    allowed.add(o);
+  }
   const to = sp.get("to");
-  const redirectTo = to && /^https?:\/\//.test(to) ? to : new URL(req.url).origin;
+  let redirectTo = self;
+  if (to) {
+    try {
+      if (allowed.has(new URL(to).origin)) redirectTo = to;
+    } catch {
+      /* malformed `to` → fall back to self */
+    }
+  }
 
   const { data, error } = await admin.auth.admin.generateLink({
     type: "magiclink",

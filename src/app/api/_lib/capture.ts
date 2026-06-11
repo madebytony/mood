@@ -72,9 +72,43 @@ const CLEAN_PAGE = `(() => {
   document.documentElement.style.overflow = "visible";
 })()`;
 
+/** Kill animation libraries and snap all CSS transitions to their end state.
+ *  Must run BEFORE LAZY_SCROLL so scroll-triggered content is visible when we scroll through. */
+const FLUSH_MOTION = `(() => {
+  // Instant CSS: reduce all animation/transition durations so triggered elements appear immediately
+  const s = document.createElement('style');
+  s.textContent = '*,*::before,*::after{animation-duration:0.001ms!important;animation-delay:0ms!important;transition-duration:0.001ms!important;transition-delay:0ms!important}';
+  document.head.appendChild(s);
+  // Destroy Lenis — it intercepts window.scrollTo(), preventing scroll triggers from firing
+  try { if (window.lenis) { window.lenis.destroy(); window.lenis = null; } } catch {}
+  try { if (window.__lenis) { window.__lenis.destroy(); window.__lenis = null; } } catch {}
+  document.documentElement.className = document.documentElement.className.replace(/\\blenis[\\w-]*\\b/g, '').trim();
+  // Fast-forward GSAP global timeline so all queued tweens snap to end
+  try { if (window.gsap) window.gsap.globalTimeline.progress(1, false); } catch {}
+  // Snap all ScrollTrigger instances to their triggered state
+  try { if (window.ScrollTrigger) window.ScrollTrigger.getAll().forEach((t) => t.progress(1, false)); } catch {}
+  // Reveal anything hidden by AOS / ScrollReveal / sal.js
+  for (const el of document.querySelectorAll('[data-aos],[data-sal],[data-sr],[data-scroll]')) {
+    try { const cs = window.getComputedStyle(el); if (parseFloat(cs.opacity) < 0.1) el.style.opacity = '1'; } catch {}
+    try { el.style.visibility = 'visible'; el.style.transform = 'none'; } catch {}
+  }
+  // Webflow IX2 — its own animation engine doesn't use GSAP so globalTimeline.progress() won't snap it.
+  // Elements start at opacity:0/transform and IX2 drives them to their end state on scroll.
+  for (const el of document.querySelectorAll('[data-w-id]')) {
+    try {
+      const cs = window.getComputedStyle(el);
+      if (parseFloat(cs.opacity) < 0.9 || cs.visibility === 'hidden') {
+        el.style.opacity = '1';
+        el.style.transform = 'none';
+        el.style.visibility = 'visible';
+      }
+    } catch {}
+  }
+})()`;
+
 const LAZY_SCROLL = `(async () => {
   const step = window.innerHeight;
-  const max = Math.min(document.body.scrollHeight, 12000);
+  const max = Math.min(Math.max(document.body.scrollHeight, document.documentElement.scrollHeight), 12000);
   for (let y = 0; y < max; y += step) {
     window.scrollTo(0, y);
     await new Promise((r) => setTimeout(r, 180));
@@ -244,7 +278,7 @@ function hostingFrom(headers: Record<string, string>): string[] {
 }
 
 export interface Shot {
-  bytes: ArrayBuffer;
+  bytes: Uint8Array<ArrayBuffer>;
   type: string;
   engine: "chromium" | "thum.io";
   fonts?: string[];
@@ -260,6 +294,9 @@ export async function chromiumShot(url: string): Promise<Shot> {
     let page = await browser.newPage();
     await page.setViewport({ width: 1440, height: 960, deviceScaleFactor: 1 });
     await page.setUserAgent(UA);
+    // prefers-reduced-motion: reduce — well-coded animation libraries (GSAP, Lottie) will
+    // skip their intro tweens and show final states, preventing blank gaps in the capture.
+    await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
 
     // Collect JS bundle contents off the wire (CORS-proof) for the tech sniffer.
     const jsBlobs: string[] = [];
@@ -286,6 +323,7 @@ export async function chromiumShot(url: string): Promise<Shot> {
       page = await browser.newPage();
       await page.setViewport({ width: 1440, height: 960, deviceScaleFactor: 1 });
       await page.setUserAgent(UA);
+      await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
       page.on("response", collectJs);
       await page.evaluateOnNewDocument(`
         const orig = HTMLCanvasElement.prototype.getContext;
@@ -306,12 +344,13 @@ export async function chromiumShot(url: string): Promise<Shot> {
       .catch(() => [])) as string[];
     tech = [...new Set([...pageTech, ...hostingFrom(resp?.headers() ?? {})])];
 
+    await page.evaluate(FLUSH_MOTION).catch(() => {});
     await page.evaluate(LAZY_SCROLL).catch(() => {});
     await page.evaluate(CLEAN_PAGE).catch(() => {});
-    await new Promise((r) => setTimeout(r, 350));
+    await new Promise((r) => setTimeout(r, 500));
     const height = Math.min(
-      await page.evaluate("document.body.scrollHeight").then((h) => Number(h) || 960),
-      6000
+      await page.evaluate("Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)").then((h) => Number(h) || 960),
+      8000
     );
     // Heavy WebGL pages can fail tall captures under software rendering — step down before giving up.
     let buf: Uint8Array | undefined;
@@ -323,7 +362,8 @@ export async function chromiumShot(url: string): Promise<Shot> {
     }
     if (!buf) throw new Error("screenshot failed at all heights");
     await browser.close();
-    return { bytes: Buffer.from(buf).buffer as ArrayBuffer, type: "image/jpeg", engine: "chromium", fonts, tech };
+    // buf is a screenshot Buffer over a normal (non-shared) ArrayBuffer; assert the precise type
+    return { bytes: buf as Uint8Array<ArrayBuffer>, type: "image/jpeg", engine: "chromium", fonts, tech };
   } catch (e) {
     if (browser) await browser.close().catch(() => {});
     // Carry whatever we managed to sniff so the fallback image can still get fonts/tech.
@@ -390,7 +430,7 @@ async function thumShot(url: string, capped: boolean): Promise<Shot> {
   });
   if (!res.ok) throw new Error(`screenshot service ${res.status}`);
   const type = res.headers.get("content-type") ?? "image/png";
-  return { bytes: await res.arrayBuffer(), type, engine: "thum.io" };
+  return { bytes: new Uint8Array(await res.arrayBuffer()), type, engine: "thum.io" };
 }
 
 export async function captureScreenshot(url: string, capped = false): Promise<Shot> {

@@ -1,5 +1,5 @@
 import { isAuthed } from "../_lib/auth";
-import { claude, hasKey, parseJson, textOf, SMART_MODEL } from "../_lib/anthropic";
+import { gemini, geminiDisabled, geminiText, hasGeminiKey, parseJson } from "../_lib/gemini";
 
 export const maxDuration = 60;
 
@@ -59,15 +59,6 @@ function hostOnly(u: string): string {
   try { return new URL(u).hostname; } catch { return ""; }
 }
 
-/** The gallery pool arrives in the same front-page order every time; shuffling keeps repeat searches fresh. */
-function shuffle<T>(a: T[]): T[] {
-  const x = [...a];
-  for (let i = x.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [x[i], x[j]] = [x[j], x[i]];
-  }
-  return x;
-}
 
 const CACHE_TTL = 1000 * 60 * 60 * 6;
 let cache: { at: number; items: Suggestion[] } | null = null;
@@ -80,52 +71,60 @@ function absol(href: string, base: string): string | null {
 
 const arenaCache = new Map<string, { at: number; items: Suggestion[] }>();
 
-async function arena(query: string | null, taste: string[]): Promise<Suggestion[]> {
-  const q = (query?.trim() || taste.slice(0, 2).join(" ") || "web design").slice(0, 80);
-  const hit = arenaCache.get(q);
+// Are.na's channel-SEARCH endpoint is unreliable (frequent 504s) and taste tags don't match
+// channel names anyway, so we pull directly from a hand-picked pool of rich, designer-curated
+// channels — the /contents endpoint IS reliable. Each call samples a random few so "Find more"
+// surfaces different work; taste still drives the downstream rank().
+const ARENA_CHANNELS = [
+  "interesting-web-design-and-ux",
+  "www-portfolio-studio",
+  "portfolio-studio",
+  "websites-portfolio-nesycqz_xdu",
+  "portfolio-websites-1488038381",
+  "portfolio-3q_6cl1-064",
+];
+
+/** Site links from one Are.na channel, cached 6h. */
+async function arenaChannel(slug: string): Promise<Suggestion[]> {
+  const hit = arenaCache.get(slug);
   if (hit && Date.now() - hit.at < CACHE_TTL) return hit.items;
+  const out: Suggestion[] = [];
   try {
-    const sres = await fetch(`https://api.are.na/v2/search/channels?q=${encodeURIComponent(q)}&per=8`, {
-      headers: { "user-agent": UA },
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!sres.ok) return [];
-    const sj = await sres.json();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const channels = (sj?.channels ?? []).filter((c: any) => (c.length ?? 0) >= 15 && c.slug).slice(0, 4);
-    const out: Suggestion[] = [];
-    await Promise.allSettled(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      channels.map(async (c: any) => {
-        const r = await fetch(
-          `https://api.are.na/v2/channels/${encodeURIComponent(c.slug)}/contents?per=25&sort=position&direction=desc`,
-          { headers: { "user-agent": UA }, signal: AbortSignal.timeout(8000) }
-        );
-        if (!r.ok) return;
-        const { contents } = await r.json();
-        for (const b of contents ?? []) {
-          if (b?.class !== "Link" || !b?.source?.url) continue;
-          let domain: string;
-          try { domain = new URL(b.source.url).hostname.replace(/^www\./, ""); } catch { continue; }
-          if (SOCIAL_RE.test(domain) || DEV_RE.test(domain) || CURATION_RE.test(domain) || GALLERY_HOSTS.has(domain)) continue;
-          out.push({
-            url: b.source.url,
-            title: b.title || b.generated_title || null,
-            image: b.image?.display?.url ?? b.image?.thumb?.url ?? null,
-            domain,
-            source: `are.na/${c.slug}`,
-          });
-        }
-      })
+    const r = await fetch(
+      `https://api.are.na/v2/channels/${encodeURIComponent(slug)}/contents?per=25&sort=position&direction=desc`,
+      { headers: { "user-agent": UA }, signal: AbortSignal.timeout(8000) }
     );
-    if (out.length) {
-      arenaCache.set(q, { at: Date.now(), items: out });
-      if (arenaCache.size > 24) arenaCache.delete(arenaCache.keys().next().value!);
+    if (!r.ok) return out;
+    const { contents } = await r.json();
+    for (const b of contents ?? []) {
+      if (b?.class !== "Link" || !b?.source?.url) continue;
+      let domain: string;
+      try { domain = new URL(b.source.url).hostname.replace(/^www\./, ""); } catch { continue; }
+      if (SOCIAL_RE.test(domain) || DEV_RE.test(domain) || CURATION_RE.test(domain) || GALLERY_HOSTS.has(domain)) continue;
+      out.push({
+        url: b.source.url,
+        title: b.title || b.generated_title || null,
+        image: b.image?.display?.url ?? b.image?.thumb?.url ?? null,
+        domain,
+        source: `are.na/${slug}`,
+      });
     }
-    return out;
   } catch {
-    return [];
+    /* one channel failing shouldn't sink the rest */
   }
+  if (out.length) arenaCache.set(slug, { at: Date.now(), items: out });
+  return out;
+}
+
+async function arena(): Promise<Suggestion[]> {
+  // shuffle the channel pool and sample a few — a fresh mix on every refresh
+  const pool = [...ARENA_CHANNELS];
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  const results = await Promise.allSettled(pool.slice(0, 4).map(arenaChannel));
+  return results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
 }
 
 /* ---------------- minimal.gallery via RSS (structured, no scraping) ---------------- */
@@ -209,22 +208,19 @@ async function aggregate(): Promise<Suggestion[]> {
   return [];
 }
 
-/* ---------------- web search via Claude (query-specific) ---------------- */
+/* ---------------- web search via Gemini + Google Search grounding ---------------- */
 
 async function webSearch(query: string): Promise<Suggestion[]> {
   try {
-    const msg = await claude({
-      model: SMART_MODEL,
-      max_tokens: 2000,
-      tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }],
-      messages: [
-        {
-          role: "user",
-          content: `A designer is hunting for visual web-design inspiration. Their brief describes an AESTHETIC, not a product category: "${query}".\n\nFind current, genuinely exceptional websites whose DESIGN matches that aesthetic — award-calibre, design-led work (typography, art direction, motion, originality): studios, portfolios, fashion, editorial, cultural sites. Design showcases (siteinspire, awwwards, godly, minimal.gallery) are useful for FINDING the work, but you must return the featured site itself — NEVER a gallery, award, directory or curation page URL as a result.\n\nCRITICAL: do NOT return products/tools that merely BELONG to the category the brief mentions. If the brief says "analytics dashboard", they want sites that LOOK that way, not analytics companies. Never include developer tools, code libraries, docs, UI kits, templates, or SaaS picked for function — a product site qualifies only if it is widely celebrated as a piece of web design itself.\n\nAfter searching, reply with JSON only: [{"url": "...", "title": "...", "blurb": "<why the design is exceptional, one short sentence>"}] with up to 12 results. Only include live, specific site URLs (not articles about them).`,
-        },
-      ],
+    const res = await gemini({
+      tools: [{ google_search: {} }],
+      contents: [{
+        role: "user",
+        parts: [{ text: `A designer is hunting for visual web-design inspiration. Their brief describes an AESTHETIC, not a product category: "${query}".\n\nSearch Google to find current, genuinely exceptional websites whose DESIGN matches that aesthetic — award-calibre, design-led work (typography, art direction, motion, originality): studios, portfolios, fashion, editorial, cultural sites. Design showcases (siteinspire, awwwards, godly, minimal.gallery) are useful for FINDING the work, but return the featured site itself — NEVER a gallery, award, directory or curation page URL as a result.\n\nCRITICAL: do NOT return products/tools that merely BELONG to the category the brief mentions. If the brief says "analytics dashboard", they want sites that LOOK that way, not analytics companies. Never include developer tools, code libraries, docs, UI kits, or SaaS picked for function.\n\nReply with JSON only (no markdown): [{"url": "...", "title": "...", "blurb": "<why the design is exceptional, one short sentence>"}] with up to 12 results. Only live, specific site URLs.` }],
+      }],
+      generationConfig: { maxOutputTokens: 2000 },
     });
-    const arr = parseJson(textOf(msg));
+    const arr = parseJson(geminiText(res));
     if (!Array.isArray(arr)) return [];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return arr.flatMap((r: any) => {
@@ -243,19 +239,17 @@ async function webSearch(query: string): Promise<Suggestion[]> {
 /* ---------------- taste-led ranking ---------------- */
 
 async function rank(cands: Suggestion[], taste: string[], query: string | null): Promise<Suggestion[]> {
-  if (!hasKey() || cands.length <= 12) return cands;
+  if (!hasGeminiKey() || geminiDisabled() || cands.length <= 12) return cands;
   try {
-    const list = cands.slice(0, 120).map((c, i) => `${i} | ${c.domain} | ${c.title ?? ""} | via ${c.source}`).join("\n");
-    const msg = await claude({
-      max_tokens: 600,
-      messages: [
-        {
-          role: "user",
-          content: `You curate design inspiration for a senior designer. Their taste profile (from what they save): ${taste.length ? taste.join(", ") : "high-end, typography-led, modern"}.${query ? ` Their current brief OVERRIDES the taste profile: "${query}" — match the brief's specific subject, palette and mood first; prefer "web"-source candidates when they fit the brief.` : ""}\n\nCandidates (index | domain | title | source):\n${list}\n\nPick up to 30 candidates that look like leading-class, moodboard-worthy design work${query ? " matching the brief" : ""}. Cut anything generic — and ALWAYS cut developer tools, code libraries, frameworks, documentation, UI kits, design-gallery/award directories, and SaaS products chosen for what they do rather than how they look. Only actual designed sites. Reply JSON only: {"picks": [indexes, best first]}`,
-        },
-      ],
+    const list = cands.slice(0, 60).map((c, i) => `${i} | ${c.domain} | ${c.title ?? ""} | via ${c.source}`).join("\n");
+    const res = await gemini({
+      contents: [{
+        role: "user",
+        parts: [{ text: `You curate design inspiration for a senior designer. Their taste profile (from what they save): ${taste.length ? taste.join(", ") : "high-end, typography-led, modern"}.${query ? ` Their current brief OVERRIDES the taste profile: "${query}" — match the brief's specific subject, palette and mood first; prefer "web"-source candidates when they fit the brief.` : ""}\n\nCandidates (index | domain | title | source):\n${list}\n\nPick up to 30 candidates that look like leading-class, moodboard-worthy design work${query ? " matching the brief" : ""}. Cut anything generic — and ALWAYS cut developer tools, code libraries, frameworks, documentation, UI kits, design-gallery/award directories, and SaaS products chosen for what they do rather than how they look. Only actual designed sites. Reply with JSON only: {"picks": [indexes, best first]}` }],
+      }],
+      generationConfig: { maxOutputTokens: 600, responseMimeType: "application/json" },
     });
-    const out = parseJson(textOf(msg));
+    const out = JSON.parse(geminiText(res));
     if (Array.isArray(out.picks) && out.picks.length) {
       return out.picks.map((i: number) => cands[i]).filter(Boolean);
     }
@@ -268,14 +262,14 @@ async function rank(cands: Suggestion[], taste: string[], query: string | null):
 /* ---- enrichment: resolve gallery detail pages to the real site + guarantee imagery ---- */
 
 async function enrich(items: Suggestion[]): Promise<Suggestion[]> {
-  const work = items.slice(0, 22).filter((i) => !i.image || GALLERY_HOSTS.has(hostOnly(i.url)));
+  const work = items.slice(0, 15).filter((i) => !i.image || GALLERY_HOSTS.has(hostOnly(i.url)));
   const dropped = new Set<string>();
   await Promise.allSettled(
     work.map(async (i) => {
       const res = await fetch(i.url, {
         headers: { "user-agent": UA, accept: "text/html" },
         redirect: "follow",
-        signal: AbortSignal.timeout(6000),
+        signal: AbortSignal.timeout(3000),
       });
       if (!res.ok) {
         if (GALLERY_HOSTS.has(hostOnly(i.url))) dropped.add(i.url);
@@ -331,22 +325,18 @@ export async function GET(req: Request) {
   const taste = (sp.get("taste") ?? "").split(",").map((t) => t.trim()).filter(Boolean).slice(0, 30);
   const exclude = new Set((sp.get("exclude") ?? "").split(",").map((d) => d.trim()).filter(Boolean));
 
-  const [agg, arn] = await Promise.all([aggregate(), arena(query, taste)]);
-  let cands: Suggestion[] = [...arn, ...agg];
-  // absolute last resort only — these are curation homepages, not the work itself
-  if (!cands.length && !(query && hasKey())) cands = SEEDS;
-  if (query && hasKey()) {
-    // Brief-led search: fresh web results lead; the (shuffled) gallery pool only pads the tail.
-    const ws = await webSearch(query);
-    cands = [...ws, ...shuffle(cands)];
-  } else if (!query && hasKey()) {
-    // keep the endless feed fresh once gallery candidates are exhausted
-    const remaining = cands.filter((c) => !exclude.has(c.domain) && !exclude.has(c.url));
-    if (remaining.length < 15 && taste.length) {
-      const ws = await webSearch(`${taste.slice(0, 6).join(" ")} website design inspiration`);
-      cands = [...ws, ...cands];
-    }
+  let cands: Suggestion[];
+  if (query && hasGeminiKey() && !geminiDisabled()) {
+    // "More like this": drive purely off the reference image's taste (caption/tags/colours)
+    // via web search. The generic Are.na pool is Discover's inspo, not a match for one image.
+    cands = await webSearch(query);
+  } else {
+    // Discover endless feed: general inspiration — curated Are.na channels + gallery pool
+    const [agg, arn] = await Promise.all([aggregate(), arena()]);
+    cands = [...arn, ...agg];
   }
+  if (!cands.length) cands = SEEDS;
+
   // dedupe by domain+path, drop excluded/seen domains
   const norm = (u: string) => u.replace(/\/+$/, "");
   const seen = new Set<string>();
@@ -359,7 +349,7 @@ export async function GET(req: Request) {
   });
   cands = await rank(cands, taste, query);
   // clone: enrich mutates suggestions in place and must never touch cached objects
-  const top = await enrich(cands.slice(0, 40).map((c) => ({ ...c })));
+  const top = await enrich(cands.slice(0, 20).map((c) => ({ ...c })));
   // re-apply exclusions AFTER enrichment — gallery URLs resolve to the real site here,
   // which is the URL the client's dislikes/saves were recorded against
   const seenDomains = new Set<string>();

@@ -1,5 +1,6 @@
 import { isAuthed } from "../_lib/auth";
 import { captureScreenshot } from "../_lib/capture";
+import { assertPublicUrl } from "../_lib/ssrf";
 
 export const maxDuration = 120; // crash-retry + fallback chain on heavy WebGL sites needs headroom
 
@@ -12,6 +13,7 @@ export async function GET(req: Request) {
     return Response.json({ error: "valid url required" }, { status: 400 });
   }
   try {
+    await assertPublicUrl(url);
     // capped: this response travels back through Vercel's proxy (~4.5MB limit)
     const shot = await captureScreenshot(url, true);
     return new Response(shot.bytes, {

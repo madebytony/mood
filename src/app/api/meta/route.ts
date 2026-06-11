@@ -1,4 +1,5 @@
 import { isAuthed } from "../_lib/auth";
+import { safeFetch } from "../_lib/ssrf";
 
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -37,9 +38,8 @@ export async function GET(req: Request) {
     return Response.json({ error: "valid url required" }, { status: 400 });
   }
   try {
-    const res = await fetch(url, {
+    const res = await safeFetch(url, {
       headers: { "user-agent": UA, accept: "text/html,*/*" },
-      redirect: "follow",
       signal: AbortSignal.timeout(10000),
     });
     const html = (await res.text()).slice(0, 400_000);
@@ -68,7 +68,10 @@ export async function GET(req: Request) {
       image,
       domain: base.hostname.replace(/^www\./, ""),
     });
-  } catch {
+  } catch (e) {
+    if ((e as Error).message?.startsWith("blocked")) {
+      return Response.json({ error: "url not allowed" }, { status: 400 });
+    }
     return Response.json(
       { title: null, description: null, image: null, domain: new URL(url).hostname.replace(/^www\./, "") },
       { status: 200 }

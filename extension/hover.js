@@ -1,7 +1,7 @@
 /* Pinterest-style hover-to-save button on every image (saves to your last-used space). */
 (async () => {
   try {
-    const { appUrl } = await chrome.storage.sync.get({ appUrl: "http://localhost:3000" });
+    const { appUrl } = await chrome.storage.local.get({ appUrl: "http://localhost:3000" });
     if (new URL(appUrl).origin === location.origin) return; // never overlay Mood itself
   } catch {}
   let btn = null;

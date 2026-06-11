@@ -177,10 +177,13 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
                   onLoad={(e) => e.currentTarget.classList.remove("opacity-0")}
                   onError={(e) => {
                     const el = e.currentTarget;
-                    if (!el.dataset.fb) {
+                    const step = el.dataset.fb ?? "0";
+                    if (step === "0" && card.s.image) {
+                      // a real og:image failed — try the mShot screenshot next
                       el.dataset.fb = "1";
                       el.src = mshot(card.s.url);
-                    } else if (el.dataset.fb === "1") {
+                    } else if (step !== "2") {
+                      // mShot was already the source (or just failed) — skip straight to thum.io
                       el.dataset.fb = "2";
                       el.src = thumio(card.s.url);
                     }

@@ -1,6 +1,7 @@
 import fs from "fs";
 import { isAuthed } from "../_lib/auth";
 import { chromiumShot } from "../_lib/capture";
+import { assertPublicUrl } from "../_lib/ssrf";
 
 function ls(dir: string): string[] | null {
   try {
@@ -20,6 +21,7 @@ export async function GET(req: Request) {
   const url = new URL(req.url).searchParams.get("url") ?? "https://example.com";
   const t0 = Date.now();
   try {
+    await assertPublicUrl(url);
     const shot = await chromiumShot(url);
     return Response.json({ ok: true, engine: shot.engine, bytes: shot.bytes.byteLength, ms: Date.now() - t0 });
   } catch (e) {

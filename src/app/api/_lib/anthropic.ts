@@ -6,8 +6,13 @@ export function hasKey(): boolean {
   return !!process.env.ANTHROPIC_API_KEY;
 }
 
+/** Set when a 402/529 billing or overload error is seen — stops retrying for the process lifetime. */
+let billingDisabled = false;
+export function apiDisabled(): boolean { return billingDisabled; }
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function claude(body: Record<string, any>, timeoutMs = 45000): Promise<any> {
+  if (billingDisabled) throw new Error("anthropic disabled: billing");
   const res = await fetch(API, {
     method: "POST",
     headers: {
@@ -20,6 +25,10 @@ export async function claude(body: Record<string, any>, timeoutMs = 45000): Prom
   });
   if (!res.ok) {
     const err = await res.text().catch(() => "");
+    // 402 = billing exhausted, 529 = capacity overload — both warrant backing off
+    if (res.status === 402 || res.status === 529) {
+      billingDisabled = true;
+    }
     throw new Error(`anthropic ${res.status}: ${err.slice(0, 200)}`);
   }
   return res.json();

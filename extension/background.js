@@ -1,5 +1,23 @@
+const DEFAULTS = { appUrl: "http://localhost:3000", token: "", lastSpaceId: "" };
+
 async function cfg() {
-  return chrome.storage.sync.get({ appUrl: "http://localhost:3000", token: "", lastSpaceId: "" });
+  return chrome.storage.local.get(DEFAULTS);
+}
+
+/** One-time move of settings out of synced storage — a long-lived token shouldn't ride the
+ *  Chrome/Google-account sync to every signed-in device. Runs on install/startup, then clears sync. */
+async function migrateFromSync() {
+  const [synced, local] = await Promise.all([
+    chrome.storage.sync.get(DEFAULTS),
+    chrome.storage.local.get(DEFAULTS),
+  ]);
+  if (!synced.token && !synced.lastSpaceId && synced.appUrl === DEFAULTS.appUrl) return;
+  await chrome.storage.local.set({
+    appUrl: local.appUrl !== DEFAULTS.appUrl ? local.appUrl : synced.appUrl,
+    token: local.token || synced.token,
+    lastSpaceId: local.lastSpaceId || synced.lastSpaceId,
+  });
+  await chrome.storage.sync.remove(["appUrl", "token", "lastSpaceId"]);
 }
 
 async function clip(payload) {
@@ -50,14 +68,14 @@ async function rebuildMenus() {
   }
 }
 
-chrome.runtime.onInstalled.addListener(rebuildMenus);
-chrome.runtime.onStartup.addListener(rebuildMenus);
+chrome.runtime.onInstalled.addListener(() => migrateFromSync().then(rebuildMenus));
+chrome.runtime.onStartup.addListener(() => migrateFromSync().then(rebuildMenus));
 chrome.storage.onChanged.addListener(rebuildMenus);
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   const id = String(info.menuItemId);
   const [kind, spaceId] = id.split("::");
-  if (spaceId) chrome.storage.sync.set({ lastSpaceId: spaceId });
+  if (spaceId) chrome.storage.local.set({ lastSpaceId: spaceId });
   if (kind === "mood-image" && info.srcUrl) {
     clip({ kind: "image", url: info.srcUrl, page_url: tab?.url, title: tab?.title, space_id: spaceId });
   } else if (kind === "mood-page" && tab?.url) {
