@@ -44,6 +44,9 @@ const SOCIAL_RE =
 // developer infrastructure — never moodboard material, however nice the og:image
 const DEV_RE =
   /github\.|gitlab\.|bitbucket\.|npmjs\.|pypi\.|crates\.io|codepen\.io|codesandbox\.|stackblitz\.|stackoverflow\.|dev\.to|css-tricks\.|smashingmagazine\.|developer\.mozilla|w3schools\.|w3\.org|wikipedia\.|medium\.com|substack\.|news\.ycombinator|producthunt\./i;
+// curation/award/directory sites — we want the work they feature, never the directory itself
+const CURATION_RE =
+  /awwwards\.|siteinspire\.|httpster\.|minimal\.gallery|godly\.website|land-book\.|curated\.design|dark\.design|maxibestof\.|footer\.design|cssdesignawards\.|csswinner\.|thefwa\.|onepagelove\.|lapa\.ninja|landingfolio\.|saaspages\.|saaslandingpage\.|pageflows\.|mobbin\.|refero\.design|savee\.it|cosmos\.so|klikkentheke\.|bestwebsite\.gallery|webdesigninspiration|admiretheweb\.|siiimple\.|cssnectar\.|uijar\.|collectui\.|navbar\.gallery|footer\.gallery|seesaw\.website|deadsimplesites\.|brutalistwebsites\.|hoverstat\.es/i;
 const NAV_PATH_RE = /^\/(about|tags?|category|categories|login|sign|privacy|terms|jobs|submit|advertise|contact)\b/i;
 const GALLERY_HOSTS = new Set([
   "siteinspire.com", "www.siteinspire.com", "httpster.net", "minimal.gallery",
@@ -104,7 +107,7 @@ async function arena(query: string | null, taste: string[]): Promise<Suggestion[
           if (b?.class !== "Link" || !b?.source?.url) continue;
           let domain: string;
           try { domain = new URL(b.source.url).hostname.replace(/^www\./, ""); } catch { continue; }
-          if (SOCIAL_RE.test(domain) || DEV_RE.test(domain) || GALLERY_HOSTS.has(domain)) continue;
+          if (SOCIAL_RE.test(domain) || DEV_RE.test(domain) || CURATION_RE.test(domain) || GALLERY_HOSTS.has(domain)) continue;
           out.push({
             url: b.source.url,
             title: b.title || b.generated_title || null,
@@ -201,9 +204,9 @@ async function aggregate(): Promise<Suggestion[]> {
     cache = { at: Date.now(), items };
     return items;
   }
-  // every source failed (likely transient) — serve seeds but retry in ~5 min, don't poison 6h
-  cache = { at: Date.now() - CACHE_TTL + 5 * 60_000, items: SEEDS };
-  return SEEDS;
+  // every gallery failed (likely transient/blocked) — retry in ~5 min; other sources still feed the pool
+  cache = { at: Date.now() - CACHE_TTL + 5 * 60_000, items: [] };
+  return [];
 }
 
 /* ---------------- web search via Claude (query-specific) ---------------- */
@@ -217,7 +220,7 @@ async function webSearch(query: string): Promise<Suggestion[]> {
       messages: [
         {
           role: "user",
-          content: `A designer is hunting for visual web-design inspiration. Their brief describes an AESTHETIC, not a product category: "${query}".\n\nFind current, genuinely exceptional websites whose DESIGN matches that aesthetic — award-calibre, design-led work (typography, art direction, motion, originality): studios, portfolios, fashion, editorial, cultural sites. Search design showcases (siteinspire, awwwards, godly, klikkentheke, minimal.gallery) rather than product directories.\n\nCRITICAL: do NOT return products/tools that merely BELONG to the category the brief mentions. If the brief says "analytics dashboard", they want sites that LOOK that way, not analytics companies. Never include developer tools, code libraries, docs, UI kits, templates, or SaaS picked for function — a product site qualifies only if it is widely celebrated as a piece of web design itself.\n\nAfter searching, reply with JSON only: [{"url": "...", "title": "...", "blurb": "<why the design is exceptional, one short sentence>"}] with up to 12 results. Only include live, specific site URLs (not articles about them).`,
+          content: `A designer is hunting for visual web-design inspiration. Their brief describes an AESTHETIC, not a product category: "${query}".\n\nFind current, genuinely exceptional websites whose DESIGN matches that aesthetic — award-calibre, design-led work (typography, art direction, motion, originality): studios, portfolios, fashion, editorial, cultural sites. Design showcases (siteinspire, awwwards, godly, minimal.gallery) are useful for FINDING the work, but you must return the featured site itself — NEVER a gallery, award, directory or curation page URL as a result.\n\nCRITICAL: do NOT return products/tools that merely BELONG to the category the brief mentions. If the brief says "analytics dashboard", they want sites that LOOK that way, not analytics companies. Never include developer tools, code libraries, docs, UI kits, templates, or SaaS picked for function — a product site qualifies only if it is widely celebrated as a piece of web design itself.\n\nAfter searching, reply with JSON only: [{"url": "...", "title": "...", "blurb": "<why the design is exceptional, one short sentence>"}] with up to 12 results. Only include live, specific site URLs (not articles about them).`,
         },
       ],
     });
@@ -228,7 +231,7 @@ async function webSearch(query: string): Promise<Suggestion[]> {
       try {
         const u = new URL(r.url);
         const domain = u.hostname.replace(/^www\./, "");
-        if (SOCIAL_RE.test(domain) || DEV_RE.test(domain)) return [];
+        if (SOCIAL_RE.test(domain) || DEV_RE.test(domain) || CURATION_RE.test(domain)) return [];
         return [{ url: r.url, title: r.title ?? null, image: null, domain, source: "web", blurb: r.blurb ?? null }];
       } catch { return []; }
     });
@@ -248,7 +251,7 @@ async function rank(cands: Suggestion[], taste: string[], query: string | null):
       messages: [
         {
           role: "user",
-          content: `You curate design inspiration for a senior designer. Their taste profile (from what they save): ${taste.length ? taste.join(", ") : "high-end, typography-led, modern"}.${query ? ` Their current brief OVERRIDES the taste profile: "${query}" — match the brief's specific subject, palette and mood first; prefer "web"-source candidates when they fit the brief.` : ""}\n\nCandidates (index | domain | title | source):\n${list}\n\nPick up to 30 candidates that look like leading-class, moodboard-worthy design work${query ? " matching the brief" : ""}. Cut anything generic — and ALWAYS cut developer tools, code libraries, frameworks, documentation, UI kits and SaaS products chosen for what they do rather than how they look. Reply JSON only: {"picks": [indexes, best first]}`,
+          content: `You curate design inspiration for a senior designer. Their taste profile (from what they save): ${taste.length ? taste.join(", ") : "high-end, typography-led, modern"}.${query ? ` Their current brief OVERRIDES the taste profile: "${query}" — match the brief's specific subject, palette and mood first; prefer "web"-source candidates when they fit the brief.` : ""}\n\nCandidates (index | domain | title | source):\n${list}\n\nPick up to 30 candidates that look like leading-class, moodboard-worthy design work${query ? " matching the brief" : ""}. Cut anything generic — and ALWAYS cut developer tools, code libraries, frameworks, documentation, UI kits, design-gallery/award directories, and SaaS products chosen for what they do rather than how they look. Only actual designed sites. Reply JSON only: {"picks": [indexes, best first]}`,
         },
       ],
     });
@@ -330,6 +333,8 @@ export async function GET(req: Request) {
 
   const [agg, arn] = await Promise.all([aggregate(), arena(query, taste)]);
   let cands: Suggestion[] = [...arn, ...agg];
+  // absolute last resort only — these are curation homepages, not the work itself
+  if (!cands.length && !(query && hasKey())) cands = SEEDS;
   if (query && hasKey()) {
     // Brief-led search: fresh web results lead; the (shuffled) gallery pool only pads the tail.
     const ws = await webSearch(query);
@@ -360,6 +365,8 @@ export async function GET(req: Request) {
   const seenDomains = new Set<string>();
   const finalItems = top.filter((s) => {
     if (exclude.has(s.domain) || exclude.has(s.url) || exclude.has(norm(s.url))) return false;
+    // anything still pointing at a directory after enrichment is the directory itself — cut it
+    if (s.source !== "seed" && (CURATION_RE.test(s.domain) || DEV_RE.test(s.domain))) return false;
     if (seenDomains.has(s.domain)) return false;
     seenDomains.add(s.domain);
     return true;
