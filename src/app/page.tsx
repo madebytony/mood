@@ -14,6 +14,7 @@ import {
   addFromUrl,
   addImageFile,
   addNote,
+  addTodo,
   aiSearch,
   backfillCaptions,
   backfillEmbeddings,
@@ -21,12 +22,14 @@ import {
   captionItem,
   captureSite,
   checkLink,
+  createColumn,
   createStack,
   deleteItemRow,
   deleteItemStorage,
   restoreItem,
   deleteStack,
   embedItem,
+  fetchColumnItems,
   fetchItems,
   fetchLibraries,
   fetchSpaces,
@@ -40,6 +43,7 @@ import {
   stackThumbPaths,
   unstackItem,
   updateItem,
+  updateStack,
 } from "@/lib/db";
 import { COLOR_NAMES, COLOR_HEX } from "@/lib/media";
 import type { Item, Library, Space, Stack } from "@/lib/types";
@@ -75,6 +79,7 @@ function App() {
   const [similarQuery, setSimilarQuery] = useState<string | null>(null);
   const [stacks, setStacks] = useState<Stack[]>([]);
   const [stackThumbs, setStackThumbs] = useState<Map<string, string[]>>(new Map());
+  const [columnItems, setColumnItems] = useState<Map<string, Item[]>>(new Map());
   const [selIds, setSelIds] = useState<Set<string>>(new Set());
   const [confirmDel, setConfirmDel] = useState(false); // bulk-delete arms on first click
   const [aiItems, setAiItems] = useState<Item[] | null>(null); // AI search results overlay
@@ -168,10 +173,16 @@ function App() {
       setReady(true);
     }
     const [data, stks] = await Promise.all([fetchItems(spaceKey, search), fetchStacks(spaceKey)]);
-    const fan = await stackThumbPaths(stks.map((s) => s.id));
+    const colStackIds = stks.filter((s) => s.kind === "column").map((s) => s.id);
+    const [fan, colMap] = await Promise.all([
+      stackThumbPaths(stks.map((s) => s.id)),
+      colStackIds.length ? fetchColumnItems(colStackIds) : Promise.resolve(new Map<string, Item[]>()),
+    ]);
+    const colThumbPaths = [...colMap.values()].flat().map((i) => i.thumb_path).filter(Boolean) as string[];
     const paths = [
       ...(data.map((i) => i.thumb_path).filter(Boolean) as string[]),
       ...[...fan.values()].flat(),
+      ...colThumbPaths,
     ];
     const map = paths.length ? await signedUrls(paths) : new Map<string, string>();
     const fanUrls = new Map<string, string[]>();
@@ -181,6 +192,7 @@ function App() {
     setStacks(stks);
     setUrls(map);
     setStackThumbs(fanUrls);
+    setColumnItems(colMap);
     setReady(true);
     // sidebar tallies are library-wide (not just this view) — refresh in the background
     fetchSpaceCounts().then(setSpaceCounts).catch(() => {});
@@ -364,6 +376,35 @@ function App() {
       }
     },
     [targetSpace, loadItems, insertItem, toast, invalidateViewCache]
+  );
+
+  const handleColumn = useCallback(
+    async (name: string) => {
+      if (!targetSpace) return toast("No space to save into yet", "error");
+      try {
+        await createColumn(targetSpace, name);
+        invalidateViewCache();
+        loadItems().catch(() => {});
+      } catch (e) {
+        toast(`Column failed: ${(e as Error).message}`, "error");
+      }
+    },
+    [targetSpace, toast, loadItems, invalidateViewCache]
+  );
+
+  const handleTodo = useCallback(
+    async (title: string) => {
+      if (!targetSpace) return toast("No space to save into yet", "error");
+      try {
+        const item = await addTodo(title, targetSpace);
+        invalidateViewCache();
+        insertItem(item).catch(() => {});
+        loadItems().catch(() => {});
+      } catch (e) {
+        toast(`To-do list failed: ${(e as Error).message}`, "error");
+      }
+    },
+    [targetSpace, toast, loadItems, insertItem, invalidateViewCache]
   );
 
   /** Instant delete with a 5s Undo window. The row is deleted immediately (so a refresh
@@ -623,6 +664,23 @@ function App() {
     };
   }, [handleFiles, handleUrl]);
 
+  /** Called by Board after optimistic updates so page state stays in sync. */
+  function handleItemUpdate(id: string, patch: Partial<Item>) {
+    setItems((prev) => prev.map((i) => (i.id === id ? { ...i, ...patch } : i)));
+    // Also patch inside any open column
+    setColumnItems((prev) => {
+      const next = new Map(prev);
+      for (const [sid, arr] of next) {
+        if (arr.some((i) => i.id === id)) next.set(sid, arr.map((i) => (i.id === id ? { ...i, ...patch } : i)));
+      }
+      return next;
+    });
+  }
+
+  function handleStackUpdate(id: string, patch: Partial<Stack>) {
+    setStacks((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+  }
+
   function onItemChanged(updated: Item | null) {
     invalidateViewCache(); // an edit/move may belong to (or leave) other cached views
     if (!updated) return loadItems();
@@ -773,11 +831,14 @@ function App() {
               onOpen={setOpen}
               stacks={stacks}
               stackThumbs={stackThumbs}
+              columnItems={columnItems}
               onOpenStack={openStack}
               selected={selIds}
               onMarquee={(ids, additive) =>
                 setSelIds((prev) => new Set(additive ? [...prev, ...ids] : ids))
               }
+              onItemUpdate={handleItemUpdate}
+              onStackUpdate={handleStackUpdate}
             />
           ) : !ready ? (
             <SkeletonGrid />
@@ -821,7 +882,15 @@ function App() {
         </div>
       </main>
 
-      <AddMenu onFiles={handleFiles} onUrl={handleUrl} onCapture={handleCapture} onNote={handleNote} openTick={addTick} />
+      <AddMenu
+        onFiles={handleFiles}
+        onUrl={handleUrl}
+        onCapture={handleCapture}
+        onNote={handleNote}
+        onColumn={showBoard ? handleColumn : undefined}
+        onTodo={showBoard ? handleTodo : undefined}
+        openTick={addTick}
+      />
 
       {/* Mobile bottom tab bar */}
       <nav className="fixed inset-x-0 bottom-0 z-30 flex items-stretch border-t border-white/10 bg-[#0f0f12]/65 pb-[env(safe-area-inset-bottom)] backdrop-blur-2xl backdrop-saturate-150 md:hidden">

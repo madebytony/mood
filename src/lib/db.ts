@@ -5,7 +5,8 @@ import type { Item, ItemType, Library, LinkMeta, Space, Stack } from "./types";
 /** All item columns EXCEPT the 1024-dim embedding vector (too heavy to ship to the client). */
 const ITEM_COLS: string =
   "id,space_id,user_id,type,storage_path,thumb_path,content,title,source_url,source_domain," +
-  "tags,colors,fonts,tech,width,height,board_x,board_y,board_w,ai_caption,stack_id,dead_link,created_at,last_viewed_at";
+  "tags,colors,fonts,tech,width,height,board_x,board_y,board_w,board_z,collapsed,stack_id,stack_order," +
+  "ai_caption,dead_link,created_at,last_viewed_at";
 
 // ---------- reads ----------
 
@@ -279,6 +280,47 @@ export async function addNote(text: string, spaceId: string): Promise<Item> {
   return data as unknown as Item;
 }
 
+export async function addTodo(title: string, spaceId: string): Promise<Item> {
+  const uid = await userId();
+  const { data, error } = await supabase
+    .from("items")
+    .insert({ space_id: spaceId, user_id: uid, type: "todo", title, content: "[]", tags: [] })
+    .select(ITEM_COLS)
+    .single();
+  if (error) throw error;
+  return data as unknown as Item;
+}
+
+export async function createColumn(spaceId: string, name: string): Promise<Stack> {
+  const uid = await userId();
+  const { data, error } = await supabase
+    .from("stacks")
+    .insert({ user_id: uid, space_id: spaceId, name, kind: "column" })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+/** Items inside column-type stacks, keyed by stack_id, ordered by stack_order then created_at. */
+export async function fetchColumnItems(stackIds: string[]): Promise<Map<string, Item[]>> {
+  const out = new Map<string, Item[]>();
+  if (!stackIds.length) return out;
+  const { data } = await supabase
+    .from("items")
+    .select(ITEM_COLS)
+    .in("stack_id", stackIds)
+    .order("stack_order", { ascending: true, nullsFirst: false })
+    .order("created_at", { ascending: true });
+  for (const item of (data ?? []) as unknown as Item[]) {
+    if (!item.stack_id) continue;
+    const arr = out.get(item.stack_id) ?? [];
+    arr.push(item);
+    out.set(item.stack_id, arr);
+  }
+  return out;
+}
+
 export async function updateItem(id: string, patch: Partial<Item>): Promise<Item> {
   const { data, error } = await supabase.from("items").update(patch).eq("id", id).select(ITEM_COLS).single();
   if (error) throw error;
@@ -447,15 +489,16 @@ const AI_COOLDOWN_MS = 5 * 60_000;
 const aiDown = () => Date.now() < aiCooldownUntil;
 
 /** Caption + auto-tag an item in the background. Returns whether it captioned (for backfill
- *  back-off). Silently no-ops without an API key. */
-export async function captionItem(item: Item, onDone?: (updated: Item) => void | Promise<void>): Promise<boolean> {
+ *  back-off). Silently no-ops without an API key. Pass kind="type" for typography items so
+ *  the prompt focuses on typeface character and extracts font names. */
+export async function captionItem(item: Item, onDone?: (updated: Item) => void | Promise<void>, kind?: "type"): Promise<boolean> {
   if (aiDown() || !item.thumb_path) return false;
   try {
     const urls = await signedUrls([item.thumb_path]);
     const res = await apiFetch("/api/ai/caption", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ imageUrl: urls.get(item.thumb_path), title: item.title }),
+      body: JSON.stringify({ imageUrl: urls.get(item.thumb_path), title: item.title, kind }),
     });
     if (res.status === 503) {
       aiCooldownUntil = Date.now() + AI_COOLDOWN_MS;
@@ -463,10 +506,16 @@ export async function captionItem(item: Item, onDone?: (updated: Item) => void |
     }
     if (!res.ok) return false;
     aiCooldownUntil = 0;
-    const { caption, tags } = await res.json();
+    const { caption, tags, fonts: detectedFonts } = await res.json();
     if (!caption && !(tags ?? []).length) return false; // nothing useful came back
     const merged = [...new Set([...(item.tags ?? []), ...(tags ?? [])])];
-    const updated = await updateItem(item.id, { ai_caption: caption, tags: merged });
+    // Merge AI-detected font names into the item's fonts array (type mode only)
+    const mergedFonts = kind === "type" && Array.isArray(detectedFonts) && detectedFonts.length
+      ? [...new Set([...(item.fonts ?? []), ...detectedFonts])]
+      : item.fonts;
+    const patch: Partial<Item> = { ai_caption: caption, tags: merged };
+    if (mergedFonts !== item.fonts) patch.fonts = mergedFonts ?? [];
+    const updated = await updateItem(item.id, patch);
     await onDone?.(updated);
     return true;
   } catch {
@@ -701,7 +750,7 @@ export interface Suggestion {
   blurb?: string | null;
 }
 
-export async function discover(query: string | null, extraExclude: string[] = []): Promise<Suggestion[]> {
+export async function discover(query: string | null, extraExclude: string[] = [], mode?: "type"): Promise<Suggestion[]> {
   // For web-similar searches (query set), skip library domain exclusions — the user wants
   // aesthetic matches even if they've already saved work from those domains.
   // For Discover (no query), exclude library domains so we don't re-surface known work.
@@ -712,6 +761,7 @@ export async function discover(query: string | null, extraExclude: string[] = []
   ]);
   const params = new URLSearchParams();
   if (query) params.set("q", query);
+  if (mode) params.set("mode", mode);
   if (taste.length) params.set("taste", taste.join(","));
   const exclude = [...extraExclude, ...domains, ...seen].slice(0, 400);
   if (exclude.length) params.set("exclude", exclude.join(","));

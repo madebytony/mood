@@ -15,6 +15,93 @@ export interface Suggestion {
   blurb?: string | null;
 }
 
+/* ---------------- type foundry discovery ---------------- */
+
+const TYPE_SEEDS: Suggestion[] = [
+  { url: "https://sharptype.co", title: "Sharp Type", image: null, domain: "sharptype.co", source: "seed" },
+  { url: "https://pangrampangram.com", title: "Pangram Pangram Foundry", image: null, domain: "pangrampangram.com", source: "seed" },
+  { url: "https://grili.ch", title: "Grilli Type", image: null, domain: "grili.ch", source: "seed" },
+  { url: "https://alt.tf", title: "alt.tf", image: null, domain: "alt.tf", source: "seed" },
+  { url: "https://blazetype.eu", title: "Blaze Type", image: null, domain: "blazetype.eu", source: "seed" },
+  { url: "https://www.futurefonts.xyz", title: "Future Fonts", image: null, domain: "futurefonts.xyz", source: "seed" },
+  { url: "https://gradienttype.com", title: "Gradient Type", image: null, domain: "gradienttype.com", source: "seed" },
+  { url: "https://ohnotype.co", title: "OhNo Type Co", image: null, domain: "ohnotype.co", source: "seed" },
+  { url: "https://commercialtype.com", title: "Commercial Type", image: null, domain: "commercialtype.com", source: "seed" },
+  { url: "https://optimo.ch", title: "Optimo", image: null, domain: "optimo.ch", source: "seed" },
+  { url: "https://www.typotheque.com", title: "Typotheque", image: null, domain: "typotheque.com", source: "seed" },
+  { url: "https://abcdinamo.com", title: "ABC Dinamo", image: null, domain: "abcdinamo.com", source: "seed" },
+  { url: "https://newglyph.com", title: "Newglyph", image: null, domain: "newglyph.com", source: "seed" },
+  { url: "https://typetype.org", title: "TypeType", image: null, domain: "typetype.org", source: "seed" },
+  { url: "https://www.fontsmith.com", title: "Fontsmith", image: null, domain: "fontsmith.com", source: "seed" },
+];
+
+const TYPE_ARENA_CHANNELS = [
+  "type-design-type-foundries",
+  "typography-specimens",
+  "type-specimens-2",
+  "typography-5l3qblxwv5i",
+  "type-in-use",
+];
+
+async function typeArena(): Promise<Suggestion[]> {
+  const pool = [...TYPE_ARENA_CHANNELS];
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  const results = await Promise.allSettled(pool.slice(0, 3).map(arenaChannel));
+  return results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
+}
+
+async function typeWebSearch(query: string | null, taste: string[]): Promise<Suggestion[]> {
+  const brief = query ?? (taste.length ? taste.join(", ") : "independent type foundries, typographic design");
+  try {
+    const res = await gemini({
+      tools: [{ google_search: {} }],
+      contents: [{
+        role: "user",
+        parts: [{ text: `A designer is hunting for typographic inspiration. Their brief: "${brief}".\n\nSearch Google to find independent type foundries, font releases, or typographic design work matching that brief — boutique foundries, new font releases, type specimens, fonts-in-use examples. Return the foundry or specimen page itself, NOT a font listing aggregator (e.g. never return fonts.google.com, myfonts.com, fontshop.com, typekit, monotype, linotype).\n\nReply with JSON only (no markdown): [{"url": "...", "title": "...", "blurb": "<why this is typographically interesting, one short sentence>"}] with up to 12 results.` }],
+      }],
+      generationConfig: { maxOutputTokens: 2000 },
+    });
+    const arr = parseJson(geminiText(res));
+    if (!Array.isArray(arr)) return [];
+    const FONT_AGGREGATORS = /myfonts\.|fonts\.google\.|fontshop\.|typekit\.|monotype\.|linotype\.|fontspring\.|dafont\.|1001fonts\.|urbanfonts\.|fontsquirrel\./i;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return arr.flatMap((r: any) => {
+      try {
+        const u = new URL(r.url);
+        const domain = u.hostname.replace(/^www\./, "");
+        if (FONT_AGGREGATORS.test(domain) || SOCIAL_RE.test(domain) || DEV_RE.test(domain)) return [];
+        return [{ url: r.url, title: r.title ?? null, image: null, domain, source: "web", blurb: r.blurb ?? null }];
+      } catch { return []; }
+    });
+  } catch {
+    return [];
+  }
+}
+
+async function rankType(cands: Suggestion[], taste: string[], query: string | null): Promise<Suggestion[]> {
+  if (!hasGeminiKey() || geminiDisabled() || cands.length <= 12) return cands;
+  try {
+    const list = cands.slice(0, 60).map((c, i) => `${i} | ${c.domain} | ${c.title ?? ""} | via ${c.source}`).join("\n");
+    const res = await gemini({
+      contents: [{
+        role: "user",
+        parts: [{ text: `You curate typographic inspiration for a senior designer. Their taste profile: ${taste.length ? taste.join(", ") : "boutique type foundries, expressive display type, editorial typography"}.${query ? ` Their current brief: "${query}" — match the brief first.` : ""}\n\nCandidates (index | domain | title | source):\n${list}\n\nPick up to 25 that are genuinely typographically interesting — independent foundries, quality font releases, type specimens, or fonts-in-use showcases. Cut font aggregators, mega-corporations (Monotype, Linotype, Adobe Fonts), free font dumps, and anything not primarily about type. Reply with JSON only: {"picks": [indexes, best first]}` }],
+      }],
+      generationConfig: { maxOutputTokens: 600, responseMimeType: "application/json" },
+    });
+    const out = JSON.parse(geminiText(res));
+    if (Array.isArray(out.picks) && out.picks.length) {
+      return out.picks.map((i: number) => cands[i]).filter(Boolean);
+    }
+    return cands;
+  } catch {
+    return cands;
+  }
+}
+
 /* ---------------- gallery aggregation ---------------- */
 
 const GALLERIES: { name: string; url: string }[] = [
@@ -323,11 +410,21 @@ export async function GET(req: Request) {
   try {
   const sp = new URL(req.url).searchParams;
   const query = sp.get("q");
+  const mode = sp.get("mode"); // "type" for typography discovery
   const taste = (sp.get("taste") ?? "").split(",").map((t) => t.trim()).filter(Boolean).slice(0, 30);
   const exclude = new Set((sp.get("exclude") ?? "").split(",").map((d) => d.trim()).filter(Boolean));
 
   let cands: Suggestion[];
-  if (query && hasGeminiKey() && !geminiDisabled()) {
+  if (mode === "type") {
+    // Typography discovery: foundry seeds + Are.na type channels + optional query search
+    const [arn, searched] = await Promise.all([
+      typeArena(),
+      (query || taste.length) && hasGeminiKey() && !geminiDisabled()
+        ? typeWebSearch(query, taste)
+        : Promise.resolve([] as Suggestion[]),
+    ]);
+    cands = [...searched, ...arn, ...TYPE_SEEDS];
+  } else if (query && hasGeminiKey() && !geminiDisabled()) {
     // "More like this": drive purely off the reference image's taste (caption/tags/colours)
     // via web search. The generic Are.na pool is Discover's inspo, not a match for one image.
     cands = await webSearch(query);
@@ -348,7 +445,7 @@ export async function GET(req: Request) {
     seen.add(k);
     return true;
   });
-  cands = await rank(cands, taste, query);
+  cands = await (mode === "type" ? rankType(cands, taste, query) : rank(cands, taste, query));
   // clone: enrich mutates suggestions in place and must never touch cached objects
   const top = await enrich(cands.slice(0, 20).map((c) => ({ ...c })));
   // re-apply exclusions AFTER enrichment — gallery URLs resolve to the real site here,

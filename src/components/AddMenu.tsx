@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { PhotoIcon, LinkIcon, CameraIcon, PencilIcon } from "./icons";
+import { PhotoIcon, LinkIcon, CameraIcon, PencilIcon, ColumnIcon, CheckSquareIcon } from "./icons";
 import { useDialog } from "./useDialog";
 
 interface Props {
@@ -10,13 +10,17 @@ interface Props {
   onUrl: (url: string) => void;
   onCapture: (url: string) => void;
   onNote: (text: string) => void;
+  onColumn?: (name: string) => void;
+  onTodo?: (title: string) => void;
   /** Increment to open the menu from outside (mobile tab bar). */
   openTick?: number;
 }
 
-export default function AddMenu({ onFiles, onUrl, onCapture, onNote, openTick }: Props) {
+type Mode = "menu" | "url" | "capture" | "note" | "column" | "todo";
+
+export default function AddMenu({ onFiles, onUrl, onCapture, onNote, onColumn, onTodo, openTick }: Props) {
   const [open, setOpen] = useState(false);
-  const [mode, setMode] = useState<"menu" | "url" | "capture" | "note">("menu");
+  const [mode, setMode] = useState<Mode>("menu");
   const [text, setText] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -38,10 +42,26 @@ export default function AddMenu({ onFiles, onUrl, onCapture, onNote, openTick }:
     if (mode === "url") onUrl(v);
     if (mode === "capture") onCapture(v);
     if (mode === "note") onNote(v);
+    if (mode === "column") onColumn?.(v);
+    if (mode === "todo") onTodo?.(v);
     close();
   }
 
   const itemBtn = "flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm text-zinc-200 hover:bg-white/10";
+
+  const placeholders: Partial<Record<Mode, string>> = {
+    url: "https://…",
+    capture: "https://site-to-screenshot.com",
+    note: "Jot an idea…",
+    column: "Column name…",
+    todo: "List title…",
+  };
+
+  const labels: Partial<Record<Mode, string>> = {
+    capture: "Capture",
+    column: "Create column",
+    todo: "Create list",
+  };
 
   return (
     <>
@@ -93,6 +113,16 @@ export default function AddMenu({ onFiles, onUrl, onCapture, onNote, openTick }:
                 <button className={itemBtn} onClick={() => setMode("note")}>
                   <PencilIcon className="h-5 w-5 text-zinc-400" /> Quick note
                 </button>
+                {onColumn && (
+                  <button className={itemBtn} onClick={() => setMode("column")}>
+                    <ColumnIcon className="h-5 w-5 text-zinc-400" /><span>Column <span className="text-zinc-500">— vertical card list</span></span>
+                  </button>
+                )}
+                {onTodo && (
+                  <button className={itemBtn} onClick={() => setMode("todo")}>
+                    <CheckSquareIcon className="h-5 w-5 text-zinc-400" /><span>To-do list <span className="text-zinc-500">— tasks with checkboxes</span></span>
+                  </button>
+                )}
               </div>
             )}
             {mode !== "menu" && (
@@ -112,7 +142,7 @@ export default function AddMenu({ onFiles, onUrl, onCapture, onNote, openTick }:
                     value={text}
                     onChange={(e) => setText(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && submit()}
-                    placeholder={mode === "capture" ? "https://site-to-screenshot.com" : "https://…"}
+                    placeholder={placeholders[mode] ?? ""}
                     className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm outline-none focus:border-white/30"
                   />
                 )}
@@ -121,7 +151,7 @@ export default function AddMenu({ onFiles, onUrl, onCapture, onNote, openTick }:
                     Cancel
                   </button>
                   <button onClick={submit} className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-black hover:bg-zinc-200">
-                    {mode === "capture" ? "Capture" : "Add"}
+                    {labels[mode] ?? "Add"}
                   </button>
                 </div>
               </div>

@@ -83,8 +83,25 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   }
 });
 
-chrome.runtime.onMessage.addListener((msg) => {
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === "mood-save-image") {
-    clip({ kind: "image", url: msg.src, page_url: msg.page, title: msg.title });
+    clip({ kind: "image", url: msg.src, page_url: msg.page, title: msg.title, space_id: msg.space_id });
+    return false;
+  }
+  if (msg?.type === "mood-get-spaces") {
+    // Fetch spaces from the app and return them to the content script
+    cfg().then(async ({ appUrl, token }) => {
+      if (!token) { sendResponse({ spaces: [] }); return; }
+      try {
+        const res = await fetch(`${appUrl.replace(/\/$/, "")}/api/clip`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        const { spaces } = await res.json();
+        sendResponse({ spaces: Array.isArray(spaces) ? spaces : [] });
+      } catch {
+        sendResponse({ spaces: [] });
+      }
+    });
+    return true; // keeps the message channel open for the async sendResponse
   }
 });

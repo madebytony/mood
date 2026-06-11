@@ -1,4 +1,4 @@
-export type ItemType = "image" | "site" | "link" | "note";
+export type ItemType = "image" | "site" | "link" | "note" | "todo";
 
 export interface Library {
   id: string;
@@ -41,6 +41,9 @@ export interface Item {
   board_w: number | null;
   ai_caption: string | null;
   stack_id: string | null;
+  stack_order: number | null;
+  board_z: number | null;
+  collapsed: boolean;
   /** Set true by a background reachability check when the source URL fails to load. */
   dead_link: boolean;
   created_at: string;
@@ -54,9 +57,11 @@ export interface Stack {
   user_id: string;
   space_id: string;
   name: string;
+  kind: "stack" | "column";
   board_x: number | null;
   board_y: number | null;
   board_w: number | null;
+  board_z: number | null;
   created_at: string;
 }
 
