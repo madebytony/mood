@@ -310,17 +310,33 @@ async function fetchImagePart(url: string): Promise<{ inlineData: { mimeType: st
   } catch { return null; }
 }
 
-async function webSearch(query: string, image?: { inlineData: { mimeType: string; data: string } } | null): Promise<Suggestion[]> {
+/** Vision pass: read the actual reference image and return a tight, search-ready description of its
+ *  VISUAL aesthetic (palette/mood/type/layout), deliberately excluding photographic subject. Kept as
+ *  its own plain call (no google_search tool) — combining image input with grounded search is flaky
+ *  and trips the Gemini circuit-breaker; this two-step is reliable and still grounds on the pixels. */
+async function describeAesthetic(image: { inlineData: { mimeType: string; data: string } }): Promise<string | null> {
   try {
-    const intro = image
-      ? `A designer wants visual web-design inspiration that matches the REFERENCE IMAGE shown above. Study its colour palette, tonal range, mood, typography and composition. (Text notes from the designer, secondary to the image: "${query}".)\n\nMatch the IMAGE's look and feel — its exact palette (warmth, saturation, lightness), mood and design language. Ignore any literal photographic subject in the image (a person, place, object); we want sites that FEEL like it, not sites about that subject.`
-      : `A designer is hunting for visual web-design inspiration. Their brief describes an AESTHETIC, not a product category: "${query}".\n\nWeight the COLOUR PALETTE and overall MOOD most heavily. If the brief mentions photographic subject/content (a person, place, object, scene), treat that as INCIDENTAL — match the look, palette and feel, never the literal subject. (e.g. a warm yellow moody site of a man writing → return other warm, moody, yellow-toned sites, not sites about writers or poetry.)`;
-    const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
-    if (image) parts.push(image);
-    parts.push({ text: `${intro}\n\nSearch Google to find current, genuinely exceptional websites whose DESIGN matches — award-calibre, design-led work (typography, art direction, motion, originality): studios, portfolios, fashion, editorial, cultural sites. Design showcases (siteinspire, awwwards, godly, minimal.gallery) are useful for FINDING the work, but return the featured site itself — NEVER a gallery, award, directory or curation page URL as a result.\n\nCRITICAL: do NOT return products/tools that merely BELONG to a category the notes mention. They want sites that LOOK the part, not companies in that sector. Never include developer tools, code libraries, docs, UI kits, or SaaS picked for function.\n\nReply with JSON only (no markdown): [{"url": "...", "title": "...", "blurb": "<why the design is exceptional, one short sentence>"}] with up to 12 results. Only live, specific site URLs.` });
+    const res = await gemini({
+      contents: [{
+        role: "user",
+        parts: [
+          image,
+          { text: `Describe ONLY the visual design aesthetic of this website screenshot, so I can find other sites that LOOK like it. Cover: dominant colour palette (specific hues + warmth/saturation/lightness, e.g. "warm muted ochre, olive, cream"), overall mood, typography style, layout/composition, texture/imagery treatment. Max 30 words, comma-separated phrases. Do NOT mention the literal photographic subject (people, places, objects, what the site is about).` },
+        ],
+      }],
+      generationConfig: { maxOutputTokens: 120 },
+    });
+    const t = geminiText(res).replace(/\s+/g, " ").trim();
+    return t || null;
+  } catch { return null; }
+}
+
+async function webSearch(query: string): Promise<Suggestion[]> {
+  try {
+    const intro = `A designer is hunting for visual web-design inspiration. Their brief describes an AESTHETIC, not a product category: "${query}".\n\nWeight the COLOUR PALETTE and overall MOOD most heavily. If the brief mentions photographic subject/content (a person, place, object, scene), treat that as INCIDENTAL — match the look, palette and feel, never the literal subject. (e.g. a warm yellow moody site of a man writing → return other warm, moody, yellow-toned sites, not sites about writers or poetry.)`;
     const res = await gemini({
       tools: [{ google_search: {} }],
-      contents: [{ role: "user", parts }],
+      contents: [{ role: "user", parts: [{ text: `${intro}\n\nSearch Google to find current, genuinely exceptional websites whose DESIGN matches — award-calibre, design-led work (typography, art direction, motion, originality): studios, portfolios, fashion, editorial, cultural sites. Design showcases (siteinspire, awwwards, godly, minimal.gallery) are useful for FINDING the work, but return the featured site itself — NEVER a gallery, award, directory or curation page URL as a result.\n\nCRITICAL: do NOT return products/tools that merely BELONG to a category the notes mention. They want sites that LOOK the part, not companies in that sector. Never include developer tools, code libraries, docs, UI kits, or SaaS picked for function.\n\nReply with JSON only (no markdown): [{"url": "...", "title": "...", "blurb": "<why the design is exceptional, one short sentence>"}] with up to 12 results. Only live, specific site URLs.` }] }],
       generationConfig: { maxOutputTokens: 2000 },
     });
     const arr = parseJson(geminiText(res));
@@ -442,10 +458,13 @@ export async function GET(req: Request) {
     ]);
     cands = [...searched, ...arn, ...TYPE_SEEDS];
   } else if (query && hasGeminiKey() && !geminiDisabled()) {
-    // "More like this": drive off the reference image. When we can fetch the actual image we
-    // ground the web search on it (true visual match); otherwise fall back to the text brief.
+    // "More like this": when we can fetch the reference image, first read its actual visual
+    // aesthetic (vision pass) and lead the search with that — a true look-match, not just the
+    // stored caption's words. Falls back to the text brief if the image can't be read.
     const refImage = img ? await fetchImagePart(img) : null;
-    cands = await webSearch(query, refImage);
+    const aesthetic = refImage ? await describeAesthetic(refImage) : null;
+    const searchQuery = aesthetic ? `${aesthetic} · ${query}`.slice(0, 400) : query;
+    cands = await webSearch(searchQuery);
   } else {
     // Discover endless feed: general inspiration — curated Are.na channels + gallery pool
     const [agg, arn] = await Promise.all([aggregate(), arena()]);
