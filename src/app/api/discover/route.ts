@@ -1,5 +1,6 @@
 import { isAuthed } from "../_lib/auth";
 import { gemini, geminiDisabled, geminiText, hasGeminiKey, parseJson } from "../_lib/gemini";
+import { ingestCandidates } from "../_lib/corpus";
 
 export const maxDuration = 120;
 
@@ -708,6 +709,15 @@ async function run({ query, mode, img, taste, exclude, candidates }: RunOpts): P
     seenDomains.add(s.domain);
     return true;
   });
+  // Every search permanently improves the index: store fresh web finds (enriched with
+  // og:image + title) in web_corpus so future queries retrieve them instantly. Best-effort.
+  try {
+    await ingestCandidates(
+      finalItems
+        .filter((s) => s.source === "web")
+        .map((s) => ({ url: s.url, domain: s.domain, title: s.title, image: s.image, blurb: s.blurb ?? null, tags: [], source: "websearch" }))
+    );
+  } catch { /* index growth must never break the response */ }
   return Response.json({ items: finalItems });
   } catch (e) {
     // never 500 the feed — the SEEDS fallback exists so Discover is always non-empty.

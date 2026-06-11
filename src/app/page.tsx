@@ -22,6 +22,7 @@ import {
   boardBrief,
   captionItem,
   captureSite,
+  corpusTick,
   checkLink,
   addNoteToColumn,
   createColumn,
@@ -430,7 +431,8 @@ function App() {
     };
     backfillCaptions(patch, 8, (item) => spaceCaptionKind(item.space_id))
       .finally(() => backfillThumbs(patchThumb))
-      .finally(() => backfillEmbeddings());
+      .finally(() => backfillEmbeddings())
+      .finally(() => corpusTick());
     return () => {
       alive = false;
     };

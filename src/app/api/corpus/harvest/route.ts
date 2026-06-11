@@ -9,6 +9,24 @@ export const maxDuration = 120;
  * embed processes up to N pending rows through Voyage. Call repeatedly (cron / pre-warm
  * script / app idle) — both halves are idempotent and rate-limit aware.
  */
+/** GET: Vercel cron entry point (nightly index growth). Authorised by CRON_SECRET —
+ *  Vercel sends `Authorization: Bearer <CRON_SECRET>` when the env var is set — or by
+ *  the normal app auth for manual triggering. */
+export async function GET(req: Request) {
+  const auth = req.headers.get("authorization");
+  const cronOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
+  if (!cronOk && !(await isAuthed(req))) {
+    return Response.json({ error: "unauthorized" }, { status: 401 });
+  }
+  try {
+    const h = await harvest();
+    const e = await embedPending(20);
+    return Response.json({ ...h, ...e });
+  } catch (e) {
+    return Response.json({ error: (e as Error).message }, { status: 502 });
+  }
+}
+
 export async function POST(req: Request) {
   if (!(await isAuthed(req))) return Response.json({ error: "unauthorized" }, { status: 401 });
   const body = await req.json().catch(() => ({}));

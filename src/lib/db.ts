@@ -1004,6 +1004,23 @@ export async function boardBrief(spaceId: string, name?: string): Promise<{ brie
   return { brief, image };
 }
 
+/** Idle corpus maintenance, called once per app load: drain a few pending embeds; full
+ *  re-harvest at most once a day (the gallery adapters make ~15 outbound fetches — too
+ *  heavy for every load). Fire-and-forget: never surfaces errors. */
+export async function corpusTick(): Promise<void> {
+  try {
+    const key = "mood:lastCorpusHarvest";
+    const last = Number(localStorage.getItem(key) ?? 0);
+    const doHarvest = Date.now() - last > 24 * 60 * 60 * 1000;
+    if (doHarvest) localStorage.setItem(key, String(Date.now()));
+    await apiFetch("/api/corpus/harvest", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ harvest: doHarvest, embed: 4 }),
+    });
+  } catch { /* background maintenance */ }
+}
+
 async function seenUrls(): Promise<string[]> {
   const { data } = await supabase
     .from("seen_suggestions")
