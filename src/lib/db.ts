@@ -858,6 +858,58 @@ export interface Suggestion {
   blurb?: string | null;
 }
 
+const toDomain = (e: string): string => {
+  if (!/^https?:\/\//i.test(e)) return e;
+  try { return new URL(e).hostname.replace(/^www\./, ""); } catch { return ""; }
+};
+
+/** Instant "similar" from the harvested web_corpus index (the mini-Pinterest path).
+ *  Query vector priority: board taste centroid (spaceId) > embedded query text > the
+ *  whole library's centroid. Returns [] whenever the corpus can't answer (cold index,
+ *  Voyage down) so callers can fall through to the live discover pipeline. */
+export async function corpusSimilar(
+  query: string | null,
+  spaceId: string | null,
+  count = 24,
+  excludeDomains: string[] = []
+): Promise<Suggestion[]> {
+  try {
+    let queryVec: unknown = null;
+    if (spaceId || !query) {
+      const { data } = await supabase.rpc("space_centroid", { p_space_id: spaceId });
+      queryVec = data ?? null;
+    } else if (!voyageDown()) {
+      const res = await apiFetch("/api/ai/embed", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: query, input_type: "query" }),
+      });
+      if (res.ok) queryVec = (await res.json()).embedding ?? null;
+    }
+    if (!queryVec) return [];
+    const { data, error } = await supabase.rpc("match_corpus", {
+      p_query: queryVec,
+      p_count: count,
+      p_exclude: excludeDomains.slice(0, 400),
+    });
+    if (error) return [];
+    type CorpusRow = { url: string; domain: string; title: string | null; image: string | null; blurb: string | null; tags: string[]; source: string; similarity: number };
+    return ((data ?? []) as CorpusRow[]).map((r) => ({
+      url: r.url,
+      title: r.title,
+      image: r.image,
+      domain: r.domain,
+      source: `index/${r.source}`,
+      blurb: [
+        r.tags?.length ? r.tags.slice(0, 3).join(", ") : null,
+        `${Math.round(r.similarity * 100)}% taste match`,
+      ].filter(Boolean).join(" — "),
+    }));
+  } catch {
+    return [];
+  }
+}
+
 export async function discover(query: string | null, extraExclude: string[] = [], mode?: "type", imageUrl?: string | null, tasteSpaceId?: string): Promise<Suggestion[]> {
   // For web-similar searches (query set), skip library domain exclusions — the user wants
   // aesthetic matches even if they've already saved work from those domains.
@@ -867,17 +919,30 @@ export async function discover(query: string | null, extraExclude: string[] = []
     query ? Promise.resolve([] as string[]) : libraryDomains(),
     seenUrls(),
   ]);
+  const exclude = [...extraExclude, ...domains, ...seen].slice(0, 400);
+
+  // Corpus first: retrieval over the owned index is instant and deterministic. The live
+  // pipeline below only runs when the index can't fill the request (cold corpus / exhausted
+  // by "Find more"). Type mode keeps its dedicated foundry pipeline.
+  let corpus: Suggestion[] = [];
+  if (mode !== "type") {
+    const excludeDomains = [...new Set([...exclude.map(toDomain), ...domains])].filter(Boolean);
+    corpus = await corpusSimilar(query, tasteSpaceId ?? null, 24, excludeDomains);
+    if (corpus.length >= 10) return corpus;
+  }
+
   const params = new URLSearchParams();
   if (query) params.set("q", query);
   if (mode) params.set("mode", mode);
   if (imageUrl) params.set("img", imageUrl);
   if (taste.length) params.set("taste", taste.join(","));
-  const exclude = [...extraExclude, ...domains, ...seen].slice(0, 400);
   if (exclude.length) params.set("exclude", exclude.join(","));
   const res = await apiFetch(`/api/discover?${params}`);
   if (!res.ok) throw new Error("Discover failed");
   const { items } = await res.json();
-  return items ?? [];
+  const fromApi = (items ?? []) as Suggestion[];
+  const have = new Set(corpus.map((c) => c.domain));
+  return [...corpus, ...fromApi.filter((i) => !have.has(i.domain))];
 }
 
 /** Distil one board's references into a named aesthetic via Gemini — a style brief that can
