@@ -19,6 +19,7 @@ import {
   backfillCaptions,
   backfillEmbeddings,
   backfillThumbs,
+  boardBrief,
   captionItem,
   captureSite,
   checkLink,
@@ -104,6 +105,7 @@ function App() {
   const [similarQuery, setSimilarQuery] = useState<string | null>(null);
   // Reference image URL for multimodal "more like this" (null = text-only).
   const [similarImage, setSimilarImage] = useState<string | null>(null);
+  const [briefBusy, setBriefBusy] = useState(false);
   const [stacks, setStacks] = useState<Stack[]>([]);
   const [stackThumbs, setStackThumbs] = useState<Map<string, string[]>>(new Map());
   const [columnItems, setColumnItems] = useState<Map<string, Item[]>>(new Map());
@@ -929,6 +931,26 @@ function App() {
     await setSpaceView(currentSpace.id, next).catch(() => {});
   }
 
+  /** Distil this board's aesthetic into a style brief, then open the web-similar dialog with it —
+   *  the whole board becomes the reference instead of a single item. */
+  async function exploreBoardStyle() {
+    if (!currentSpace || briefBusy) return;
+    setBriefBusy(true);
+    try {
+      const res = await boardBrief(currentSpace.id, currentSpace.name);
+      if (!res) {
+        toast("Not enough described items yet — save a few more references first", "error");
+        return;
+      }
+      setSimilarImage(res.image);
+      setSimilarQuery(res.brief);
+    } catch (e) {
+      toast((e as Error).message, "error");
+    } finally {
+      setBriefBusy(false);
+    }
+  }
+
   const currentName =
     selected === "home" ? "Home" : selected === "all" ? "Everything" : currentSpace?.name ?? "";
   const showBoard = currentSpace?.view === "board";
@@ -995,6 +1017,16 @@ function App() {
               title="Toggle grid / board"
             >
               <span className="flex items-center gap-1.5">{showBoard ? <GridIcon className="h-3.5 w-3.5" /> : <BoardIcon className="h-3.5 w-3.5" />}{showBoard ? "Grid" : "Board"}</span>
+            </button>
+          )}
+          {currentSpace && (
+            <button
+              onClick={exploreBoardStyle}
+              disabled={briefBusy}
+              className="rounded-lg border border-white/10 px-2.5 py-1 text-[11px] text-zinc-400 hover:border-white/30 hover:text-zinc-200 disabled:opacity-50"
+              title="Distil this board's aesthetic and find more like it on the web"
+            >
+              <span className="flex items-center gap-1.5"><SparklesIcon className="h-3.5 w-3.5" />{briefBusy ? "Reading the board…" : "Explore style"}</span>
             </button>
           )}
           {selected !== "home" && currentFeedMode === "type" && (
@@ -1376,6 +1408,7 @@ function App() {
                 initialImage={similarImage}
                 mode={currentFeedMode}
                 defaultSpaceId={targetSpace}
+                tasteSpaceId={currentSpace?.id}
                 spaces={spaces}
                 inboxId={inbox?.id}
                 onOpenItem={(i) => {

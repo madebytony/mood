@@ -99,13 +99,17 @@ export async function fetchItems(spaceId: string | "all", search: string): Promi
   return out;
 }
 
-/** Top tags across the most recent saves — the taste profile. */
-export async function tasteTags(): Promise<string[]> {
-  const { data } = await supabase
+/** Top tags across the most recent saves — the taste profile. Scoped to one board when
+ *  `spaceId` is given, so a warm-editorial project and a brutalist-dark project don't
+ *  pollute each other's Discover feed. */
+export async function tasteTags(spaceId?: string): Promise<string[]> {
+  let q = supabase
     .from("items")
     .select("tags")
     .order("created_at", { ascending: false })
     .limit(200);
+  if (spaceId) q = q.eq("space_id", spaceId);
+  const { data } = await q;
   const counts = new Map<string, number>();
   for (const row of data ?? []) {
     for (const t of row.tags ?? []) counts.set(t, (counts.get(t) ?? 0) + 1);
@@ -854,12 +858,12 @@ export interface Suggestion {
   blurb?: string | null;
 }
 
-export async function discover(query: string | null, extraExclude: string[] = [], mode?: "type", imageUrl?: string | null): Promise<Suggestion[]> {
+export async function discover(query: string | null, extraExclude: string[] = [], mode?: "type", imageUrl?: string | null, tasteSpaceId?: string): Promise<Suggestion[]> {
   // For web-similar searches (query set), skip library domain exclusions — the user wants
   // aesthetic matches even if they've already saved work from those domains.
   // For Discover (no query), exclude library domains so we don't re-surface known work.
   const [taste, domains, seen] = await Promise.all([
-    tasteTags(),
+    tasteTags(tasteSpaceId),
     query ? Promise.resolve([] as string[]) : libraryDomains(),
     seenUrls(),
   ]);
@@ -874,6 +878,40 @@ export async function discover(query: string | null, extraExclude: string[] = []
   if (!res.ok) throw new Error("Discover failed");
   const { items } = await res.json();
   return items ?? [];
+}
+
+/** Distil one board's references into a named aesthetic via Gemini — a style brief that can
+ *  drive a "find more like this board" web search. Also returns a representative image (the
+ *  most recent visual item) so the discover pipeline can ground its visual judge in actual
+ *  pixels from the board. Null when the board has no described items yet. */
+export async function boardBrief(spaceId: string, name?: string): Promise<{ brief: string; image: string | null } | null> {
+  const { data } = await supabase
+    .from("items")
+    .select(ITEM_COLS)
+    .eq("space_id", spaceId)
+    .order("created_at", { ascending: false })
+    .limit(40);
+  const items = (data ?? []) as unknown as Item[];
+  const described = items.filter((i) => i.ai_caption || (i.tags ?? []).length);
+  if (!described.length) return null;
+  const res = await apiFetch("/api/ai/brief", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      name,
+      items: described.slice(0, 30).map((i) => ({
+        caption: i.ai_caption,
+        tags: i.tags,
+        colors: i.colors,
+      })),
+    }),
+  });
+  if (!res.ok) return null;
+  const { brief } = await res.json();
+  if (!brief) return null;
+  const rep = items.find((i) => i.thumb_path && i.type === "image") ?? items.find((i) => i.thumb_path);
+  const image = rep?.thumb_path ? (await signedUrls([rep.thumb_path])).get(rep.thumb_path) ?? null : null;
+  return { brief, image };
 }
 
 async function seenUrls(): Promise<string[]> {

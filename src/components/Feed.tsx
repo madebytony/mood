@@ -19,6 +19,8 @@ interface Props {
   initialImage?: string | null;
   defaultSpaceId?: string;
   mode?: "type";
+  /** Scope the taste profile to one board's items instead of the whole library. */
+  tasteSpaceId?: string;
 }
 
 type FeedCard = { kind: "suggestion"; s: Suggestion } | { kind: "library"; item: Item };
@@ -29,7 +31,7 @@ type TypeTab = "foundries" | "fonts" | "inuse";
  *  grey placeholder while it generates the capture, so we retry once to pull the finished shot. */
 const shot = (u: string) => `https://s.wordpress.com/mshots/v1/${encodeURIComponent(u)}?w=600&h=750`;
 
-export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, compact = false, initialQuery, initialImage, defaultSpaceId, mode }: Props) {
+export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, compact = false, initialQuery, initialImage, defaultSpaceId, mode, tasteSpaceId }: Props) {
   const [cards, setCards] = useState<FeedCard[]>([]);
   const [urls, setUrls] = useState<Map<string, string>>(new Map());
   const [query, setQuery] = useState("");
@@ -74,7 +76,7 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
       try {
         if (!append) shown.current = new Set();
         const [suggestions, gems] = await Promise.all([
-          discover(q, [...shown.current], mode, initialImage),
+          discover(q, [...shown.current], mode, initialImage, tasteSpaceId),
           q || compact || append ? Promise.resolve([] as Item[]) : resurface(6),
         ]);
         // belt-and-braces: never show a card twice this session, even if the server re-offers it
@@ -99,7 +101,7 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
         setLoading(false);
       }
     },
-    [toast, compact, mode, initialImage]
+    [toast, compact, mode, initialImage, tasteSpaceId]
   );
 
   useEffect(() => {
