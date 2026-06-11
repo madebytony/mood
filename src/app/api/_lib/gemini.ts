@@ -5,12 +5,15 @@ export function hasGeminiKey(): boolean {
   return !!process.env.GEMINI_API_KEY;
 }
 
-// Time-boxed circuit breaker: a 402/429/503/529 backs Gemini off for a few minutes rather than
-// for the whole instance lifetime, so a transient quota/overload blip doesn't disable AI until the
-// serverless instance recycles. Re-probes automatically once the window passes.
+// Time-boxed circuit breaker. Billing/rate limits (402/429) back off for minutes; transient
+// overloads (503/529) only briefly, since those clear in seconds (and we retry them inline first).
 let disabledUntil = 0;
 const COOLDOWN_MS = 5 * 60_000;
+const OVERLOAD_COOLDOWN_MS = 45_000;
 export function geminiDisabled(): boolean { return Date.now() < disabledUntil; }
+
+const RETRYABLE = new Set([429, 503, 529]);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 type TextPart = { text: string };
 type ImagePart = { inlineData: { mimeType: string; data: string } };
@@ -32,19 +35,28 @@ export async function gemini(body: GeminiBody, timeoutMs = 45000): Promise<any> 
     ...body,
     generationConfig: { thinkingConfig: { thinkingBudget: 0 }, ...body.generationConfig },
   };
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(merged),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!res.ok) {
+  // Gemini's google_search grounding 503s in brief spikes that clear within a second or two, so
+  // retry transient statuses inline (short backoff) before giving up — this is what was dropping
+  // "similar"/Discover to the seed/Are.na fallback. Only trip the circuit breaker once retries fail.
+  let lastErr = new Error("gemini: no attempt");
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt) await sleep(500 * 2 ** (attempt - 1) + Math.floor(Math.random() * 250)); // ~0.6s, ~1.1s
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(merged),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (res.ok) return res.json();
     const err = await res.text().catch(() => "");
-    // 402 billing, 429 rate limit, 503/529 overload — all transient enough to warrant a backoff.
-    if ([402, 429, 503, 529].includes(res.status)) disabledUntil = Date.now() + COOLDOWN_MS;
-    throw new Error(`gemini ${res.status}: ${err.slice(0, 200)}`);
+    lastErr = new Error(`gemini ${res.status}: ${err.slice(0, 200)}`);
+    if (res.status === 402) { disabledUntil = Date.now() + COOLDOWN_MS; throw lastErr; } // billing — back off long
+    if (res.status === 429) { disabledUntil = Date.now() + COOLDOWN_MS; throw lastErr; } // rate limit — back off long
+    if (!RETRYABLE.has(res.status)) throw lastErr; // 400/401/403 etc — not worth retrying
+    // 503/529 overload — fall through to retry
   }
-  return res.json();
+  disabledUntil = Date.now() + OVERLOAD_COOLDOWN_MS; // sustained overload — brief breather only
+  throw lastErr;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
