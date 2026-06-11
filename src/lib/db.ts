@@ -6,7 +6,11 @@ import type { Item, ItemType, Library, LibraryMode, LinkMeta, Space, Stack } fro
 const ITEM_COLS: string =
   "id,space_id,user_id,type,storage_path,thumb_path,content,title,source_url,source_domain," +
   "tags,colors,fonts,tech,width,height,board_x,board_y,board_w,board_h,board_z,collapsed,card_color,stack_id,stack_order," +
-  "ai_caption,dead_link,created_at,last_viewed_at";
+  "ai_caption,caption_v,dead_link,created_at,last_viewed_at";
+
+/** Bump when the caption prompt changes materially — backfillCaptions re-captions (and
+ *  re-embeds) anything below this so the whole library converges on the new captions. */
+const CAPTION_VERSION = 2;
 
 /** Derive a short plain-text title from a note body that may be HTML or plain text. */
 export function noteTitle(body: string): string {
@@ -598,7 +602,7 @@ export async function captionItem(item: Item, onDone?: (updated: Item) => void |
       }
       mergedFonts = out;
     }
-    const patch: Partial<Item> = { ai_caption: caption, tags: merged };
+    const patch: Partial<Item> = { ai_caption: caption, tags: merged, caption_v: CAPTION_VERSION };
     if (mergedFonts !== item.fonts) patch.fonts = mergedFonts ?? [];
     const updated = await updateItem(item.id, patch);
     await onDone?.(updated);
@@ -641,6 +645,7 @@ function embedText(item: Item): string {
     item.ai_caption,
     (item.tags ?? []).join(", "),
     (item.fonts ?? []).join(", "),
+    item.colors?.length ? `palette: ${item.colors.join(", ")}` : null,
     item.title,
     item.content?.slice(0, 500),
   ]
@@ -708,11 +713,12 @@ export async function backfillEmbeddings(batch = 12): Promise<void> {
 
 let captionBackfillRunning = false;
 
-/** Caption + tag any image items still missing an ai_caption, a few per load, re-embedding each
- *  so its vector carries the style words. Closes the gap for pre-AI / failed-caption saves whose
- *  thin metadata makes weak "more like this" queries. `onCaptioned` lets the caller patch live
- *  state so an immediate "more like this" uses the fresh caption. `kindForItem` lets callers
- *  route type spaces through the type-aware caption prompt. No key -> no-op. */
+/** Caption + tag image items whose caption is missing OR written by an older prompt version,
+ *  a few per load, re-embedding each so its vector carries the style words. Closes the gap for
+ *  pre-AI / failed-caption saves and gradually upgrades the whole library whenever
+ *  CAPTION_VERSION bumps. `onCaptioned` lets the caller patch live state so an immediate
+ *  "more like this" uses the fresh caption. `kindForItem` lets callers route type spaces
+ *  through the type-aware caption prompt. No key -> no-op. */
 export async function backfillCaptions(
   onCaptioned?: (item: Item) => void,
   batch = 8,
@@ -724,7 +730,7 @@ export async function backfillCaptions(
     const { data } = await supabase
       .from("items")
       .select(ITEM_COLS)
-      .is("ai_caption", null)
+      .or(`ai_caption.is.null,caption_v.lt.${CAPTION_VERSION}`)
       .not("thumb_path", "is", null)
       .order("created_at", { ascending: false })
       .limit(batch);

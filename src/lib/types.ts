@@ -45,6 +45,8 @@ export interface Item {
   /** Manual card height (notes/cards the user dragged taller); null = derive from content. */
   board_h: number | null;
   ai_caption: string | null;
+  /** Caption prompt version that produced ai_caption; below CAPTION_VERSION = re-caption due. */
+  caption_v: number | null;
   stack_id: string | null;
   stack_order: number | null;
   board_z: number | null;
