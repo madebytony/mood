@@ -20,7 +20,7 @@ interface Props {
   onClose: () => void;
   onChanged: (item: Item | null) => void;
   onOpenItem: (item: Item) => void;
-  onWebSimilar: (query: string, imageUrl?: string | null) => void;
+  onWebSimilar: (query: string, imageUrl?: string | null, itemId?: string) => void;
   onDelete: (item: Item) => void;
 }
 
@@ -286,7 +286,7 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
                     // Ground the search on the actual image for visual cards; notes/todos stay text-only.
                     const refImage = item.type === "note" || item.type === "todo" ? null : fullUrl;
                     return q ? (
-                      <button onClick={() => onWebSimilar(q, refImage)} className="text-[11px] text-zinc-200 hover:underline">
+                      <button onClick={() => onWebSimilar(q, refImage, item.id)} className="text-[11px] text-zinc-200 hover:underline">
                         Search the web for similar →
                       </button>
                     ) : null;

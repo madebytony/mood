@@ -864,21 +864,31 @@ const toDomain = (e: string): string => {
 };
 
 /** Instant "similar" from the harvested web_corpus index (the mini-Pinterest path).
- *  Query vector priority: board taste centroid (spaceId) > embedded query text > the
- *  whole library's centroid. Returns [] whenever the corpus can't answer (cold index,
- *  Voyage down) so callers can fall through to the live discover pipeline. */
+ *  Query vector priority: the item's own vector (itemId) > board taste centroid (spaceId)
+ *  > embedded query text > the whole library's centroid. Only matches above a similarity
+ *  floor count — a thin index must fall through to the live pipeline, not present its
+ *  nearest-whatever as a match. Returns [] whenever the corpus can't answer. */
 export async function corpusSimilar(
   query: string | null,
   spaceId: string | null,
   count = 24,
-  excludeDomains: string[] = []
+  excludeDomains: string[] = [],
+  itemId?: string | null
 ): Promise<Suggestion[]> {
   try {
     let queryVec: unknown = null;
-    if (spaceId || !query) {
+    // same-modality floor (item/board vectors vs corpus screenshot vectors); tune as the index grows
+    let minSim = 0.42;
+    if (itemId) {
+      const { data } = await supabase.from("items").select("embedding").eq("id", itemId).single();
+      queryVec = data?.embedding ?? null;
+    }
+    if (!queryVec && (spaceId || !query)) {
       const { data } = await supabase.rpc("space_centroid", { p_space_id: spaceId });
       queryVec = data ?? null;
-    } else if (!voyageDown()) {
+    }
+    if (!queryVec && query && !voyageDown()) {
+      minSim = 0.32; // cross-modal (text query vs image docs) cosines run lower
       const res = await apiFetch("/api/ai/embed", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -894,7 +904,7 @@ export async function corpusSimilar(
     });
     if (error) return [];
     type CorpusRow = { url: string; domain: string; title: string | null; image: string | null; blurb: string | null; tags: string[]; source: string; similarity: number };
-    return ((data ?? []) as CorpusRow[]).map((r) => ({
+    return ((data ?? []) as CorpusRow[]).filter((r) => r.similarity >= minSim).map((r) => ({
       url: r.url,
       title: r.title,
       image: r.image,
@@ -910,7 +920,7 @@ export async function corpusSimilar(
   }
 }
 
-export async function discover(query: string | null, extraExclude: string[] = [], mode?: "type", imageUrl?: string | null, tasteSpaceId?: string): Promise<Suggestion[]> {
+export async function discover(query: string | null, extraExclude: string[] = [], mode?: "type", imageUrl?: string | null, tasteSpaceId?: string, similarToItemId?: string | null): Promise<Suggestion[]> {
   // For web-similar searches (query set), skip library domain exclusions — the user wants
   // aesthetic matches even if they've already saved work from those domains.
   // For Discover (no query), exclude library domains so we don't re-surface known work.
@@ -927,7 +937,7 @@ export async function discover(query: string | null, extraExclude: string[] = []
   let corpus: Suggestion[] = [];
   if (mode !== "type") {
     const excludeDomains = [...new Set([...exclude.map(toDomain), ...domains])].filter(Boolean);
-    corpus = await corpusSimilar(query, tasteSpaceId ?? null, 24, excludeDomains);
+    corpus = await corpusSimilar(query, tasteSpaceId ?? null, 24, excludeDomains, similarToItemId);
     if (corpus.length >= 10) return corpus;
   }
 
@@ -948,8 +958,10 @@ export async function discover(query: string | null, extraExclude: string[] = []
 /** Distil one board's references into a named aesthetic via Gemini — a style brief that can
  *  drive a "find more like this board" web search. Also returns a representative image (the
  *  most recent visual item) so the discover pipeline can ground its visual judge in actual
- *  pixels from the board. Null when the board has no described items yet. */
-export async function boardBrief(spaceId: string, name?: string): Promise<{ brief: string; image: string | null } | null> {
+ *  pixels from the board. Returns null ONLY when the board has no described items at all;
+ *  if just the brief generation fails (Gemini down), brief is null but the caller can still
+ *  proceed — corpus-centroid retrieval doesn't need a brief. */
+export async function boardBrief(spaceId: string, name?: string): Promise<{ brief: string | null; image: string | null } | null> {
   const { data } = await supabase
     .from("items")
     .select(ITEM_COLS)
@@ -959,21 +971,22 @@ export async function boardBrief(spaceId: string, name?: string): Promise<{ brie
   const items = (data ?? []) as unknown as Item[];
   const described = items.filter((i) => i.ai_caption || (i.tags ?? []).length);
   if (!described.length) return null;
-  const res = await apiFetch("/api/ai/brief", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      name,
-      items: described.slice(0, 30).map((i) => ({
-        caption: i.ai_caption,
-        tags: i.tags,
-        colors: i.colors,
-      })),
-    }),
-  });
-  if (!res.ok) return null;
-  const { brief } = await res.json();
-  if (!brief) return null;
+  let brief: string | null = null;
+  try {
+    const res = await apiFetch("/api/ai/brief", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name,
+        items: described.slice(0, 30).map((i) => ({
+          caption: i.ai_caption,
+          tags: i.tags,
+          colors: i.colors,
+        })),
+      }),
+    });
+    if (res.ok) brief = (await res.json()).brief ?? null;
+  } catch { /* brief is a nice-to-have; centroid retrieval works without it */ }
   const rep = items.find((i) => i.thumb_path && i.type === "image") ?? items.find((i) => i.thumb_path);
   const image = rep?.thumb_path ? (await signedUrls([rep.thumb_path])).get(rep.thumb_path) ?? null : null;
   return { brief, image };

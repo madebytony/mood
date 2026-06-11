@@ -45,6 +45,7 @@ import {
   setSpaceView,
   signedUrls,
   stackThumbPaths,
+  tasteTags,
   unstackItem,
   updateItem,
   updateStack,
@@ -105,6 +106,7 @@ function App() {
   const [similarQuery, setSimilarQuery] = useState<string | null>(null);
   // Reference image URL for multimodal "more like this" (null = text-only).
   const [similarImage, setSimilarImage] = useState<string | null>(null);
+  const [similarItemId, setSimilarItemId] = useState<string | null>(null);
   const [briefBusy, setBriefBusy] = useState(false);
   const [stacks, setStacks] = useState<Stack[]>([]);
   const [stackThumbs, setStackThumbs] = useState<Map<string, string[]>>(new Map());
@@ -939,11 +941,15 @@ function App() {
     try {
       const res = await boardBrief(currentSpace.id, currentSpace.name);
       if (!res) {
-        toast("Not enough described items yet — save a few more references first", "error");
+        toast("No described items on this board yet — save a few references first", "error");
         return;
       }
+      // Brief generation failing (AI down) shouldn't block exploring: corpus retrieval runs
+      // off the board centroid; the taste tags make a serviceable query for the web fallback.
+      const fallback = (await tasteTags(currentSpace.id).catch(() => [] as string[])).slice(0, 8).join(", ");
+      setSimilarItemId(null);
       setSimilarImage(res.image);
-      setSimilarQuery(res.brief);
+      setSimilarQuery(res.brief ?? (fallback || currentSpace.name));
     } catch (e) {
       toast((e as Error).message, "error");
     } finally {
@@ -1235,8 +1241,9 @@ function App() {
           onClose={() => setOpen(null)}
           onChanged={onItemChanged}
           onOpenItem={(i) => setOpen(i)}
-          onWebSimilar={(q, imageUrl) => {
+          onWebSimilar={(q, imageUrl, itemId) => {
             setOpen(null);
+            setSimilarItemId(itemId ?? null);
             setSimilarImage(imageUrl ?? null);
             setSimilarQuery(q);
           }}
@@ -1409,6 +1416,7 @@ function App() {
                 mode={currentFeedMode}
                 defaultSpaceId={targetSpace}
                 tasteSpaceId={currentSpace?.id}
+                similarToItemId={similarItemId}
                 spaces={spaces}
                 inboxId={inbox?.id}
                 onOpenItem={(i) => {

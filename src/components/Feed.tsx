@@ -21,6 +21,8 @@ interface Props {
   mode?: "type";
   /** Scope the taste profile to one board's items instead of the whole library. */
   tasteSpaceId?: string;
+  /** "More like this item": corpus retrieval queries with this item's own vector. */
+  similarToItemId?: string | null;
 }
 
 type FeedCard = { kind: "suggestion"; s: Suggestion } | { kind: "library"; item: Item };
@@ -31,7 +33,7 @@ type TypeTab = "foundries" | "fonts" | "inuse";
  *  grey placeholder while it generates the capture, so we retry once to pull the finished shot. */
 const shot = (u: string) => `https://s.wordpress.com/mshots/v1/${encodeURIComponent(u)}?w=600&h=750`;
 
-export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, compact = false, initialQuery, initialImage, defaultSpaceId, mode, tasteSpaceId }: Props) {
+export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, compact = false, initialQuery, initialImage, defaultSpaceId, mode, tasteSpaceId, similarToItemId }: Props) {
   const [cards, setCards] = useState<FeedCard[]>([]);
   const [urls, setUrls] = useState<Map<string, string>>(new Map());
   const [query, setQuery] = useState("");
@@ -83,7 +85,7 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
       try {
         if (!append) shown.current = new Set();
         const [suggestions, gems] = await Promise.all([
-          discover(q, [...shown.current], mode, initialImage, tasteSpaceId),
+          discover(q, [...shown.current], mode, initialImage, tasteSpaceId, similarToItemId),
           q || compact || append ? Promise.resolve([] as Item[]) : resurface(6),
         ]);
         if (seq !== loadSeq.current) return; // superseded by a newer load
@@ -110,7 +112,7 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
         if (seq === loadSeq.current) setLoading(false);
       }
     },
-    [toast, compact, mode, initialImage, tasteSpaceId]
+    [toast, compact, mode, initialImage, tasteSpaceId, similarToItemId]
   );
 
   useEffect(() => {
