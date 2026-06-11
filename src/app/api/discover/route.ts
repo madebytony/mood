@@ -430,12 +430,17 @@ async function visualRank(
   }));
 }
 
-async function webSearch(query: string): Promise<Suggestion[]> {
+/** `subjectMatters` distinguishes a TYPED project brief (a named sector is intentional —
+ *  "a window company" means window companies are wanted) from an image-derived aesthetic
+ *  search (the subject is incidental; only the look matters). */
+async function webSearch(query: string, subjectMatters = false): Promise<Suggestion[]> {
   try {
-    const intro = `A designer is hunting for visual web-design inspiration. Their brief describes an AESTHETIC, not a product category: "${query}".\n\nWeight the COLOUR PALETTE and overall MOOD most heavily. If the brief mentions photographic subject/content (a person, place, object, scene), treat that as INCIDENTAL — match the look, palette and feel, never the literal subject. (e.g. a warm yellow moody site of a man writing → return other warm, moody, yellow-toned sites, not sites about writers or poetry.)`;
+    const intro = subjectMatters
+      ? `A designer is gathering web-design inspiration for a real project brief: "${query}".\n\nIf the brief names an industry or product (e.g. "a window company"), include a few genuinely well-designed sites FROM that sector or close neighbours — the kind of brand being designed for — and fill the rest with sites from ANY sector whose design nails the brief's aesthetic (palette, mood, typography, layout). Exceptional design comes first: sector relevance never excuses a mediocre site.`
+      : `A designer is hunting for visual web-design inspiration. Their brief describes an AESTHETIC, not a product category: "${query}".\n\nWeight the COLOUR PALETTE and overall MOOD most heavily. If the brief mentions photographic subject/content (a person, place, object, scene), treat that as INCIDENTAL — match the look, palette and feel, never the literal subject. (e.g. a warm yellow moody site of a man writing → return other warm, moody, yellow-toned sites, not sites about writers or poetry.)`;
     const res = await gemini({
       tools: [{ google_search: {} }],
-      contents: [{ role: "user", parts: [{ text: `${intro}\n\nSearch Google to find current, genuinely exceptional websites whose DESIGN matches — award-calibre, design-led work (typography, art direction, motion, originality): studios, portfolios, fashion, editorial, cultural sites. Design showcases (siteinspire, awwwards, godly, minimal.gallery) are useful for FINDING the work, but return the featured site itself — NEVER a gallery, award, directory or curation page URL as a result.\n\nCRITICAL: do NOT return products/tools that merely BELONG to a category the notes mention. They want sites that LOOK the part, not companies in that sector. Never include developer tools, code libraries, docs, UI kits, or SaaS picked for function.\n\nReply with JSON only (no markdown): [{"url": "...", "title": "...", "blurb": "<why the design is exceptional, one short sentence>"}] with up to 12 results. Only live, specific site URLs.` }] }],
+      contents: [{ role: "user", parts: [{ text: `${intro}\n\nSearch Google to find current, genuinely exceptional websites whose DESIGN matches — award-calibre, design-led work (typography, art direction, motion, originality): studios, portfolios, fashion, editorial, cultural sites${subjectMatters ? ", and sector-relevant brands when the brief names one" : ""}. Design showcases (siteinspire, awwwards, godly, minimal.gallery) are useful for FINDING the work, but return the featured site itself — NEVER a gallery, award, directory or curation page URL as a result.\n\n${subjectMatters ? "Never include developer tools, code libraries, docs, UI kits, or SaaS picked for function rather than design." : "CRITICAL: do NOT return products/tools that merely BELONG to a category the notes mention. They want sites that LOOK the part, not companies in that sector. Never include developer tools, code libraries, docs, UI kits, or SaaS picked for function."}\n\nSkip the over-exposed mega-brand references every designer already knows (Apple, Stripe, Airbnb, Canva, Duolingo, Mailchimp, Notion, Spotify) — favour fresher, less-seen work.\n\nReply with JSON only (no markdown): [{"url": "...", "title": "...", "blurb": "<why the design is exceptional, one short sentence>"}] with up to 12 results. Only live, specific site URLs.` }] }],
       generationConfig: { maxOutputTokens: 2000 },
     });
     const arr = parseJson(geminiText(res));
@@ -573,9 +578,10 @@ async function enrich(items: Suggestion[]): Promise<Suggestion[]> {
 
 export async function GET(req: Request) {
   if (!(await isAuthed(req))) return Response.json({ error: "unauthorized" }, { status: 401 });
+  let query: string | null = null;
   try {
   const sp = new URL(req.url).searchParams;
-  const query = sp.get("q");
+  query = sp.get("q");
   const mode = sp.get("mode"); // "type" for typography discovery
   const img = sp.get("img"); // reference image URL for multimodal "more like this"
   const taste = (sp.get("taste") ?? "").split(",").map((t) => t.trim()).filter(Boolean).slice(0, 30);
@@ -611,14 +617,21 @@ export async function GET(req: Request) {
       if (ranked && ranked.length) { cands = ranked; visuallyRanked = true; }
       else cands = [...mined, ...web]; // judging unavailable — fall back to the text-ranked path
     } else {
-      cands = await webSearch(searchQuery);
+      // No reference image -> the query is a typed brief; a named sector is intentional.
+      cands = await webSearch(searchQuery, !img);
     }
   } else {
     // Discover endless feed: general inspiration — curated Are.na channels + gallery pool
     const [agg, arn] = await Promise.all([aggregate(), arena()]);
     cands = [...arn, ...agg];
   }
-  if (!cands.length) cands = SEEDS;
+  // Empty browse feed -> seed with known-good directories so Discover is never blank.
+  // Empty SEARCH -> return nothing: offering curation directories as "similar" results is
+  // exactly the noise the user is searching to avoid.
+  if (!cands.length) {
+    if (query) return Response.json({ items: [] });
+    cands = SEEDS;
+  }
 
   // dedupe by domain+path, drop excluded/seen domains
   const norm = (u: string) => u.replace(/\/+$/, "");
@@ -657,6 +670,6 @@ export async function GET(req: Request) {
     if (!/failed to fetch|fetch failed|network/i.test(msg)) {
       console.error("discover failed:", e);
     }
-    return Response.json({ items: SEEDS });
+    return Response.json({ items: query ? [] : SEEDS });
   }
 }

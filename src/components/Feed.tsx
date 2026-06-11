@@ -213,6 +213,12 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
         </div>
       )}
 
+      {!loading && !cards.length && (compact || query.trim()) && (
+        <div className="py-10 text-center text-xs text-zinc-600">
+          No strong matches found — try rewording or broadening the brief.
+        </div>
+      )}
+
       {!loading && mode === "type" && !filteredCards.length && cards.length > 0 && (
         <div className="pb-3 text-center text-xs text-zinc-600">
           {typeTab === "foundries" && "No foundry cards in this batch yet. Try Find more."}
