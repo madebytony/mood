@@ -3,7 +3,11 @@
 import { useRef, useState } from "react";
 import type { Item, Stack } from "@/lib/types";
 import { THUMB_W, THUMB_MAX_H, dominantHex } from "@/lib/media";
-import { StackIcon, LinkIcon, WarningIcon } from "./icons";
+import { StackIcon, LinkIcon, WarningIcon, ExternalLinkIcon, DotsIcon } from "./icons";
+
+/** Favicon for a bookmark card — Google's service, reliable and cached. */
+const favicon = (domain: string | null) =>
+  domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=64` : null;
 
 interface Props {
   items: Item[];
@@ -70,39 +74,93 @@ function Card({
   const ratio =
     item.width && item.height ? Math.min(item.height / item.width, THUMB_MAX_H / THUMB_W) : null;
 
+  const isBookmark = item.type === "link";
+
+  // Shared inner content (preview + footer) so the bookmark <a> and the default <button>
+  // render identically — only the wrapper element and click target differ.
+  const inner = (
+    <>
+      {thumb ? (
+        <div
+          className="relative w-full"
+          style={{ ...(ratio ? { aspectRatio: `${1 / ratio}` } : {}), backgroundColor: dominantHex(item.colors) }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={thumb}
+            alt={item.title ?? ""}
+            loading="lazy"
+            className="h-full w-full object-cover object-top opacity-0 transition-opacity duration-500"
+            onLoad={(e) => e.currentTarget.classList.remove("opacity-0")}
+          />
+        </div>
+      ) : item.type === "note" ? (
+        <div className="px-4 py-5 text-sm leading-relaxed text-zinc-300">{(item.content ?? "").slice(0, 280)}</div>
+      ) : isBookmark ? (
+        // bookmark without an og:image — a clean favicon plaque rather than a bare link glyph
+        <div className="flex aspect-[16/10] w-full flex-col items-center justify-center gap-2 bg-gradient-to-b from-white/[0.04] to-transparent text-zinc-500">
+          {favicon(item.source_domain) ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={favicon(item.source_domain)!} alt="" className="h-8 w-8 rounded" />
+          ) : (
+            <LinkIcon className="h-7 w-7" />
+          )}
+        </div>
+      ) : (
+        <div className="grid aspect-[4/3] w-full place-items-center text-zinc-700"><LinkIcon className="h-7 w-7" /></div>
+      )}
+
+      {isBookmark ? (
+        <div className="px-3 py-2.5">
+          <div className="flex items-center gap-1.5">
+            {favicon(item.source_domain) && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={favicon(item.source_domain)!} alt="" className="h-3.5 w-3.5 shrink-0 rounded-sm" />
+            )}
+            <span className="truncate text-[11px] text-zinc-500">{item.source_domain ?? "link"}</span>
+            <ExternalLinkIcon className="ml-auto h-3 w-3 shrink-0 text-zinc-600" />
+          </div>
+          <div className="mt-1 truncate text-xs font-medium text-zinc-200">{item.title ?? item.source_url}</div>
+        </div>
+      ) : item.type === "site" ? (
+        <div className="px-3 py-2.5">
+          <div className="truncate text-xs font-medium text-zinc-300">{item.title ?? item.source_url}</div>
+          <div className="mt-0.5 truncate text-[11px] text-zinc-600">{item.source_domain}</div>
+        </div>
+      ) : null}
+    </>
+  );
+
   return (
     <div className={`group relative ${selected ? "rounded-xl ring-2 ring-white/80" : ""}`}>
-      <button
-        onClick={() => onOpen(item)}
-        className="card-in lift block w-full overflow-hidden rounded-xl border border-white/5 bg-white/[0.03] text-left hover:border-white/15"
-      >
-        {thumb ? (
-          <div
-            className="relative w-full"
-            style={{ ...(ratio ? { aspectRatio: `${1 / ratio}` } : {}), backgroundColor: dominantHex(item.colors) }}
-          >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={thumb}
-              alt={item.title ?? ""}
-              loading="lazy"
-              className="h-full w-full object-cover object-top opacity-0 transition-opacity duration-500"
-              onLoad={(e) => e.currentTarget.classList.remove("opacity-0")}
-            />
-          </div>
-        ) : item.type === "note" ? (
-          <div className="px-4 py-5 text-sm leading-relaxed text-zinc-300">{(item.content ?? "").slice(0, 280)}</div>
-        ) : (
-          <div className="grid aspect-[4/3] w-full place-items-center text-zinc-700"><LinkIcon className="h-7 w-7" /></div>
-        )}
-
-        {(item.type === "link" || item.type === "site") && (
-          <div className="px-3 py-2.5">
-            <div className="truncate text-xs font-medium text-zinc-300">{item.title ?? item.source_url}</div>
-            <div className="mt-0.5 truncate text-[11px] text-zinc-600">{item.source_domain}</div>
-          </div>
-        )}
-      </button>
+      {isBookmark && item.source_url ? (
+        <a
+          href={item.source_url}
+          target="_blank"
+          rel="noreferrer"
+          className="card-in lift block w-full overflow-hidden rounded-xl border border-white/5 bg-white/[0.03] text-left hover:border-white/15"
+        >
+          {inner}
+        </a>
+      ) : (
+        <button
+          onClick={() => onOpen(item)}
+          className="card-in lift block w-full overflow-hidden rounded-xl border border-white/5 bg-white/[0.03] text-left hover:border-white/15"
+        >
+          {inner}
+        </button>
+      )}
+      {/* bookmark cards open the site on click — this hover control reaches the in-app panel
+          (tags, "more like this", delete) that the click would otherwise have opened. */}
+      {isBookmark && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onOpen(item); }}
+          title="Details — tags, similar, delete"
+          className="absolute right-2 top-2 z-10 hidden h-6 w-6 place-items-center rounded-full border border-white/40 bg-black/60 text-white/70 backdrop-blur hover:text-white group-hover:grid pointer-coarse:grid"
+        >
+          <DotsIcon className="h-3.5 w-3.5" />
+        </button>
+      )}
       {item.type === "image" && item.source_domain && (
         <div className="pointer-events-none absolute inset-x-0 bottom-0 hidden rounded-b-xl bg-gradient-to-t from-black/70 to-transparent px-3 pb-2 pt-6 text-[11px] text-zinc-300 group-hover:block">
           {item.source_domain}

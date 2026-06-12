@@ -107,7 +107,7 @@ export default function AddMenu({ onFiles, onUrl, onCapture, onNote, noteInline,
                   <PhotoIcon className="h-5 w-5 text-zinc-400" /> Photos / files
                 </button>
                 <button className={itemBtn} onClick={() => setMode("url")}>
-                  <LinkIcon className="h-5 w-5 text-zinc-400" /><span>Paste a URL <span className="text-zinc-500">— image or link card</span></span>
+                  <LinkIcon className="h-5 w-5 text-zinc-400" /><span>Paste a URL <span className="text-zinc-500">— save as a bookmark</span></span>
                 </button>
                 <button className={itemBtn} onClick={() => setMode("capture")}>
                   <CameraIcon className="h-5 w-5 text-zinc-400" /><span>Capture a site <span className="text-zinc-500">— full-page screenshot</span></span>

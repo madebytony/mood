@@ -8,7 +8,7 @@ import { isHtmlNote, plainToHtml } from "@/lib/noteHtml";
 import NoteEditor from "./NoteEditor";
 import { notice } from "./ui";
 import { useDialog } from "./useDialog";
-import { SparklesIcon, XIcon, ChevronLeftIcon, ChevronRightIcon, WarningIcon } from "./icons";
+import { SparklesIcon, XIcon, ChevronLeftIcon, ChevronRightIcon, WarningIcon, ExternalLinkIcon } from "./icons";
 
 interface Props {
   item: Item;
@@ -438,8 +438,12 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
           {item.source_url && (
             <div>
               <label className="mb-1 block text-[11px] uppercase tracking-wider text-zinc-600">Source</label>
-              <a href={item.source_url} target="_blank" rel="noreferrer" className="block truncate text-sm text-zinc-200 hover:underline">
-                {item.source_domain ?? item.source_url}
+              <a href={item.source_url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 truncate text-sm text-zinc-200 hover:underline">
+                {item.source_domain && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={`https://www.google.com/s2/favicons?domain=${item.source_domain}&sz=64`} alt="" className="h-4 w-4 shrink-0 rounded-sm" />
+                )}
+                <span className="truncate">{item.source_domain ?? item.source_url}</span>
               </a>
               {item.dead_link && (
                 <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-amber-300/90">
@@ -450,6 +454,16 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
           )}
 
           <div className="flex flex-wrap gap-2 pt-2">
+            {item.source_url && (
+              <a
+                href={item.source_url}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-1.5 rounded-lg bg-white px-3 py-2 text-xs font-medium text-black hover:bg-zinc-200"
+              >
+                <ExternalLinkIcon className="h-3.5 w-3.5" /> Open site
+              </a>
+            )}
             {fullUrl && (
               <>
                 <button onClick={copyImage} className={btn}>{copied ? "Copied ✓" : "Copy image"}</button>
