@@ -103,24 +103,68 @@ const ARENA_CHANNELS: { slug: string; tags?: string[] }[] = [
   { slug: "type-in-use" },
 ];
 
-/** Channel-search queries that target the corpus's stylistic gaps. The query's aesthetic
- *  word rides along as a tag on every block harvested from a discovered channel. */
-const ARENA_QUERIES: { q: string; tag: string }[] = [
+/** The broad aesthetic spectrum — a wide net, not a taste statement. Each harvest samples
+ *  a handful at random, so over successive nights the index sweeps the whole space without
+ *  any single run ballooning. The query's aesthetic word rides along as a tag. */
+const SPECTRUM_QUERIES: { q: string; tag: string }[] = [
   { q: "colorful web design", tag: "colorful" },
   { q: "playful web design", tag: "playful" },
   { q: "brutalist websites", tag: "brutalist" },
   { q: "editorial web design", tag: "editorial" },
   { q: "experimental web design", tag: "experimental" },
   { q: "monochrome web design", tag: "monochrome" },
+  { q: "pastel web design", tag: "pastel" },
+  { q: "retro web design", tag: "retro" },
+  { q: "luxury brand websites", tag: "luxury" },
+  { q: "maximalist web design", tag: "maximalist" },
+  { q: "organic natural web design", tag: "organic" },
+  { q: "3d web design", tag: "3d" },
+  { q: "illustration websites", tag: "illustration" },
+  { q: "fashion websites", tag: "fashion" },
+  { q: "art direction websites", tag: "art direction" },
+  { q: "motion design websites", tag: "motion" },
+  { q: "typographic websites", tag: "typographic" },
+  { q: "dark mode websites", tag: "dark mode" },
+  { q: "e-commerce design inspiration", tag: "e-commerce" },
+  { q: "swiss design websites", tag: "swiss" },
 ];
+
+/** Taste-driven queries: the user's own top tags steer extra discovery, so the index grows
+ *  fastest where their library actually lives — whatever that is, however it changes. */
+async function tasteQueries(limit = 4): Promise<{ q: string; tag: string }[]> {
+  try {
+    const db = admin();
+    const { data } = await db
+      .from("items")
+      .select("tags")
+      .order("created_at", { ascending: false })
+      .limit(200);
+    const counts = new Map<string, number>();
+    for (const row of data ?? []) {
+      for (const t of (row.tags as string[] | null) ?? []) counts.set(t, (counts.get(t) ?? 0) + 1);
+    }
+    // skip layout/structure words — channel names are about look and subject, not grid math
+    const SKIP = /whitespace|hero|grid|layout|composition|full-bleed|caps|scale|labels|cards|background|text/i;
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([t]) => t)
+      .filter((t) => t.length > 3 && !SKIP.test(t))
+      .slice(0, limit)
+      .map((t) => ({ q: `${t} web design`, tag: t }));
+  } catch { return []; }
+}
 
 // keep junk and NSFW channels out of a design corpus
 const BAD_CHANNEL_RE = /nsfw|porn|onlyfans|x-rated|xxx|sex|gore|leak/i;
 
-/** Discover fresh channels per aesthetic query — the corpus self-diversifies as Are.na grows. */
+/** Discover fresh channels — a rotating sample of the broad spectrum plus the user's own
+ *  taste tags. The corpus self-diversifies as Are.na grows AND follows the library's lead. */
 async function arenaDiscover(): Promise<{ slug: string; tags: string[] }[]> {
+  const sampled = [...SPECTRUM_QUERIES];
+  for (let i = sampled.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [sampled[i], sampled[j]] = [sampled[j], sampled[i]]; }
+  const queries = [...sampled.slice(0, 6), ...(await tasteQueries())];
   const found: { slug: string; tags: string[] }[] = [];
-  await Promise.allSettled(ARENA_QUERIES.map(async ({ q, tag }) => {
+  await Promise.allSettled(queries.map(async ({ q, tag }) => {
     const r = await fetch(
       `https://api.are.na/v2/search/channels?q=${encodeURIComponent(q)}&per=5`,
       { headers: { "user-agent": UA }, signal: AbortSignal.timeout(10000) }
