@@ -224,6 +224,57 @@ async function arena(): Promise<CorpusCandidate[]> {
   return results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
 }
 
+/** Typewolf "Site of the Day" via RSS — a hand-curated feed of typography-led real websites.
+ *  Each SOTD page's first outbound link is the real site (the rest are the curator's own),
+ *  so entries resolve to DISTINCT real-site domains with a real 2x screenshot — premium
+ *  gallery material, not blog-domain clutter. Bounded to the recent feed. */
+async function typewolf(cap = 20): Promise<CorpusCandidate[]> {
+  let xml: string;
+  try {
+    const res = await fetch("https://www.typewolf.com/feed", {
+      headers: { "user-agent": UA, accept: "application/rss+xml,text/xml,*/*" },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return [];
+    xml = await res.text();
+  } catch { return []; }
+
+  const items: { title: string | null; page: string; image: string | null }[] = [];
+  for (const m of xml.matchAll(/<item>([\s\S]*?)<\/item>/g)) {
+    if (items.length >= cap) break;
+    const b = m[1];
+    const page = /<link>([^<]+)<\/link>/.exec(b)?.[1]?.trim();
+    if (!page || !/\/site-of-the-day\//.test(page)) continue;
+    const title = /<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/.exec(b)?.[1]?.trim() ?? null;
+    const img = /<img[^>]+src="([^"]+)"/.exec(b)?.[1] ?? null;
+    items.push({ title, page, image: img });
+  }
+  if (!items.length) return [];
+
+  const resolved = await Promise.allSettled(items.map(async (it): Promise<CorpusCandidate | null> => {
+    try {
+      const res = await fetch(it.page, { headers: { "user-agent": UA, accept: "text/html" }, signal: AbortSignal.timeout(9000) });
+      if (!res.ok) return null;
+      const html = (await res.text()).slice(0, 200_000);
+      // first external link that isn't Typewolf or the curator's own site = the featured site
+      let site: string | null = null;
+      for (const m of html.matchAll(/href="(https?:\/\/[^"]+)"/g)) {
+        const h = hostOf(m[1]);
+        if (!h || /typewolf\.com$|jeremiahshoaf\.com$/.test(h)) continue;
+        if (!okDomain(h)) continue;
+        site = m[1];
+        break;
+      }
+      if (!site) return null;
+      const domain = hostOf(site);
+      let image: string | null = it.image;
+      if (image) { try { image = new URL(image, "https://www.typewolf.com").href; } catch {} }
+      return { url: site, domain, title: it.title, image, tags: ["typography", "editorial", "site of the day"], source: "typewolf" };
+    } catch { return null; }
+  }));
+  return resolved.flatMap((r) => (r.status === "fulfilled" && r.value ? [r.value] : []));
+}
+
 /* ---------------- direct dataset: top-quality foundries + agencies ---------------- */
 
 /** Hand-curated quality seed — harvested DIRECT from the source sites (they publish their
@@ -414,7 +465,7 @@ async function homepages(): Promise<CorpusCandidate[]> {
 
 /** Run all adapters and upsert candidates. Returns how many rows were new. */
 export async function harvest(): Promise<{ found: number; added: number }> {
-  const results = await Promise.allSettled([minimalGallery(), arena(), homepages(), brutalist(), httpsterArchives(), directSites()]);
+  const results = await Promise.allSettled([minimalGallery(), arena(), homepages(), brutalist(), httpsterArchives(), directSites(), typewolf()]);
   const cands = results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
   // one row per domain — prefer the candidate with tags, then with an image; "type" kind sticks
   const byDomain = new Map<string, CorpusCandidate>();
