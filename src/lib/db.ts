@@ -868,13 +868,21 @@ const toDomain = (e: string): string => {
  *  > embedded query text > the whole library's centroid. Only matches above a similarity
  *  floor count — a thin index must fall through to the live pipeline, not present its
  *  nearest-whatever as a match. Returns [] whenever the corpus can't answer. */
+export interface DiscoverFilters {
+  /** Feed lane: "site" or "type" (foundries/specimens). */
+  kind?: "site" | "type";
+  /** Named palette bucket (e.g. "red", "dark") — corpus rows carry extracted colours. */
+  color?: string;
+}
+
 export async function corpusSimilar(
   query: string | null,
   spaceId: string | null,
   count = 24,
   excludeDomains: string[] = [],
   itemId?: string | null,
-  minSimOverride?: number
+  minSimOverride?: number,
+  filters?: DiscoverFilters
 ): Promise<Suggestion[]> {
   try {
     let queryVec: unknown = null;
@@ -903,6 +911,8 @@ export async function corpusSimilar(
       p_query: queryVec,
       p_count: count,
       p_exclude: excludeDomains.slice(0, 400),
+      p_kind: filters?.kind ?? null,
+      p_color: filters?.color ?? null,
     });
     if (error) return [];
     type CorpusRow = { url: string; domain: string; title: string | null; image: string | null; blurb: string | null; tags: string[]; source: string; similarity: number };
@@ -922,7 +932,7 @@ export async function corpusSimilar(
   }
 }
 
-export async function discover(query: string | null, extraExclude: string[] = [], mode?: "type", imageUrl?: string | null, tasteSpaceId?: string, similarToItemId?: string | null): Promise<Suggestion[]> {
+export async function discover(query: string | null, extraExclude: string[] = [], mode?: "type", imageUrl?: string | null, tasteSpaceId?: string, similarToItemId?: string | null, filters?: DiscoverFilters): Promise<Suggestion[]> {
   // For web-similar searches (query set), skip library domain exclusions — the user wants
   // aesthetic matches even if they've already saved work from those domains.
   // For Discover (no query), exclude library domains so we don't re-surface known work.
@@ -943,7 +953,9 @@ export async function discover(query: string | null, extraExclude: string[] = []
   if (mode !== "type") {
     const excludeDomains = [...new Set([...exclude.map(toDomain), ...domains])].filter(Boolean);
     // grading filters junk itself, so feed it a wider, lower-floor candidate set
-    corpus = await corpusSimilar(query, tasteSpaceId ?? null, 24, excludeDomains, similarToItemId, graded ? 0.25 : undefined);
+    corpus = await corpusSimilar(query, tasteSpaceId ?? null, 24, excludeDomains, similarToItemId, graded ? 0.25 : undefined, filters);
+    // palette filtering only the index can honour — live-web results have unknown colours
+    if (filters?.color) return corpus;
     if (!graded && corpus.length >= 10) return corpus;
   }
 
@@ -952,7 +964,8 @@ export async function discover(query: string | null, extraExclude: string[] = []
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       q: query || undefined,
-      mode,
+      // Type lane thin in the index? Top up from the live foundry pipeline.
+      mode: filters?.kind === "type" ? "type" : mode,
       img: imageUrl || undefined,
       taste,
       exclude,

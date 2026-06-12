@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Item, Space } from "@/lib/types";
-import { addFromUrl, discover, markSeen, resurface, signedUrls, type Suggestion } from "@/lib/db";
+import { addFromUrl, discover, markSeen, resurface, type DiscoverFilters, type Suggestion } from "@/lib/db";
+import { signedUrls } from "@/lib/db";
+import { COLOR_HEX, COLOR_NAMES } from "@/lib/media";
 import { SkeletonGrid } from "./ui";
 import { ThumbUpIcon, ThumbDownIcon, RefreshIcon, ArrowDownIcon, InboxIcon } from "./icons";
 
@@ -38,6 +40,10 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
   const [urls, setUrls] = useState<Map<string, string>>(new Map());
   const [query, setQuery] = useState("");
   const [typeTab, setTypeTab] = useState<TypeTab>("foundries");
+  // Home-feed lanes (awwwards-collections style): everything / site design / type foundries,
+  // plus a palette filter served by the corpus's extracted colours.
+  const [lane, setLane] = useState<"all" | "site" | "type">("all");
+  const [paletteFilter, setPaletteFilter] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [picking, setPicking] = useState<Suggestion | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
@@ -84,8 +90,14 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
       setLoading(true);
       try {
         if (!append) shown.current = new Set();
+        const filters: DiscoverFilters | undefined = compact
+          ? undefined
+          : {
+              ...(lane !== "all" ? { kind: lane } : {}),
+              ...(paletteFilter ? { color: paletteFilter } : {}),
+            };
         const [suggestions, gems] = await Promise.all([
-          discover(q, [...shown.current], mode, initialImage, tasteSpaceId, similarToItemId),
+          discover(q, [...shown.current], mode, initialImage, tasteSpaceId, similarToItemId, filters),
           q || compact || append ? Promise.resolve([] as Item[]) : resurface(6),
         ]);
         if (seq !== loadSeq.current) return; // superseded by a newer load
@@ -112,7 +124,7 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
         if (seq === loadSeq.current) setLoading(false);
       }
     },
-    [toast, compact, mode, initialImage, tasteSpaceId, similarToItemId]
+    [toast, compact, mode, initialImage, tasteSpaceId, similarToItemId, lane, paletteFilter]
   );
 
   useEffect(() => {
@@ -195,6 +207,40 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
       </form>
       )}
 
+      {!compact && (
+        <div className="mx-auto mb-4 flex max-w-xl flex-wrap items-center justify-center gap-1.5">
+          {([
+            { id: "all", label: "Everything" },
+            { id: "site", label: "Site design" },
+            { id: "type", label: "Type" },
+          ] as const).map((l) => (
+            <button
+              key={l.id}
+              onClick={() => setLane(l.id)}
+              className={`rounded-full border px-3 py-1 text-[11px] ${
+                lane === l.id
+                  ? "border-white bg-white text-black"
+                  : "border-white/10 text-zinc-400 hover:border-white/30 hover:text-zinc-200"
+              }`}
+            >
+              {l.label}
+            </button>
+          ))}
+          <span className="mx-1 h-4 w-px bg-white/10" />
+          {COLOR_NAMES.map((c) => (
+            <button
+              key={c}
+              onClick={() => setPaletteFilter(paletteFilter === c ? null : c)}
+              title={`${c} palette`}
+              className={`h-[18px] w-[18px] shrink-0 rounded-full border transition-transform ${
+                paletteFilter === c ? "scale-125 border-white" : "border-white/20 hover:scale-110"
+              }`}
+              style={{ background: COLOR_HEX[c] }}
+            />
+          ))}
+        </div>
+      )}
+
       {mode === "type" && (
         <div className="mx-auto mb-3 flex w-full max-w-xl gap-1 rounded-xl border border-white/10 bg-white/[0.03] p-1">
           {([
@@ -224,9 +270,11 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
         </div>
       )}
 
-      {!loading && !cards.length && (compact || query.trim()) && (
+      {!loading && !cards.length && (compact || query.trim() || lane !== "all" || paletteFilter) && (
         <div className="py-10 text-center text-xs text-zinc-600">
-          No strong matches found — try rewording or broadening the brief.
+          {paletteFilter
+            ? "Nothing in the index matches that palette yet — it grows with every harvest and search."
+            : "No strong matches found — try rewording or broadening the brief."}
         </div>
       )}
 

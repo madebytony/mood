@@ -30,6 +30,8 @@ export interface CorpusCandidate {
   blurb?: string | null;
   tags: string[];
   source: string;
+  /** Feed lane: "site" (default) or "type" (foundries, specimens, type-in-use). */
+  kind?: "site" | "type";
 }
 
 function admin() {
@@ -91,16 +93,16 @@ async function minimalGallery(pages = 10): Promise<CorpusCandidate[]> {
 }
 
 /** Are.na designer-curated channels (real API). Tags come from the channel's own name. */
-const ARENA_CHANNELS: { slug: string; tags?: string[] }[] = [
+const ARENA_CHANNELS: { slug: string; tags?: string[]; kind?: "site" | "type" }[] = [
   { slug: "interesting-web-design-and-ux" },
   { slug: "www-portfolio-studio" },
   { slug: "portfolio-studio" },
   { slug: "websites-portfolio-nesycqz_xdu" },
   { slug: "portfolio-websites-1488038381" },
   { slug: "portfolio-3q_6cl1-064" },
-  { slug: "type-design-type-foundries" },
-  { slug: "typography-specimens" },
-  { slug: "type-in-use" },
+  { slug: "type-design-type-foundries", kind: "type" },
+  { slug: "typography-specimens", kind: "type" },
+  { slug: "type-in-use", kind: "type" },
 ];
 
 /** The broad aesthetic spectrum — a wide net, not a taste statement. Each harvest samples
@@ -180,7 +182,7 @@ async function arenaDiscover(): Promise<{ slug: string; tags: string[] }[]> {
   return found;
 }
 
-async function arenaChannel(slug: string, extraTags: string[]): Promise<CorpusCandidate[]> {
+async function arenaChannel(slug: string, extraTags: string[], kind: "site" | "type" = "site"): Promise<CorpusCandidate[]> {
   const out: CorpusCandidate[] = [];
   try {
     const r = await fetch(
@@ -200,6 +202,7 @@ async function arenaChannel(slug: string, extraTags: string[]): Promise<CorpusCa
         image: b.image?.display?.url ?? b.image?.thumb?.url ?? null,
         tags: [...new Set([...extraTags, ...slug.replace(/-\w{10,}$|[-\d]+$/g, "").split("-").filter((w) => w.length > 2)])],
         source: `are.na/${slug}`,
+        kind,
       });
     }
   } catch { /* one channel failing shouldn't sink the rest */ }
@@ -209,14 +212,97 @@ async function arenaChannel(slug: string, extraTags: string[]): Promise<CorpusCa
 async function arena(): Promise<CorpusCandidate[]> {
   const discovered = await arenaDiscover();
   const seen = new Set<string>();
-  const channels: { slug: string; tags: string[] }[] = [];
-  for (const c of [...ARENA_CHANNELS.map((c) => ({ slug: c.slug, tags: c.tags ?? [] })), ...discovered]) {
+  const channels: { slug: string; tags: string[]; kind?: "site" | "type" }[] = [];
+  for (const c of [...ARENA_CHANNELS.map((c) => ({ slug: c.slug, tags: c.tags ?? [], kind: c.kind })), ...discovered]) {
     if (seen.has(c.slug)) continue;
     seen.add(c.slug);
     channels.push(c);
   }
-  const results = await Promise.allSettled(channels.map((c) => arenaChannel(c.slug, c.tags)));
+  const results = await Promise.allSettled(channels.map((c) => arenaChannel(c.slug, c.tags, c.kind ?? "site")));
   return results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
+}
+
+/* ---------------- direct dataset: top-quality foundries + agencies ---------------- */
+
+/** Hand-curated quality seed — harvested DIRECT from the source sites (they publish their
+ *  own work and case studies), no API-hostile middleman. Grow freely; each entry costs one
+ *  homepage fetch per harvest. */
+const FOUNDRIES: { url: string; name: string }[] = [
+  { url: "https://sharptype.co", name: "Sharp Type" },
+  { url: "https://pangrampangram.com", name: "Pangram Pangram" },
+  { url: "https://www.grillitype.com", name: "Grilli Type" },
+  { url: "https://blazetype.eu", name: "Blaze Type" },
+  { url: "https://www.futurefonts.xyz", name: "Future Fonts" },
+  { url: "https://ohnotype.co", name: "OH no Type Co" },
+  { url: "https://commercialtype.com", name: "Commercial Type" },
+  { url: "https://optimo.ch", name: "Optimo" },
+  { url: "https://www.typotheque.com", name: "Typotheque" },
+  { url: "https://abcdinamo.com", name: "ABC Dinamo" },
+  { url: "https://klim.co.nz", name: "Klim Type Foundry" },
+  { url: "https://lineto.com", name: "Lineto" },
+  { url: "https://www.dstype.com", name: "DSType" },
+  { url: "https://www.swisstypefaces.com", name: "Swiss Typefaces" },
+  { url: "https://displaay.net", name: "Displaay" },
+  { url: "https://www.colophon-foundry.org", name: "Colophon Foundry" },
+  { url: "https://mass-driver.com", name: "Mass-Driver" },
+  { url: "https://vj-type.com", name: "VJ Type" },
+  { url: "https://www.205.tf", name: "205TF" },
+  { url: "https://www.atipofoundry.com", name: "Atipo Foundry" },
+  { url: "https://www.typemates.com", name: "TypeMates" },
+  { url: "https://fontwerk.com", name: "Fontwerk" },
+];
+
+const AGENCIES: { url: string; name: string }[] = [
+  { url: "https://www.instrument.com", name: "Instrument" },
+  { url: "https://basicagency.com", name: "BASIC/DEPT" },
+  { url: "https://work.co", name: "Work & Co" },
+  { url: "https://www.pentagram.com", name: "Pentagram" },
+  { url: "https://koto.studio", name: "Koto" },
+  { url: "https://www.dixonbaxi.com", name: "DixonBaxi" },
+  { url: "https://www.metalab.com", name: "MetaLab" },
+  { url: "https://area17.com", name: "AREA 17" },
+  { url: "https://locomotive.ca", name: "Locomotive" },
+  { url: "https://dogstudio.co", name: "Dogstudio" },
+  { url: "https://activetheory.net", name: "Active Theory" },
+  { url: "https://resn.co.nz", name: "Resn" },
+  { url: "https://14islands.com", name: "14islands" },
+  { url: "https://humaan.com", name: "Humaan" },
+  { url: "https://buildinamsterdam.com", name: "Build in Amsterdam" },
+  { url: "https://basement.studio", name: "basement.studio" },
+  { url: "https://phantom.land", name: "PHANTOM" },
+  { url: "https://unseen.co", name: "Unseen Studio" },
+  { url: "https://makemepulse.com", name: "makemepulse" },
+  { url: "https://hellomonday.com", name: "Hello Monday" },
+];
+
+const OG_IMG_RE = /<meta[^>]+(?:property|name)=["'](?:og:image|og:image:url|twitter:image)["'][^>]+content=["']([^"']+)["']/i;
+const OG_IMG_RE_REV = /<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["'](?:og:image|og:image:url|twitter:image)["']/i;
+
+/** Fetch each seed site directly: og:image + title straight from the horse's mouth. */
+async function directSites(): Promise<CorpusCandidate[]> {
+  const seeds: (typeof FOUNDRIES[number] & { kind: "site" | "type"; tags: string[]; source: string })[] = [
+    ...FOUNDRIES.map((f) => ({ ...f, kind: "type" as const, tags: ["type foundry", "typography"], source: "foundry-direct" })),
+    ...AGENCIES.map((a) => ({ ...a, kind: "site" as const, tags: ["agency", "studio", "portfolio"], source: "agency-direct" })),
+  ];
+  const out: CorpusCandidate[] = [];
+  await Promise.allSettled(seeds.map(async (s) => {
+    const domain = hostOf(s.url);
+    if (!domain) return;
+    try {
+      const res = await fetch(s.url, {
+        headers: { "user-agent": UA, accept: "text/html" },
+        redirect: "follow",
+        signal: AbortSignal.timeout(9000),
+      });
+      if (!res.ok) return;
+      const html = (await res.text()).slice(0, 300_000);
+      const og = OG_IMG_RE.exec(html)?.[1] ?? OG_IMG_RE_REV.exec(html)?.[1] ?? null;
+      let image: string | null = null;
+      if (og) { try { image = new URL(og, res.url || s.url).href; } catch {} }
+      out.push({ url: s.url, domain, title: s.name, image, tags: s.tags, source: s.source, kind: s.kind });
+    } catch { /* one seed down shouldn't sink the batch */ }
+  }));
+  return out;
 }
 
 /** brutalistwebsites.com: ~1,600 site + screenshot pairs in plain HTML — the corpus's
@@ -326,14 +412,18 @@ async function homepages(): Promise<CorpusCandidate[]> {
 
 /** Run all adapters and upsert candidates. Returns how many rows were new. */
 export async function harvest(): Promise<{ found: number; added: number }> {
-  const results = await Promise.allSettled([minimalGallery(), arena(), homepages(), brutalist(), httpsterArchives()]);
+  const results = await Promise.allSettled([minimalGallery(), arena(), homepages(), brutalist(), httpsterArchives(), directSites()]);
   const cands = results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
-  // one row per domain — prefer the candidate with tags, then with an image
+  // one row per domain — prefer the candidate with tags, then with an image; "type" kind sticks
   const byDomain = new Map<string, CorpusCandidate>();
   for (const c of cands) {
     const prev = byDomain.get(c.domain);
     if (!prev || (!prev.tags.length && c.tags.length) || (!prev.image && c.image)) {
-      byDomain.set(c.domain, { ...c, tags: [...new Set([...(prev?.tags ?? []), ...c.tags])] });
+      byDomain.set(c.domain, {
+        ...c,
+        tags: [...new Set([...(prev?.tags ?? []), ...c.tags])],
+        kind: prev?.kind === "type" || c.kind === "type" ? "type" : "site",
+      });
     }
   }
   const rows = [...byDomain.values()];
@@ -349,6 +439,7 @@ export async function harvest(): Promise<{ found: number; added: number }> {
       blurb: c.blurb ?? null,
       tags: c.tags,
       source: c.source,
+      kind: c.kind ?? "site",
       last_seen_at: new Date().toISOString(),
     })),
     { onConflict: "url", ignoreDuplicates: false }
@@ -366,7 +457,7 @@ export async function ingestCandidates(cands: CorpusCandidate[]): Promise<void> 
   await db.from("web_corpus").upsert(
     rows.map((c) => ({
       url: c.url, domain: c.domain, title: c.title, image: c.image,
-      blurb: c.blurb ?? null, tags: c.tags, source: c.source,
+      blurb: c.blurb ?? null, tags: c.tags, source: c.source, kind: c.kind ?? "site",
       last_seen_at: new Date().toISOString(),
     })),
     { onConflict: "url", ignoreDuplicates: true }
