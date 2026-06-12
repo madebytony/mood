@@ -1,5 +1,5 @@
 import { isAuthed } from "../../_lib/auth";
-import { harvest, embedPending, recolorPending } from "../../_lib/corpus";
+import { harvest, embedPending, recolorPending, hygiene } from "../../_lib/corpus";
 
 export const maxDuration = 120;
 
@@ -20,8 +20,9 @@ export async function GET(req: Request) {
   }
   try {
     const h = await harvest();
+    const hyg = await hygiene(12);
     const e = await embedPending(40);
-    return Response.json({ ...h, ...e });
+    return Response.json({ ...h, hygiene: hyg, ...e });
   } catch (e) {
     return Response.json({ error: (e as Error).message }, { status: 502 });
   }
@@ -50,6 +51,14 @@ export async function POST(req: Request) {
       out.recolored = r.recolored;
       out.recolorRemaining = r.remaining;
       out.rateLimited = out.rateLimited || r.rateLimited;
+    }
+    const clean = Math.min(Math.max(Number(body.hygiene ?? 0), 0), 20);
+    if (clean > 0) {
+      const hyg = await hygiene(clean);
+      out.checked = hyg.checked;
+      out.dead = hyg.dead;
+      out.repaired = hyg.repaired;
+      out.uncheckedRemaining = hyg.remaining;
     }
     return Response.json(out);
   } catch (e) {

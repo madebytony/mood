@@ -1,6 +1,8 @@
 import { createClient } from "@supabase/supabase-js";
+import sharp from "sharp";
 import { voyageEmbed, type VoyageContent } from "./voyage";
 import { extractColorsFromImage } from "./colors";
+import { safeFetch } from "./ssrf";
 
 /**
  * Web-corpus harvesting + embedding: the mini-Pinterest index.
@@ -660,4 +662,93 @@ export async function recolorPending(batch = 10): Promise<{ recolored: number; r
     .eq("colors", "{}")
     .not("image", "is", null);
   return { recolored, remaining: count ?? 0, rateLimited };
+}
+
+/* ---------------- hygiene: prune dead links, repair logo-as-screenshot rows ---------------- */
+
+const MSHOT = (u: string) => `https://s.wordpress.com/mshots/v1/${encodeURIComponent(u)}?w=480`;
+
+/** Alive if HEAD or GET returns < 400, with one retry each to ride out a blip. Mirrors the
+ *  item link-checker. Network/DNS errors and a final 4xx/5xx count as dead. */
+async function reachable(url: string): Promise<boolean> {
+  for (const method of ["HEAD", "GET"] as const) {
+    for (let tries = 0; tries < 2; tries++) {
+      try {
+        const res = await safeFetch(url, {
+          method,
+          redirect: "manual",
+          signal: AbortSignal.timeout(10000),
+          headers: { "user-agent": "Mozilla/5.0 (compatible; MoodCorpusCheck/1)" },
+        });
+        if (res.status < 400) return true;
+        break; // definite 4xx/5xx — try GET, don't retry this method
+      } catch { /* transient — retry once */ }
+    }
+  }
+  return false;
+}
+
+/** True ONLY when an image is POSITIVELY a logo/icon rather than a screenshot. Calibrated on
+ *  real corpus data: genuine screenshots are reliably landscape (>=1.5:1), brand marks sit
+ *  near square (~1:1) — nothing legitimate falls between. Width alone is NOT a signal (sources
+ *  serve wide previews downscaled). A fetch blip is inconclusive (false), never a repair —
+ *  dead-link pruning handles truly-gone sites; transient image failures shouldn't cause churn. */
+async function looksLikeLogo(imageUrl: string): Promise<boolean> {
+  try {
+    const res = await fetch(imageUrl, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(10000) });
+    if (!res.ok) return false; // can't confirm — leave it alone
+    const type = (res.headers.get("content-type") ?? "").split(";")[0];
+    if (!type.startsWith("image/")) return true; // not an image at all
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.byteLength < 2500) return true; // tracking pixel / placeholder
+    const meta = await sharp(buf).metadata().catch(() => null);
+    if (!meta?.width || !meta?.height) return false; // undecodable — inconclusive
+    const aspect = meta.width / meta.height;
+    if (meta.width < 250 && meta.height < 250) return true; // favicon-scale icon
+    return aspect < 1.25; // square / portrait = brand mark, not a screenshot
+  } catch {
+    return false; // network blip — inconclusive, don't churn
+  }
+}
+
+/** One hygiene pass over the stalest `batch` rows: delete dead links; for rows whose image
+ *  reads like a logo (or is missing), swap to an mShots screenshot of the real site and
+ *  clear the embedding so it re-embeds from honest pixels. Stamps checked_at so the next
+ *  pass moves on. Best-effort; never throws. */
+export async function hygiene(batch = 12): Promise<{ checked: number; dead: number; repaired: number; remaining: number }> {
+  const db = admin();
+  const { data } = await db
+    .from("web_corpus")
+    .select("id,url,domain,image")
+    .order("checked_at", { ascending: true, nullsFirst: true })
+    .limit(batch);
+  let dead = 0, repaired = 0, checked = 0;
+  for (const row of data ?? []) {
+    checked++;
+    if (!(await reachable(row.url))) {
+      await db.from("web_corpus").delete().eq("id", row.id);
+      dead++;
+      continue;
+    }
+    const bad = !row.image || (await looksLikeLogo(row.image));
+    if (bad) {
+      // mShots renders the actual homepage; clearing the embedding requeues it so the vector
+      // is rebuilt from that screenshot (poisoned logo embeddings shouldn't linger).
+      await db.from("web_corpus").update({
+        image: MSHOT(row.url),
+        embedding: null,
+        colors: [],
+        checked_at: new Date().toISOString(),
+      }).eq("id", row.id);
+      repaired++;
+    } else {
+      await db.from("web_corpus").update({ checked_at: new Date().toISOString() }).eq("id", row.id);
+    }
+  }
+  // how many remain never-checked
+  const { count } = await db
+    .from("web_corpus")
+    .select("*", { count: "exact", head: true })
+    .is("checked_at", null);
+  return { checked, dead, repaired, remaining: count ?? 0 };
 }

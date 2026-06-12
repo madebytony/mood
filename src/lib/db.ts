@@ -1041,7 +1041,9 @@ export async function corpusTick(): Promise<void> {
     await apiFetch("/api/corpus/harvest", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ harvest: doHarvest, embed: 4 }),
+      // small per-load slices: drain embeds, recolour pre-palette rows, and rotate a few
+      // rows through hygiene (dead-link prune + logo repair) so the index self-cleans.
+      body: JSON.stringify({ harvest: doHarvest, embed: 4, recolor: 3, hygiene: 4 }),
     });
   } catch { /* background maintenance */ }
 }
