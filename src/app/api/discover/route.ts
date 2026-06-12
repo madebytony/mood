@@ -2,6 +2,7 @@ import { isAuthed } from "../_lib/auth";
 import { gemini, geminiDisabled, geminiText, hasGeminiKey, parseJson } from "../_lib/gemini";
 import { badVerdictDomains, corpusEmbeddingsByDomain, ingestCandidates, saveVerdicts, upsertScreenshotEmbedding, type Verdict } from "../_lib/corpus";
 import { hasVoyageKey, voyageEmbed, type VoyageContent } from "../_lib/voyage";
+import { extractColorsFromImage, hueOverlap, toneOf } from "../_lib/colors";
 
 export const maxDuration = 120;
 
@@ -466,28 +467,40 @@ async function visualRank(
   let withImg = fetched.filter((x): x is { c: Suggestion; img: { mimeType: string; data: string } } => !!x.img);
   if (withImg.length < 3) return null;
 
-  // Cosine prerank: spend judge tokens on plausible candidates first. Stored corpus vectors
-  // are reused; everything else is embedded from the screenshot we just downloaded — and
-  // those embeddings flow back into web_corpus, so every search deepens the index.
+  // Cosine + palette prerank: spend judge tokens on plausible candidates first. Stored
+  // corpus vectors are reused; everything else is embedded from the screenshot we just
+  // downloaded — and those embeddings (with extracted palettes) flow back into web_corpus,
+  // so every search deepens the index. Palette is a deterministic side-channel because
+  // multimodal embeddings under-weight colour: tone agreement and hue overlap nudge the
+  // ordering on top of cosine.
   if (hasVoyageKey()) {
     try {
-      const refVec = await voyageEmbed(
-        [{ type: "image_base64", image_base64: `data:${refImage.inlineData.mimeType};base64,${refImage.inlineData.data}` }],
-        "query"
-      );
+      const refBuf = Buffer.from(refImage.inlineData.data, "base64");
+      const [refVec, refColors] = await Promise.all([
+        voyageEmbed(
+          [{ type: "image_base64", image_base64: `data:${refImage.inlineData.mimeType};base64,${refImage.inlineData.data}` }],
+          "query"
+        ),
+        extractColorsFromImage(refBuf),
+      ]);
+      const refTone = toneOf(refColors);
       const stored = await corpusEmbeddingsByDomain(withImg.map((x) => x.c.domain));
       const scored = await Promise.all(withImg.map(async (x) => {
+        const candColors = await extractColorsFromImage(Buffer.from(x.img.data, "base64"));
         let vec = stored.get(x.c.domain) ?? null;
         if (!vec) {
           vec = await embedShot(x.img, x.c.title);
           if (vec && !x.c.source.startsWith("index/")) {
             await upsertScreenshotEmbedding(
               { url: x.c.url, domain: x.c.domain, title: x.c.title, image: x.c.image, blurb: x.c.blurb ?? null, tags: [], source: x.c.source === "web" ? "websearch" : x.c.source },
-              x.c.image, vec
+              x.c.image, vec, candColors
             );
           }
         }
-        return { ...x, sim: vec ? cosine(refVec, vec) : 0 };
+        const candTone = toneOf(candColors);
+        const toneAdj = refTone && candTone ? (refTone === candTone ? 0.04 : -0.08) : 0;
+        const sim = (vec ? cosine(refVec, vec) : 0) + toneAdj + 0.08 * hueOverlap(refColors, candColors);
+        return { ...x, sim };
       }));
       scored.sort((a, b) => b.sim - a.sim);
       withImg = scored;

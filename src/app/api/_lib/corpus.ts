@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { voyageEmbed, type VoyageContent } from "./voyage";
+import { extractColorsFromImage } from "./colors";
 
 /**
  * Web-corpus harvesting + embedding: the mini-Pinterest index.
@@ -284,38 +285,49 @@ export async function corpusEmbeddingsByDomain(domains: string[]): Promise<Map<s
 /** Enrich the index from the judge pipeline: the screenshot was already fetched and embedded
  *  to pre-rank candidates — keep both, so this site is instantly retrievable next time.
  *  Never clobbers an existing richer row; only fills missing embeddings. */
-export async function upsertScreenshotEmbedding(cand: CorpusCandidate, image: string | null, embedding: number[]): Promise<void> {
+export async function upsertScreenshotEmbedding(cand: CorpusCandidate, image: string | null, embedding: number[], colors: string[] = []): Promise<void> {
   if (!okDomain(cand.domain)) return;
   try {
     const db = admin();
     await db.from("web_corpus").upsert(
       [{
         url: cand.url, domain: cand.domain, title: cand.title, image: image ?? cand.image,
-        blurb: cand.blurb ?? null, tags: cand.tags, source: cand.source, embedding,
+        blurb: cand.blurb ?? null, tags: cand.tags, source: cand.source, embedding, colors,
         last_seen_at: new Date().toISOString(),
       }],
       { onConflict: "url", ignoreDuplicates: true }
     );
-    await db.from("web_corpus").update({ embedding }).eq("url", cand.url).is("embedding", null);
+    await db.from("web_corpus").update({ embedding, colors }).eq("url", cand.url).is("embedding", null);
   } catch { /* enrichment is best-effort */ }
 }
 
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 
-async function imagePart(url: string): Promise<VoyageContent | null> {
+async function imagePart(url: string): Promise<{ part: VoyageContent; buf: Buffer } | null> {
   try {
     const res = await fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(12000) });
     if (!res.ok) return null;
     const type = (res.headers.get("content-type") ?? "").split(";")[0];
     if (!type.startsWith("image/")) return null;
-    const buf = await res.arrayBuffer();
-    if (buf.byteLength > MAX_IMAGE_BYTES || buf.byteLength < 2000) return null;
-    return { type: "image_base64", image_base64: `data:${type};base64,${Buffer.from(buf).toString("base64")}` };
+    const raw = await res.arrayBuffer();
+    if (raw.byteLength > MAX_IMAGE_BYTES || raw.byteLength < 2000) return null;
+    const buf = Buffer.from(raw);
+    return { part: { type: "image_base64", image_base64: `data:${type};base64,${buf.toString("base64")}` }, buf };
   } catch { return null; }
 }
 
-/** Embed up to `batch` unembedded rows (screenshot + tags + title -> one hybrid vector).
- *  Stops early on rate limits; safe to call repeatedly until `remaining` hits 0. */
+function embedTextOf(row: { title: string | null; tags: string[] | null; blurb: string | null }, colors: string[]): string {
+  return [
+    row.title,
+    (row.tags ?? []).join(", "),
+    colors.length ? `palette: ${colors.join(", ")}` : null,
+    row.blurb,
+  ].filter(Boolean).join(". ").slice(0, 1000);
+}
+
+/** Embed up to `batch` unembedded rows (screenshot + tags + palette + title -> one hybrid
+ *  vector; named colours extracted from the same download). Stops early on rate limits;
+ *  safe to call repeatedly until `remaining` hits 0. */
 export async function embedPending(batch = 6): Promise<{ embedded: number; remaining: number; rateLimited: boolean }> {
   const db = admin();
   const { data } = await db
@@ -327,11 +339,12 @@ export async function embedPending(batch = 6): Promise<{ embedded: number; remai
   let embedded = 0;
   let rateLimited = false;
   for (const row of data ?? []) {
-    const text = [row.title, (row.tags ?? []).join(", "), row.blurb].filter(Boolean).join(". ").slice(0, 1000);
+    const img = row.image ? await imagePart(row.image) : null;
+    const colors = img ? await extractColorsFromImage(img.buf) : [];
+    const text = embedTextOf(row, colors);
     const content: VoyageContent[] = [];
     if (text) content.push({ type: "text", text });
-    const img = row.image ? await imagePart(row.image) : null;
-    if (img) content.push(img);
+    if (img) content.push(img.part);
     if (!content.length) {
       // nothing embeddable — drop the row rather than retrying it forever
       await db.from("web_corpus").delete().eq("id", row.id);
@@ -339,7 +352,7 @@ export async function embedPending(batch = 6): Promise<{ embedded: number; remai
     }
     try {
       const embedding = await voyageEmbed(content, "document");
-      await db.from("web_corpus").update({ embedding }).eq("id", row.id);
+      await db.from("web_corpus").update({ embedding, colors }).eq("id", row.id);
       embedded++;
     } catch (e) {
       if (/429/.test((e as Error).message)) { rateLimited = true; break; }
@@ -347,7 +360,7 @@ export async function embedPending(batch = 6): Promise<{ embedded: number; remai
       if (img && text) {
         try {
           const embedding = await voyageEmbed([{ type: "text", text }], "document");
-          await db.from("web_corpus").update({ embedding }).eq("id", row.id);
+          await db.from("web_corpus").update({ embedding, colors }).eq("id", row.id);
           embedded++;
         } catch { /* leave for a future pass */ }
       }
@@ -358,4 +371,53 @@ export async function embedPending(batch = 6): Promise<{ embedded: number; remai
     .select("*", { count: "exact", head: true })
     .is("embedding", null);
   return { embedded, remaining: count ?? 0, rateLimited };
+}
+
+/** Backfill palettes for rows embedded BEFORE colour extraction existed: re-extract from the
+ *  stored image, rebuild the embed text with the palette line, and re-embed in place (the
+ *  old vector stays live until the new one lands). */
+export async function recolorPending(batch = 10): Promise<{ recolored: number; remaining: number; rateLimited: boolean }> {
+  const db = admin();
+  const { data } = await db
+    .from("web_corpus")
+    .select("id,url,title,image,blurb,tags,source")
+    .not("embedding", "is", null)
+    .eq("colors", "{}")
+    .not("image", "is", null)
+    .order("created_at", { ascending: true })
+    .limit(batch);
+  let recolored = 0;
+  let rateLimited = false;
+  for (const row of data ?? []) {
+    const img = await imagePart(row.image!);
+    if (!img) {
+      // unreadable image — mark with tone-less sentinel so we don't retry forever
+      await db.from("web_corpus").update({ colors: ["unknown"] }).eq("id", row.id);
+      continue;
+    }
+    const colors = await extractColorsFromImage(img.buf);
+    if (!colors.length) {
+      await db.from("web_corpus").update({ colors: ["unknown"] }).eq("id", row.id);
+      continue;
+    }
+    try {
+      const embedding = await voyageEmbed(
+        [{ type: "text", text: embedTextOf(row, colors) }, img.part],
+        "document"
+      );
+      await db.from("web_corpus").update({ embedding, colors }).eq("id", row.id);
+      recolored++;
+    } catch (e) {
+      if (/429/.test((e as Error).message)) { rateLimited = true; break; }
+      await db.from("web_corpus").update({ colors }).eq("id", row.id); // palette still useful without re-embed
+      recolored++;
+    }
+  }
+  const { count } = await db
+    .from("web_corpus")
+    .select("*", { count: "exact", head: true })
+    .not("embedding", "is", null)
+    .eq("colors", "{}")
+    .not("image", "is", null);
+  return { recolored, remaining: count ?? 0, rateLimited };
 }

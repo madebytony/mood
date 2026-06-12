@@ -1,5 +1,5 @@
 import { isAuthed } from "../../_lib/auth";
-import { harvest, embedPending } from "../../_lib/corpus";
+import { harvest, embedPending, recolorPending } from "../../_lib/corpus";
 
 export const maxDuration = 120;
 
@@ -43,6 +43,13 @@ export async function POST(req: Request) {
       out.embedded = e.embedded;
       out.remaining = e.remaining;
       out.rateLimited = e.rateLimited;
+    }
+    const recolor = Math.min(Math.max(Number(body.recolor ?? 0), 0), 20);
+    if (recolor > 0) {
+      const r = await recolorPending(recolor);
+      out.recolored = r.recolored;
+      out.recolorRemaining = r.remaining;
+      out.rateLimited = out.rateLimited || r.rateLimited;
     }
     return Response.json(out);
   } catch (e) {
