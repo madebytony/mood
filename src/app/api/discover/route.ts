@@ -1,6 +1,6 @@
 import { isAuthed } from "../_lib/auth";
 import { gemini, geminiDisabled, geminiText, hasGeminiKey, parseJson } from "../_lib/gemini";
-import { badVerdictDomains, corpusEmbeddingsByDomain, ingestCandidates, saveVerdicts, upsertScreenshotEmbedding, type Verdict } from "../_lib/corpus";
+import { badVerdictDomains, corpusEmbeddingsByDomain, ingestCandidates, saveVerdicts, upsertScreenshotEmbedding, MULTI_ENTRY_RE, type Verdict } from "../_lib/corpus";
 import { hasVoyageKey, voyageEmbed, type VoyageContent } from "../_lib/voyage";
 import { extractColorsFromImage, hueOverlap, toneOf } from "../_lib/colors";
 
@@ -446,17 +446,21 @@ async function visualRank(
   exclude: Set<string>,
   opts: { brief?: string | null; refKey?: string | null } = {},
 ): Promise<Suggestion[] | null> {
-  // Verdict memory: never pay to re-judge a domain already ruled out for this reference.
+  // Verdict memory: never pay to re-judge something already ruled out for this reference.
   const ruledOut = opts.refKey ? new Set(await badVerdictDomains(opts.refKey)) : new Set<string>();
+  // Multi-entry rows (blogs, Fonts In Use) dedup/key by URL — each piece is distinct; one
+  // ruled-out article must not bury the rest of its domain.
+  const keyOf = (c: Suggestion) => (MULTI_ENTRY_RE.test(c.source) ? c.url : c.domain);
 
-  // Dedupe by domain, drop excluded; corpus-retrieved (index/*) and aesthetic-searched web
+  // Dedupe by key, drop excluded; corpus-retrieved (index/*) and aesthetic-searched web
   // results get priority slots, the broad gallery/Are.na pool is shuffled in for breadth
   // ("Find more" stays fresh).
   const seen = new Set<string>();
   const web: Suggestion[] = [], rest: Suggestion[] = [];
   for (const c of pool) {
-    if (exclude.has(c.domain) || exclude.has(c.url) || seen.has(c.domain) || ruledOut.has(c.domain)) continue;
-    seen.add(c.domain);
+    const key = keyOf(c);
+    if (exclude.has(c.domain) || exclude.has(c.url) || seen.has(key) || ruledOut.has(key)) continue;
+    seen.add(key);
     (c.source === "web" || c.source.startsWith("index/") ? web : rest).push(c);
   }
   for (let i = rest.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [rest[i], rest[j]] = [rest[j], rest[i]]; }
@@ -520,7 +524,9 @@ async function visualRank(
 
   // Verdict memory: every ruling persists (skip-list for this reference + future calibration).
   if (opts.refKey) {
-    const verdicts: Verdict[] = judged.map((j) => ({ domain: j.c.domain, url: j.c.url, score: j.score, axes: j.axes ? { ...j.axes } : null, why: j.why }));
+    // store the verdict against the dedup key (URL for multi-entry, domain otherwise) so the
+    // skip-list matches how candidates are keyed above
+    const verdicts: Verdict[] = judged.map((j) => ({ domain: keyOf(j.c), url: j.c.url, score: j.score, axes: j.axes ? { ...j.axes } : null, why: j.why }));
     await saveVerdicts(opts.refKey, verdicts);
   }
 

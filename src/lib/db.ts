@@ -882,7 +882,8 @@ export async function corpusSimilar(
   excludeDomains: string[] = [],
   itemId?: string | null,
   minSimOverride?: number,
-  filters?: DiscoverFilters
+  filters?: DiscoverFilters,
+  excludeUrls: string[] = []
 ): Promise<Suggestion[]> {
   try {
     let queryVec: unknown = null;
@@ -913,6 +914,7 @@ export async function corpusSimilar(
       p_exclude: excludeDomains.slice(0, 400),
       p_kind: filters?.kind ?? null,
       p_color: filters?.color ?? null,
+      p_exclude_urls: excludeUrls.slice(0, 400),
     });
     if (error) return [];
     type CorpusRow = { url: string; domain: string; title: string | null; image: string | null; blurb: string | null; tags: string[]; source: string; similarity: number };
@@ -952,8 +954,11 @@ export async function discover(query: string | null, extraExclude: string[] = []
   let corpus: Suggestion[] = [];
   if (mode !== "type") {
     const excludeDomains = [...new Set([...exclude.map(toDomain), ...domains])].filter(Boolean);
+    // multi-entry rows (blogs, Fonts In Use) are excluded by exact URL, not domain, so an
+    // already-shown/saved article doesn't bury the rest of its domain
+    const excludeUrls = exclude.filter((e) => /^https?:\/\//i.test(e));
     // grading filters junk itself, so feed it a wider, lower-floor candidate set
-    corpus = await corpusSimilar(query, tasteSpaceId ?? null, 24, excludeDomains, similarToItemId, graded ? 0.25 : undefined, filters);
+    corpus = await corpusSimilar(query, tasteSpaceId ?? null, 24, excludeDomains, similarToItemId, graded ? 0.25 : undefined, filters, excludeUrls);
     // palette filtering only the index can honour — live-web results have unknown colours
     if (filters?.color) return corpus;
     if (!graded && corpus.length >= 10) return corpus;

@@ -34,7 +34,14 @@ export interface CorpusCandidate {
   source: string;
   /** Feed lane: "site" (default) or "type" (foundries, specimens, type-in-use). */
   kind?: "site" | "type";
+  /** Many distinct pieces share this domain (blogs, Fonts In Use) — dedup/exclude by URL,
+   *  not domain. */
+  multiEntry?: boolean;
 }
+
+/** Sources where each URL is a distinct piece on a shared domain. Detected from the source
+ *  string so it survives the `index/<source>` prefix retrieval adds. */
+export const MULTI_ENTRY_RE = /fontsinuse|itsnicethat/;
 
 function admin() {
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -275,6 +282,69 @@ async function typewolf(cap = 20): Promise<CorpusCandidate[]> {
   return resolved.flatMap((r) => (r.status === "fulfilled" && r.value ? [r.value] : []));
 }
 
+/** It's Nice That via RSS — editorial design journalism. Each article is a distinct piece
+ *  on the shared itsnicethat.com domain (multi-entry), with a wide hero image of the work. */
+async function itsnicethat(cap = 30): Promise<CorpusCandidate[]> {
+  let xml: string;
+  try {
+    const res = await fetch("https://www.itsnicethat.com/articles.rss", {
+      headers: { "user-agent": UA, accept: "application/rss+xml,text/xml,*/*" },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return [];
+    xml = await res.text();
+  } catch { return []; }
+  const out: CorpusCandidate[] = [];
+  for (const m of xml.matchAll(/<item>([\s\S]*?)<\/item>/g)) {
+    if (out.length >= cap) break;
+    const b = m[1];
+    const link = /<link>([^<]+)<\/link>/.exec(b)?.[1]?.trim();
+    if (!link || !/itsnicethat\.com\//.test(link) || /\/articles\/?$/.test(link)) continue;
+    const title = /<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/.exec(b)?.[1]?.trim() ?? null;
+    const img = /<img[^>]+src="([^"]+)"/.exec(b)?.[1] ?? /<media:content[^>]+url="([^"]+)"/.exec(b)?.[1] ?? null;
+    if (!img) continue; // no hero image -> weak embedding, skip
+    out.push({
+      url: link,
+      domain: "itsnicethat.com",
+      title,
+      image: img,
+      tags: ["editorial", "graphic design"],
+      source: "blog/itsnicethat",
+      kind: "site",
+      multiEntry: true,
+    });
+  }
+  return out;
+}
+
+/** Fonts In Use — each /uses/ page is a distinct typographic-design reference (multi-entry,
+ *  kind 'type', feeds the home-feed Type lane). The og:image is a branded cardshot, so we
+ *  pull the real design photo (use-media-items asset) from the page instead. */
+async function fontsinuse(cap = 24): Promise<CorpusCandidate[]> {
+  let paths: string[];
+  try {
+    const res = await fetch("https://fontsinuse.com/", { headers: { "user-agent": UA, accept: "text/html" }, signal: AbortSignal.timeout(10000) });
+    if (!res.ok) return [];
+    const html = await res.text();
+    paths = [...new Set([...html.matchAll(/\/uses\/(\d+)\/([a-z0-9-]+)/g)].map((m) => m[0]))].slice(0, cap);
+  } catch { return []; }
+  if (!paths.length) return [];
+  const resolved = await Promise.allSettled(paths.map(async (p): Promise<CorpusCandidate | null> => {
+    try {
+      const url = `https://fontsinuse.com${p}`;
+      const res = await fetch(url, { headers: { "user-agent": UA, accept: "text/html" }, signal: AbortSignal.timeout(9000) });
+      if (!res.ok) return null;
+      const html = (await res.text()).slice(0, 200_000);
+      // the real design photo, not the nameplate logo or the branded cardshot
+      const img = /<img[^>]+src="(https:\/\/assets\.fontsinuse\.com\/static\/use-media-items\/[^"]+)"/.exec(html)?.[1] ?? null;
+      if (!img) return null;
+      const title = /<meta[^>]+property="og:title"[^>]+content="([^"]+)"/.exec(html)?.[1]?.replace(/\s*[–|]\s*Fonts In Use.*$/i, "").trim() ?? null;
+      return { url, domain: "fontsinuse.com", title, image: img, tags: ["typography", "type in use"], source: "fontsinuse", kind: "type", multiEntry: true };
+    } catch { return null; }
+  }));
+  return resolved.flatMap((r) => (r.status === "fulfilled" && r.value ? [r.value] : []));
+}
+
 /* ---------------- direct dataset: top-quality foundries + agencies ---------------- */
 
 /** Hand-curated quality seed — harvested DIRECT from the source sites (they publish their
@@ -465,21 +535,25 @@ async function homepages(): Promise<CorpusCandidate[]> {
 
 /** Run all adapters and upsert candidates. Returns how many rows were new. */
 export async function harvest(): Promise<{ found: number; added: number }> {
-  const results = await Promise.allSettled([minimalGallery(), arena(), homepages(), brutalist(), httpsterArchives(), directSites(), typewolf()]);
+  const results = await Promise.allSettled([minimalGallery(), arena(), homepages(), brutalist(), httpsterArchives(), directSites(), typewolf(), itsnicethat(), fontsinuse()]);
   const cands = results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
-  // one row per domain — prefer the candidate with tags, then with an image; "type" kind sticks
-  const byDomain = new Map<string, CorpusCandidate>();
+  // Single-entry sources: one row per domain (a studio featured by 3 galleries = 1 row).
+  // Multi-entry sources (blogs, Fonts In Use): one row per URL — each piece is distinct.
+  const byKey = new Map<string, CorpusCandidate>();
   for (const c of cands) {
-    const prev = byDomain.get(c.domain);
+    const multi = c.multiEntry || MULTI_ENTRY_RE.test(c.source);
+    const key = multi ? `u:${c.url}` : `d:${c.domain}`;
+    const prev = byKey.get(key);
     if (!prev || (!prev.tags.length && c.tags.length) || (!prev.image && c.image)) {
-      byDomain.set(c.domain, {
+      byKey.set(key, {
         ...c,
+        multiEntry: multi,
         tags: [...new Set([...(prev?.tags ?? []), ...c.tags])],
         kind: prev?.kind === "type" || c.kind === "type" ? "type" : "site",
       });
     }
   }
-  const rows = [...byDomain.values()];
+  const rows = [...byKey.values()];
   if (!rows.length) return { found: 0, added: 0 };
   const db = admin();
   const { count: before } = await db.from("web_corpus").select("*", { count: "exact", head: true });
@@ -493,6 +567,7 @@ export async function harvest(): Promise<{ found: number; added: number }> {
       tags: c.tags,
       source: c.source,
       kind: c.kind ?? "site",
+      multi_entry: c.multiEntry ?? MULTI_ENTRY_RE.test(c.source),
       last_seen_at: new Date().toISOString(),
     })),
     { onConflict: "url", ignoreDuplicates: false }
@@ -627,6 +702,9 @@ export async function embedPending(batch = 6): Promise<{ embedded: number; remai
     .from("web_corpus")
     .select("id,url,title,image,blurb,tags,source")
     .is("embedding", null)
+    // curated multi-entry rows (blogs, Fonts In Use) jump the backlog so those lanes go live
+    // quickly; everything else stays oldest-first
+    .order("multi_entry", { ascending: false })
     .order("created_at", { ascending: true })
     .limit(batch);
   let embedded = 0;
