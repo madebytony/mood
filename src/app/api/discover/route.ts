@@ -1,6 +1,7 @@
 import { isAuthed } from "../_lib/auth";
 import { gemini, geminiDisabled, geminiText, hasGeminiKey, parseJson } from "../_lib/gemini";
-import { ingestCandidates } from "../_lib/corpus";
+import { badVerdictDomains, corpusEmbeddingsByDomain, ingestCandidates, saveVerdicts, upsertScreenshotEmbedding, type Verdict } from "../_lib/corpus";
+import { hasVoyageKey, voyageEmbed, type VoyageContent } from "../_lib/voyage";
 
 export const maxDuration = 120;
 
@@ -359,70 +360,159 @@ async function candidateImage(c: Suggestion): Promise<{ mimeType: string; data: 
   return null;
 }
 
-interface JudgedCandidate { c: Suggestion; score: number; why: string | null }
+interface AxisScores { palette: number; typography: number; layout: number; mood: number }
+interface JudgedCandidate { c: Suggestion; score: number; axes: AxisScores | null; why: string | null }
 
-/** Judge one batch of candidates (image each) against the reference. */
+const clamp10 = (n: unknown): number => (typeof n === "number" && Number.isFinite(n) ? Math.max(0, Math.min(10, Math.round(n))) : 0);
+
+/** Composite ruling with the palette gate enforced in CODE, not prompt-trust: a candidate
+ *  whose palette contradicts the reference cannot exceed 3 however good its layout. */
+function composite(a: AxisScores): number {
+  const weighted = Math.round(0.4 * a.palette + 0.25 * a.typography + 0.2 * a.layout + 0.15 * a.mood);
+  return a.palette <= 4 ? Math.min(3, weighted) : weighted;
+}
+
+/** Judge one batch: rationale-first axis scoring (small batches keep the model's attention
+ *  on each pair; rationale before numbers measurably calms score variance). */
 async function judgeBatch(
   refImage: { inlineData: { mimeType: string; data: string } },
   batch: { c: Suggestion; img: { mimeType: string; data: string } }[],
+  brief: string | null,
 ): Promise<JudgedCandidate[]> {
   const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [
     { text: "REFERENCE design (the look to match):" },
     refImage,
   ];
   batch.forEach((x, i) => { parts.push({ text: `CANDIDATE ${i}:` }); parts.push({ inlineData: x.img }); });
-  parts.push({ text: `You are judging VISUAL design similarity for a designer's moodboard. For each CANDIDATE, score 0-10 for how closely its DESIGN matches the REFERENCE: colour palette (warmth, saturation, lightness), mood/atmosphere, typography style, layout/composition. IGNORE subject matter entirely — judge only how it looks.\n\nPALETTE IS A GATE, not a bonus: if the candidate's overall palette contradicts the reference (light/white site vs dark reference, vivid multicolour vs monochrome), score it 3 or below NO MATTER how similar the layout or typography — a clean layout in the wrong palette is a different aesthetic. Be harsh: 8-10 near-identical aesthetic, 5-7 same palette AND same family, 0-4 different. Reply JSON only: [{"i":<candidate index>,"score":<0-10>,"why":"<reason, max 8 words>"}]` });
+  parts.push({ text: `You are judging VISUAL design similarity for a designer's moodboard.${brief ? ` The designer described the target as: "${brief.slice(0, 260)}". The REFERENCE image is ground truth; use the description only to resolve ambiguity (e.g. a partially-loaded screenshot).` : ""}
+
+For each CANDIDATE, FIRST write one short comparison sentence ("why"), THEN score four axes 0-10 against the REFERENCE:
+- palette: hue family, lightness (dark vs light), saturation. A light/white site vs a dark reference, or vivid multicolour vs monochrome, is 0-3 — opposite palettes can never score mid-range.
+- typography: style (serif/sans/grotesque/display), weight, scale, case.
+- layout: structure, density, whitespace, composition.
+- mood: the feeling — austere, playful, luxurious, technical, raw.
+
+IGNORE subject matter entirely; judge only how it looks. Be harsh — most candidates are NOT a match; 8-10 means near-identical on that axis.
+
+Reply JSON only: [{"i":<candidate index>,"why":"<max 10 words>","palette":n,"typography":n,"layout":n,"mood":n}]` });
   const res = await gemini({
     contents: [{ role: "user", parts }],
-    generationConfig: { maxOutputTokens: 1500, responseMimeType: "application/json" },
+    generationConfig: { maxOutputTokens: 1600, responseMimeType: "application/json" },
   });
-  const scores = JSON.parse(geminiText(res)) as { i: number; score: number; why?: string }[];
+  const scores = JSON.parse(geminiText(res)) as { i: number; why?: string; palette?: number; typography?: number; layout?: number; mood?: number }[];
   if (!Array.isArray(scores)) return [];
   return scores
     .filter((s) => Number.isInteger(s.i) && batch[s.i])
-    .map((s) => ({ c: batch[s.i].c, score: typeof s.score === "number" ? s.score : 0, why: s.why ?? null }));
+    .map((s) => {
+      const axes: AxisScores = {
+        palette: clamp10(s.palette),
+        typography: clamp10(s.typography),
+        layout: clamp10(s.layout),
+        mood: clamp10(s.mood),
+      };
+      return { c: batch[s.i].c, score: composite(axes), axes, why: s.why ?? null };
+    });
 }
 
-/** The step that makes "similar" genuinely visual: screenshot every candidate and have the vision
- *  model score it against the reference image — only confirmed look-matches survive. Judges in
- *  batches, widening into the pool until enough matches are found. Returns null when judging
- *  isn't possible so the caller can fall back to the text-ranked path. */
+const cosine = (a: number[], b: number[]): number => {
+  let d = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length && i < b.length; i++) { d += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+  return na && nb ? d / (Math.sqrt(na) * Math.sqrt(nb)) : 0;
+};
+
+/** Embed an already-fetched candidate screenshot (so prerank and corpus enrichment share
+ *  one download). Returns null on any failure — prerank degrades gracefully. */
+async function embedShot(img: { mimeType: string; data: string }, text: string | null): Promise<number[] | null> {
+  try {
+    const content: VoyageContent[] = [];
+    if (text) content.push({ type: "text", text: text.slice(0, 500) });
+    content.push({ type: "image_base64", image_base64: `data:${img.mimeType};base64,${img.data}` });
+    return await voyageEmbed(content, "document");
+  } catch { return null; }
+}
+
+/** The step that makes "similar" genuinely visual — v3 pipeline:
+ *  1. verdict memory: drop candidates already ruled out for this reference
+ *  2. fetch candidate screenshots once
+ *  3. embed reference + candidates (reusing stored corpus vectors), cosine-PRERANK so the
+ *     judge reads plausible candidates first
+ *  4. judge in small batches (7), rationale-first, axis scores, palette gate in code
+ *  5. persist verdicts; enrich web_corpus with every newly embedded screenshot
+ *  Returns null when judging isn't possible so the caller falls back to the text path. */
 async function visualRank(
   refImage: { inlineData: { mimeType: string; data: string } },
   pool: Suggestion[],
   exclude: Set<string>,
+  opts: { brief?: string | null; refKey?: string | null } = {},
 ): Promise<Suggestion[] | null> {
+  // Verdict memory: never pay to re-judge a domain already ruled out for this reference.
+  const ruledOut = opts.refKey ? new Set(await badVerdictDomains(opts.refKey)) : new Set<string>();
+
   // Dedupe by domain, drop excluded; corpus-retrieved (index/*) and aesthetic-searched web
   // results get priority slots, the broad gallery/Are.na pool is shuffled in for breadth
   // ("Find more" stays fresh).
   const seen = new Set<string>();
   const web: Suggestion[] = [], rest: Suggestion[] = [];
   for (const c of pool) {
-    if (exclude.has(c.domain) || exclude.has(c.url) || seen.has(c.domain)) continue;
+    if (exclude.has(c.domain) || exclude.has(c.url) || seen.has(c.domain) || ruledOut.has(c.domain)) continue;
     seen.add(c.domain);
     (c.source === "web" || c.source.startsWith("index/") ? web : rest).push(c);
   }
   for (let i = rest.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [rest[i], rest[j]] = [rest[j], rest[i]]; }
-  const picked = [...web.slice(0, 14), ...rest].slice(0, 36);
+  const picked = [...web.slice(0, 16), ...rest].slice(0, 32);
   if (!picked.length) return null;
 
   const fetched = await Promise.all(picked.map(async (c) => ({ c, img: await candidateImage(c) })));
-  const withImg = fetched.filter((x): x is { c: Suggestion; img: { mimeType: string; data: string } } => !!x.img);
+  let withImg = fetched.filter((x): x is { c: Suggestion; img: { mimeType: string; data: string } } => !!x.img);
   if (withImg.length < 3) return null;
 
-  // Judge in batches of 18; stop early once enough genuine matches have survived.
+  // Cosine prerank: spend judge tokens on plausible candidates first. Stored corpus vectors
+  // are reused; everything else is embedded from the screenshot we just downloaded — and
+  // those embeddings flow back into web_corpus, so every search deepens the index.
+  if (hasVoyageKey()) {
+    try {
+      const refVec = await voyageEmbed(
+        [{ type: "image_base64", image_base64: `data:${refImage.inlineData.mimeType};base64,${refImage.inlineData.data}` }],
+        "query"
+      );
+      const stored = await corpusEmbeddingsByDomain(withImg.map((x) => x.c.domain));
+      const scored = await Promise.all(withImg.map(async (x) => {
+        let vec = stored.get(x.c.domain) ?? null;
+        if (!vec) {
+          vec = await embedShot(x.img, x.c.title);
+          if (vec && !x.c.source.startsWith("index/")) {
+            await upsertScreenshotEmbedding(
+              { url: x.c.url, domain: x.c.domain, title: x.c.title, image: x.c.image, blurb: x.c.blurb ?? null, tags: [], source: x.c.source === "web" ? "websearch" : x.c.source },
+              x.c.image, vec
+            );
+          }
+        }
+        return { ...x, sim: vec ? cosine(refVec, vec) : 0 };
+      }));
+      scored.sort((a, b) => b.sim - a.sim);
+      withImg = scored;
+    } catch { /* prerank is an optimisation — judge in original priority order */ }
+  }
+
+  // Judge in small batches, best candidates first; stop once enough genuine matches survive.
   const judged: JudgedCandidate[] = [];
   try {
-    for (let i = 0; i < withImg.length && i < 36; i += 18) {
-      judged.push(...await judgeBatch(refImage, withImg.slice(i, i + 18)));
+    for (let i = 0; i < withImg.length && i < 28; i += 7) {
+      judged.push(...await judgeBatch(refImage, withImg.slice(i, i + 7), opts.brief ?? null));
       if (judged.filter((j) => j.score >= 5).length >= 6) break;
     }
   } catch { /* fall through with whatever was judged */ }
   if (!judged.length) return null;
   judged.sort((a, b) => b.score - a.score);
 
+  // Verdict memory: every ruling persists (skip-list for this reference + future calibration).
+  if (opts.refKey) {
+    const verdicts: Verdict[] = judged.map((j) => ({ domain: j.c.domain, url: j.c.url, score: j.score, axes: j.axes ? { ...j.axes } : null, why: j.why }));
+    await saveVerdicts(opts.refKey, verdicts);
+  }
+
   let kept = judged.filter((j) => j.score >= 5);
-  // thin pool — admit near-misses, but never below 4: with the palette gate, ≤3 means
+  // thin pool — admit near-misses, but never below 4: under the palette gate, ≤3 means
   // wrong palette, and a wrong-palette "match" is exactly what users complain about
   if (kept.length < 4) kept = judged.filter((j) => j.score >= 4).slice(0, 6);
   if (!kept.length) return null; // nothing genuinely close — let the text path try instead
@@ -430,7 +520,9 @@ async function visualRank(
     ...j.c,
     // pin the preview to the exact image that was judged, so what you see is what matched
     image: j.c.image ?? MSHOT(j.c.url),
-    blurb: j.why ? `${j.why} — ${j.score}/10 visual match` : j.c.blurb ?? null,
+    blurb: j.why
+      ? `${j.why} — ${j.score}/10${j.axes ? ` (palette ${j.axes.palette})` : ""}`
+      : j.c.blurb ?? null,
   }));
 }
 
@@ -589,6 +681,9 @@ interface RunOpts {
   /** Pre-retrieved corpus candidates (client-side vector hits) — they join the judge pool
    *  so every suggestion shown is GRADED against the reference, never raw cosine. */
   candidates: Suggestion[];
+  /** Verdict-memory key ("item:<id>" / "space:<id>") — lets the judge skip candidates
+   *  already ruled out for this reference and persist new rulings. */
+  refKey: string | null;
 }
 
 export async function GET(req: Request) {
@@ -601,6 +696,7 @@ export async function GET(req: Request) {
     taste: (sp.get("taste") ?? "").split(",").map((t) => t.trim()).filter(Boolean).slice(0, 30),
     exclude: new Set((sp.get("exclude") ?? "").split(",").map((d) => d.trim()).filter(Boolean)),
     candidates: [],
+    refKey: null,
   });
 }
 
@@ -628,10 +724,11 @@ export async function POST(req: Request) {
         blurb: typeof c.blurb === "string" ? c.blurb : null,
       } satisfies Suggestion];
     }),
+    refKey: typeof body.refKey === "string" && /^(item|space):[\w-]+$/.test(body.refKey) ? body.refKey : null,
   });
 }
 
-async function run({ query, mode, img, taste, exclude, candidates }: RunOpts): Promise<Response> {
+async function run({ query, mode, img, taste, exclude, candidates, refKey }: RunOpts): Promise<Response> {
   try {
 
   let cands: Suggestion[];
@@ -662,7 +759,7 @@ async function run({ query, mode, img, taste, exclude, candidates }: RunOpts): P
       ]);
       // Corpus candidates lead the pool: they're already taste-near by vector, so the judge
       // spends its scores on plausible matches first.
-      const ranked = await visualRank(refImage, [...candidates, ...mined, ...web, ...agg, ...arn], exclude);
+      const ranked = await visualRank(refImage, [...candidates, ...mined, ...web, ...agg, ...arn], exclude, { brief: query, refKey });
       if (ranked && ranked.length) { cands = ranked; visuallyRanked = true; }
       else cands = [...candidates, ...mined, ...web]; // judging unavailable — fall back to the text-ranked path
     } else {

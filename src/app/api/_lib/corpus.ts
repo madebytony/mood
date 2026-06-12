@@ -223,6 +223,83 @@ export async function ingestCandidates(cands: CorpusCandidate[]): Promise<void> 
   );
 }
 
+/* ---------------- judge-verdict memory ---------------- */
+
+export interface Verdict {
+  domain: string;
+  url: string | null;
+  score: number;
+  axes: Record<string, number> | null;
+  why: string | null;
+}
+
+/** Domains already ruled OUT (score <= 3, i.e. palette-gated) for this reference —
+ *  "Find more" should never pay to re-judge them. */
+export async function badVerdictDomains(refKey: string): Promise<string[]> {
+  try {
+    const db = admin();
+    const { data } = await db
+      .from("judge_verdicts")
+      .select("domain")
+      .eq("ref_key", refKey)
+      .lte("score", 3)
+      .limit(500);
+    return (data ?? []).map((r) => r.domain as string);
+  } catch { return []; }
+}
+
+export async function saveVerdicts(refKey: string, verdicts: Verdict[]): Promise<void> {
+  if (!verdicts.length) return;
+  try {
+    const db = admin();
+    await db.from("judge_verdicts").upsert(
+      verdicts.map((v) => ({ ref_key: refKey, domain: v.domain, url: v.url, score: v.score, axes: v.axes, why: v.why })),
+      { onConflict: "ref_key,domain" }
+    );
+  } catch { /* verdict memory is best-effort */ }
+}
+
+/* ---------------- embedding reuse + screenshot enrichment ---------------- */
+
+/** Stored corpus vectors for these domains — judged candidates that are already indexed
+ *  shouldn't be re-embedded. PostgREST returns pgvector as a string; parse it. */
+export async function corpusEmbeddingsByDomain(domains: string[]): Promise<Map<string, number[]>> {
+  const out = new Map<string, number[]>();
+  if (!domains.length) return out;
+  try {
+    const db = admin();
+    const { data } = await db
+      .from("web_corpus")
+      .select("domain,embedding")
+      .in("domain", domains.slice(0, 100))
+      .not("embedding", "is", null);
+    for (const r of data ?? []) {
+      const emb = typeof r.embedding === "string" ? JSON.parse(r.embedding) : r.embedding;
+      if (Array.isArray(emb)) out.set(r.domain as string, emb as number[]);
+    }
+  } catch { /* fall back to embedding fresh */ }
+  return out;
+}
+
+/** Enrich the index from the judge pipeline: the screenshot was already fetched and embedded
+ *  to pre-rank candidates — keep both, so this site is instantly retrievable next time.
+ *  Never clobbers an existing richer row; only fills missing embeddings. */
+export async function upsertScreenshotEmbedding(cand: CorpusCandidate, image: string | null, embedding: number[]): Promise<void> {
+  if (!okDomain(cand.domain)) return;
+  try {
+    const db = admin();
+    await db.from("web_corpus").upsert(
+      [{
+        url: cand.url, domain: cand.domain, title: cand.title, image: image ?? cand.image,
+        blurb: cand.blurb ?? null, tags: cand.tags, source: cand.source, embedding,
+        last_seen_at: new Date().toISOString(),
+      }],
+      { onConflict: "url", ignoreDuplicates: true }
+    );
+    await db.from("web_corpus").update({ embedding }).eq("url", cand.url).is("embedding", null);
+  } catch { /* enrichment is best-effort */ }
+}
+
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 
 async function imagePart(url: string): Promise<VoyageContent | null> {

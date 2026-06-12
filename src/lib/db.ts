@@ -957,6 +957,7 @@ export async function discover(query: string | null, extraExclude: string[] = []
       taste,
       exclude,
       candidates: graded ? corpus : [],
+      refKey: similarToItemId ? `item:${similarToItemId}` : tasteSpaceId ? `space:${tasteSpaceId}` : undefined,
     }),
   });
   if (!res.ok) throw new Error("Discover failed");
