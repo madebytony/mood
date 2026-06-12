@@ -20,7 +20,7 @@ export async function GET(req: Request) {
   }
   try {
     const h = await harvest();
-    const e = await embedPending(20);
+    const e = await embedPending(40);
     return Response.json({ ...h, ...e });
   } catch (e) {
     return Response.json({ error: (e as Error).message }, { status: 502 });

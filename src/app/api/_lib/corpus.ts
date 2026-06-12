@@ -52,7 +52,7 @@ function hostOf(u: string): string {
 
 /** minimal.gallery via its WordPress REST API: title + category tags + screenshot, with the
  *  real site URL encoded in the screenshot filename (bureautonalli.com_.jpg). */
-async function minimalGallery(pages = 4): Promise<CorpusCandidate[]> {
+async function minimalGallery(pages = 10): Promise<CorpusCandidate[]> {
   const out: CorpusCandidate[] = [];
   for (let page = 1; page <= pages; page++) {
     try {
@@ -91,43 +91,148 @@ async function minimalGallery(pages = 4): Promise<CorpusCandidate[]> {
 }
 
 /** Are.na designer-curated channels (real API). Tags come from the channel's own name. */
-const ARENA_CHANNELS = [
-  "interesting-web-design-and-ux",
-  "www-portfolio-studio",
-  "portfolio-studio",
-  "websites-portfolio-nesycqz_xdu",
-  "portfolio-websites-1488038381",
-  "portfolio-3q_6cl1-064",
-  "type-design-type-foundries",
-  "typography-specimens",
-  "type-in-use",
+const ARENA_CHANNELS: { slug: string; tags?: string[] }[] = [
+  { slug: "interesting-web-design-and-ux" },
+  { slug: "www-portfolio-studio" },
+  { slug: "portfolio-studio" },
+  { slug: "websites-portfolio-nesycqz_xdu" },
+  { slug: "portfolio-websites-1488038381" },
+  { slug: "portfolio-3q_6cl1-064" },
+  { slug: "type-design-type-foundries" },
+  { slug: "typography-specimens" },
+  { slug: "type-in-use" },
 ];
 
-async function arena(): Promise<CorpusCandidate[]> {
+/** Channel-search queries that target the corpus's stylistic gaps. The query's aesthetic
+ *  word rides along as a tag on every block harvested from a discovered channel. */
+const ARENA_QUERIES: { q: string; tag: string }[] = [
+  { q: "colorful web design", tag: "colorful" },
+  { q: "playful web design", tag: "playful" },
+  { q: "brutalist websites", tag: "brutalist" },
+  { q: "editorial web design", tag: "editorial" },
+  { q: "experimental web design", tag: "experimental" },
+  { q: "monochrome web design", tag: "monochrome" },
+];
+
+// keep junk and NSFW channels out of a design corpus
+const BAD_CHANNEL_RE = /nsfw|porn|onlyfans|x-rated|xxx|sex|gore|leak/i;
+
+/** Discover fresh channels per aesthetic query — the corpus self-diversifies as Are.na grows. */
+async function arenaDiscover(): Promise<{ slug: string; tags: string[] }[]> {
+  const found: { slug: string; tags: string[] }[] = [];
+  await Promise.allSettled(ARENA_QUERIES.map(async ({ q, tag }) => {
+    const r = await fetch(
+      `https://api.are.na/v2/search/channels?q=${encodeURIComponent(q)}&per=5`,
+      { headers: { "user-agent": UA }, signal: AbortSignal.timeout(10000) }
+    );
+    if (!r.ok) return;
+    const { channels } = await r.json();
+    for (const c of (channels ?? []).slice(0, 5)) {
+      if (!c?.slug || (c.length ?? 0) < 15) continue; // tiny channels aren't worth a fetch
+      if (BAD_CHANNEL_RE.test(c.slug) || BAD_CHANNEL_RE.test(c.title ?? "")) continue;
+      found.push({ slug: c.slug, tags: [tag] });
+    }
+  }));
+  return found;
+}
+
+async function arenaChannel(slug: string, extraTags: string[]): Promise<CorpusCandidate[]> {
   const out: CorpusCandidate[] = [];
-  for (const slug of ARENA_CHANNELS) {
-    try {
-      const r = await fetch(
-        `https://api.are.na/v2/channels/${encodeURIComponent(slug)}/contents?per=50&sort=position&direction=desc`,
-        { headers: { "user-agent": UA }, signal: AbortSignal.timeout(10000) }
-      );
-      if (!r.ok) continue;
-      const { contents } = await r.json();
-      for (const b of contents ?? []) {
-        if (b?.class !== "Link" || !b?.source?.url) continue;
-        const domain = hostOf(b.source.url);
-        if (!okDomain(domain)) continue;
-        out.push({
-          url: b.source.url,
-          domain,
-          title: b.title || b.generated_title || null,
-          image: b.image?.display?.url ?? b.image?.thumb?.url ?? null,
-          tags: slug.replace(/-\w{10,}$|[-\d]+$/g, "").split("-").filter(Boolean),
-          source: `are.na/${slug}`,
-        });
-      }
-    } catch { /* one channel failing shouldn't sink the rest */ }
+  try {
+    const r = await fetch(
+      `https://api.are.na/v2/channels/${encodeURIComponent(slug)}/contents?per=100&sort=position&direction=desc`,
+      { headers: { "user-agent": UA }, signal: AbortSignal.timeout(10000) }
+    );
+    if (!r.ok) return out;
+    const { contents } = await r.json();
+    for (const b of contents ?? []) {
+      if (b?.class !== "Link" || !b?.source?.url) continue;
+      const domain = hostOf(b.source.url);
+      if (!okDomain(domain)) continue;
+      out.push({
+        url: b.source.url,
+        domain,
+        title: b.title || b.generated_title || null,
+        image: b.image?.display?.url ?? b.image?.thumb?.url ?? null,
+        tags: [...new Set([...extraTags, ...slug.replace(/-\w{10,}$|[-\d]+$/g, "").split("-").filter((w) => w.length > 2)])],
+        source: `are.na/${slug}`,
+      });
+    }
+  } catch { /* one channel failing shouldn't sink the rest */ }
+  return out;
+}
+
+async function arena(): Promise<CorpusCandidate[]> {
+  const discovered = await arenaDiscover();
+  const seen = new Set<string>();
+  const channels: { slug: string; tags: string[] }[] = [];
+  for (const c of [...ARENA_CHANNELS.map((c) => ({ slug: c.slug, tags: c.tags ?? [] })), ...discovered]) {
+    if (seen.has(c.slug)) continue;
+    seen.add(c.slug);
+    channels.push(c);
   }
+  const results = await Promise.allSettled(channels.map((c) => arenaChannel(c.slug, c.tags)));
+  return results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
+}
+
+/** brutalistwebsites.com: ~1,600 site + screenshot pairs in plain HTML — the corpus's
+ *  brutalist/raw blind spot, solved by one page. Newest entries listed first. */
+async function brutalist(cap = 250): Promise<CorpusCandidate[]> {
+  const out: CorpusCandidate[] = [];
+  try {
+    const res = await fetch("https://brutalistwebsites.com", {
+      headers: { "user-agent": UA, accept: "text/html" },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) return out;
+    const html = await res.text();
+    const re = /<a href="(https?:\/\/[^"]+)"[^>]*>[\s\S]{0,200}?<img[^>]*src="([^"]+)"/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(html)) && out.length < cap) {
+      const domain = hostOf(m[1]);
+      if (!okDomain(domain) || domain.endsWith("brutalistwebsites.com")) continue;
+      let image: string | null = null;
+      try { image = new URL(m[2], "https://brutalistwebsites.com").href; } catch {}
+      out.push({ url: m[1], domain, title: domain, image, tags: ["brutalist", "raw"], source: "brutalistwebsites" });
+    }
+  } catch { /* best-effort */ }
+  return out;
+}
+
+/** httpster month archives (the homepage only shows the latest handful). */
+async function httpsterArchives(months = 4): Promise<CorpusCandidate[]> {
+  const MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+  const now = new Date();
+  const urls: string[] = [];
+  for (let i = 1; i <= months; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    urls.push(`https://httpster.net/${d.getFullYear()}/${MONTHS[d.getMonth()]}/`);
+  }
+  const out: CorpusCandidate[] = [];
+  await Promise.allSettled(urls.map(async (u) => {
+    const res = await fetch(u, {
+      headers: { "user-agent": UA, accept: "text/html" },
+      redirect: "follow",
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return;
+    const html = (await res.text()).slice(0, 600_000);
+    const re = /<a\b[^>]*href=["']([^"'#]+)["'][^>]*>([\s\S]{0,800}?)<\/a>/gi;
+    let m: RegExpExecArray | null;
+    let count = 0;
+    while ((m = re.exec(html)) && count < 60) {
+      let href: string;
+      try { href = new URL(m[1], u).href; } catch { continue; }
+      const img = /<img\b[^>]*(?:src|data-src)=["']([^"']+)["']/i.exec(m[2]);
+      if (!img) continue;
+      const domain = hostOf(href);
+      if (!okDomain(domain) || domain.endsWith("httpster.net")) continue;
+      let image: string | null = null;
+      try { image = new URL(img[1], u).href; } catch {}
+      out.push({ url: href, domain, title: null, image, tags: [], source: "httpster" });
+      count++;
+    }
+  }));
   return out;
 }
 
@@ -177,7 +282,7 @@ async function homepages(): Promise<CorpusCandidate[]> {
 
 /** Run all adapters and upsert candidates. Returns how many rows were new. */
 export async function harvest(): Promise<{ found: number; added: number }> {
-  const results = await Promise.allSettled([minimalGallery(), arena(), homepages()]);
+  const results = await Promise.allSettled([minimalGallery(), arena(), homepages(), brutalist(), httpsterArchives()]);
   const cands = results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
   // one row per domain — prefer the candidate with tags, then with an image
   const byDomain = new Map<string, CorpusCandidate>();
