@@ -999,8 +999,19 @@ export async function boardBrief(spaceId: string, name?: string): Promise<{ brie
     });
     if (res.ok) brief = (await res.json()).brief ?? null;
   } catch { /* brief is a nice-to-have; centroid retrieval works without it */ }
-  const rep = items.find((i) => i.thumb_path && i.type === "image") ?? items.find((i) => i.thumb_path);
-  const image = rep?.thumb_path ? (await signedUrls([rep.thumb_path])).get(rep.thumb_path) ?? null : null;
+  // Reference for the visual judge: the item NEAREST the board's centroid, not the most
+  // recent one — recency picks outliers (a stark-white capture on an otherwise dark board)
+  // and the judge then grades against the wrong aesthetic.
+  let repThumb: string | null = null;
+  try {
+    const { data: reps } = await supabase.rpc("space_rep_thumbs", { p_space_id: spaceId, p_count: 1 });
+    repThumb = (reps as { thumb_path: string }[] | null)?.[0]?.thumb_path ?? null;
+  } catch { /* fall through to recency */ }
+  if (!repThumb) {
+    const rep = items.find((i) => i.thumb_path && i.type === "image") ?? items.find((i) => i.thumb_path);
+    repThumb = rep?.thumb_path ?? null;
+  }
+  const image = repThumb ? (await signedUrls([repThumb])).get(repThumb) ?? null : null;
   return { brief, image };
 }
 

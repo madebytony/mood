@@ -371,7 +371,7 @@ async function judgeBatch(
     refImage,
   ];
   batch.forEach((x, i) => { parts.push({ text: `CANDIDATE ${i}:` }); parts.push({ inlineData: x.img }); });
-  parts.push({ text: `You are judging VISUAL design similarity for a designer's moodboard. For each CANDIDATE, score 0-10 for how closely its DESIGN matches the REFERENCE: colour palette (warmth, saturation, lightness), mood/atmosphere, typography style, layout/composition. IGNORE subject matter entirely — judge only how it looks. Be harsh: 8-10 near-identical aesthetic, 5-7 clearly the same family, 0-4 different. Reply JSON only: [{"i":<candidate index>,"score":<0-10>,"why":"<reason, max 8 words>"}]` });
+  parts.push({ text: `You are judging VISUAL design similarity for a designer's moodboard. For each CANDIDATE, score 0-10 for how closely its DESIGN matches the REFERENCE: colour palette (warmth, saturation, lightness), mood/atmosphere, typography style, layout/composition. IGNORE subject matter entirely — judge only how it looks.\n\nPALETTE IS A GATE, not a bonus: if the candidate's overall palette contradicts the reference (light/white site vs dark reference, vivid multicolour vs monochrome), score it 3 or below NO MATTER how similar the layout or typography — a clean layout in the wrong palette is a different aesthetic. Be harsh: 8-10 near-identical aesthetic, 5-7 same palette AND same family, 0-4 different. Reply JSON only: [{"i":<candidate index>,"score":<0-10>,"why":"<reason, max 8 words>"}]` });
   const res = await gemini({
     contents: [{ role: "user", parts }],
     generationConfig: { maxOutputTokens: 1500, responseMimeType: "application/json" },
@@ -422,7 +422,9 @@ async function visualRank(
   judged.sort((a, b) => b.score - a.score);
 
   let kept = judged.filter((j) => j.score >= 5);
-  if (kept.length < 4) kept = judged.filter((j) => j.score >= 3).slice(0, 6); // thin pool — near-misses only
+  // thin pool — admit near-misses, but never below 4: with the palette gate, ≤3 means
+  // wrong palette, and a wrong-palette "match" is exactly what users complain about
+  if (kept.length < 4) kept = judged.filter((j) => j.score >= 4).slice(0, 6);
   if (!kept.length) return null; // nothing genuinely close — let the text path try instead
   return kept.map((j) => ({
     ...j.c,
