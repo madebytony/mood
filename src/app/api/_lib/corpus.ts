@@ -354,8 +354,9 @@ interface WatchedStudio {
   url: string;
   domain: string;
   name: string | null;
-  kind: string;            // "foundry" | "agency"
+  kind: string;                      // "foundry" | "agency"
   content_paths: string[] | null;
+  instagram_handle?: string | null;
 }
 
 const OG_IMG_RE = /<meta[^>]+(?:property|name)=["'](?:og:image|og:image:url|twitter:image)["'][^>]+content=["']([^"']+)["']/i;
@@ -509,6 +510,75 @@ async function studioContent(cap = 30): Promise<CorpusCandidate[]> {
         .in("id", checkedIds);
     } catch { /* best-effort */ }
   }
+  return out;
+}
+
+/** Pull recent posts from watched studios' public Instagram profiles.
+ *  Uses Instagram's undocumented web_profile_info endpoint — no auth, no cookies,
+ *  returns the 12 most recent posts. Processes studios sequentially with a small
+ *  delay to avoid rate-limiting. Only image posts are kept (videos have no usable
+ *  thumbnail for embedding). Source is "studio/<domain>" so posts slot into the
+ *  same feed lane as blog/work scrapes. */
+async function studioInstagram(cap = 25): Promise<CorpusCandidate[]> {
+  const db = admin();
+  const { data: studios } = await db
+    .from("watched_studios")
+    .select("id, url, domain, name, kind, instagram_handle")
+    .not("instagram_handle", "is", null)
+    .or("tier.eq.seed,gallery_appearances.gte.2")
+    .limit(cap);
+  if (!studios?.length) return [];
+
+  const out: CorpusCandidate[] = [];
+
+  for (const studio of studios as (WatchedStudio & { instagram_handle: string })[]) {
+    try {
+      const res = await fetch(
+        `https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(studio.instagram_handle)}`,
+        {
+          headers: {
+            "user-agent": UA,
+            "x-ig-app-id": "936619743392459",
+            "accept": "*/*",
+          },
+          signal: AbortSignal.timeout(10000),
+        }
+      );
+      if (!res.ok) continue;
+      const data = await res.json();
+      const edges: unknown[] = data?.data?.user?.edge_owner_to_timeline_media?.edges ?? [];
+
+      for (const edge of edges.slice(0, 12)) {
+        const node = (edge as { node: Record<string, unknown> }).node;
+        if (node.is_video) continue; // videos have no stable image thumbnail
+        const shortcode = node.shortcode as string | undefined;
+        if (!shortcode) continue;
+        // thumbnail_src is a 640px CDN image — expires in days but embedPending
+        // runs nightly so it'll be embedded before expiry; hygiene handles any stragglers
+        const image = (node.thumbnail_src as string | null) ?? null;
+        if (!image) continue;
+        const captionEdges = (node.edge_media_to_caption as { edges: { node: { text: string } }[] } | undefined)?.edges ?? [];
+        const caption = captionEdges[0]?.node?.text?.replace(/[\r\n]+/g, " ").trim().slice(0, 200) ?? null;
+        const kind: "site" | "type" = studio.kind === "foundry" ? "type" : "site";
+        out.push({
+          url: `https://www.instagram.com/p/${shortcode}/`,
+          domain: studio.domain,
+          title: caption,
+          image,
+          tags: studio.kind === "foundry"
+            ? ["type foundry", "typography", "instagram"]
+            : ["agency", "studio", "instagram"],
+          source: `studio/${studio.domain}`,
+          kind,
+          multiEntry: true,
+        });
+      }
+    } catch { /* one studio failing is fine */ }
+
+    // Brief pause between requests — Instagram rate-limits aggressive bursts
+    await new Promise((r) => setTimeout(r, 350));
+  }
+
   return out;
 }
 
@@ -683,7 +753,8 @@ export async function harvest(): Promise<{ found: number; added: number }> {
   const results = await Promise.allSettled([
     minimalGallery(), arena(), homepages(), brutalist(), httpsterArchives(),
     directSites(), typewolf(), itsnicethat(), fontsinuse(),
-    studioContent(), // multi-entry: blog posts / work pages from watched studios
+    studioContent(),   // multi-entry: blog posts / work pages from watched studios
+    studioInstagram(), // multi-entry: recent Instagram posts from watched studios
   ]);
   const cands = results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
   // Single-entry sources: one row per domain (a studio featured by 3 galleries = 1 row).
