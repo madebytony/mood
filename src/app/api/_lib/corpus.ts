@@ -612,7 +612,7 @@ export async function badVerdictDomains(refKey: string): Promise<string[]> {
       .from("judge_verdicts")
       .select("domain")
       .eq("ref_key", refKey)
-      .lte("score", 3)
+      .lte("score", 2)
       .limit(500);
     return (data ?? []).map((r) => r.domain as string);
   } catch { return []; }

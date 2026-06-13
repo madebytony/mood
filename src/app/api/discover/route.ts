@@ -212,12 +212,12 @@ async function arenaChannel(slug: string): Promise<Suggestion[]> {
 }
 
 async function arena(): Promise<Suggestion[]> {
-  // shuffle the channel pool and sample a few — a fresh mix on every refresh
-  const pool = [...ARENA_CHANNELS];
-  for (let i = pool.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [pool[i], pool[j]] = [pool[j], pool[i]];
-  }
+  // Day-based rotation ensures all channels are evenly represented across sessions.
+  // Each day starts from a different offset so repeat visits see fresh channels.
+  const day = Math.floor(Date.now() / 86_400_000);
+  const pool = ARENA_CHANNELS.map((ch, i) => ({ ch, i: (i + day) % ARENA_CHANNELS.length }))
+    .sort((a, b) => a.i - b.i)
+    .map((x) => x.ch);
   const results = await Promise.allSettled(pool.slice(0, 4).map(arenaChannel));
   return results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
 }
@@ -678,7 +678,7 @@ async function rank(cands: Suggestion[], taste: string[], query: string | null):
 /* ---- enrichment: resolve gallery detail pages to the real site + guarantee imagery ---- */
 
 async function enrich(items: Suggestion[]): Promise<Suggestion[]> {
-  const work = items.slice(0, 15).filter((i) => !i.image || GALLERY_HOSTS.has(hostOnly(i.url)));
+  const work = items.slice(0, 20).filter((i) => !i.image || GALLERY_HOSTS.has(hostOnly(i.url)));
   const dropped = new Set<string>();
   await Promise.allSettled(
     work.map(async (i) => {
@@ -991,10 +991,12 @@ async function run({ query, mode, img, taste, exclude, candidates, refKey, filte
   // Every search permanently improves the index: store fresh web finds (enriched with
   // og:image + title) in web_corpus so future queries retrieve them instantly. Best-effort.
   try {
+    // Persist all non-seed enriched results so future queries find them instantly.
+    // Gallery-resolved and Are.na results were previously lost.
     await ingestCandidates(
       finalItems
-        .filter((s) => s.source === "web")
-        .map((s) => ({ url: s.url, domain: s.domain, title: s.title, image: s.image, blurb: s.blurb ?? null, tags: [], source: "websearch" }))
+        .filter((s) => s.source !== "seed" && !s.source.startsWith("index"))
+        .map((s) => ({ url: s.url, domain: s.domain, title: s.title, image: s.image, blurb: s.blurb ?? null, tags: [], source: s.source.startsWith("are.na") ? "arena" : "websearch" }))
     );
   } catch { /* index growth must never break the response */ }
   return Response.json({ items: finalItems });
