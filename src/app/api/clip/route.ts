@@ -155,18 +155,63 @@ export async function POST(req: Request) {
       sourceUrl = body.url;
       title = title ?? body.url.replace(/^https?:\/\/(www\.)?/, "").split("/")[0];
 
-      // Instagram/Threads: oEmbed requires auth since 2020 and og:image is JS-rendered.
-      // Puppeteer-capture the public embed page which renders the actual post image.
+      // Instagram/Threads: extract actual post images from the embed page.
+      // For carousel posts, each slide becomes its own item, auto-stacked together.
       const igMatch = body.url.match(/instagram\.com\/(?:p|reel)\/([A-Za-z0-9_-]+)/i);
       if (igMatch) {
         try {
-          const embedUrl = `https://www.instagram.com/p/${igMatch[1]}/embed/captioned/`;
-          const { captureVetted } = await import("../_lib/capture");
-          const shot = await captureVetted(embedUrl, false);
-          contentType = shot.type;
-          bytes = shot.bytes;
+          const { captureInstagram } = await import("../_lib/capture");
+          const images = await captureInstagram(igMatch[1]);
+          if (images && images.length > 0) {
+            let igDomain: string | null = null;
+            try { igDomain = sourceUrl ? new URL(sourceUrl).hostname.replace(/^www\./, "") : null; } catch {}
+            // Save all images as separate items
+            const itemIds: string[] = [];
+            for (let idx = 0; idx < images.length; idx++) {
+              const img = images[idx];
+              const imgHash = await sha1hex(img.bytes);
+              const imgExt = extFor(img.type);
+              const imgPath = `media/${imgHash}.${imgExt}`;
+              const imgDims = imageDims(img.bytes, img.type);
+              await db.storage.from("media").upload(imgPath, img.bytes, { upsert: true, contentType: img.type });
+              const slideTitle = images.length > 1 ? `${title ?? igDomain ?? "Instagram"} (${idx + 1}/${images.length})` : (title ?? igDomain);
+              const { data: item, error: itemErr } = await db
+                .from("items")
+                .insert({
+                  space_id: spaceId,
+                  user_id: uid,
+                  type: "image",
+                  storage_path: imgPath,
+                  thumb_path: imgPath,
+                  title: slideTitle,
+                  source_url: sourceUrl,
+                  source_domain: igDomain,
+                  tags: [],
+                  width: imgDims.w,
+                  height: imgDims.h,
+                })
+                .select()
+                .single();
+              if (itemErr) throw itemErr;
+              itemIds.push(item.id);
+              // Enrich each image with AI caption + tags
+              await enrichItem(db, item.id, imgPath, slideTitle);
+            }
+            // Auto-stack carousel slides together
+            if (itemIds.length > 1) {
+              const { data: stack, error: stackErr } = await db
+                .from("stacks")
+                .insert({ user_id: uid, space_id: spaceId, name: title ?? igDomain ?? "Instagram carousel" })
+                .select()
+                .single();
+              if (!stackErr && stack) {
+                await db.from("items").update({ stack_id: stack.id }).in("id", itemIds);
+              }
+            }
+            return Response.json({ ok: true, id: itemIds[0], count: itemIds.length }, { headers: cors });
+          }
         } catch { /* fall through to link */ }
-        if (!bytes) degradeToLink = true;
+        degradeToLink = true;
       } else if (body.kind === "url") {
         // kind:"url" is an explicit bookmark; kind:"page" tries a screenshot first.
         degradeToLink = true;

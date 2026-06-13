@@ -701,6 +701,92 @@ export async function captureVetted(url: string, capped: boolean): Promise<Shot>
   return shot;
 }
 
+/**
+ * Extract actual post images from an Instagram embed page instead of screenshotting the UI.
+ * For carousel posts, returns each slide as a separate image buffer.
+ * Returns null if extraction fails (caller should fall back to a regular screenshot).
+ */
+export async function captureInstagram(shortcode: string): Promise<{ bytes: Uint8Array<ArrayBuffer>; type: string }[] | null> {
+  const embedUrl = `https://www.instagram.com/p/${shortcode}/embed/`;
+  let browser;
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
+    await page.setUserAgent(UA);
+    await page.goto(embedUrl, { waitUntil: "networkidle2", timeout: 30000 });
+    // Wait for the embed's images to render
+    await page.waitForSelector("img", { timeout: 8000 }).catch(() => {});
+
+    // Extract all unique image URLs from the embed (carousel slides + main image)
+    const imgUrls: string[] = await page.evaluate(() => {
+      const urls = new Set<string>();
+      document.querySelectorAll("img").forEach((img) => {
+        const src = img.src || "";
+        // Filter to actual content images (instagram CDN), skip avatars/icons/tiny images
+        if (src.includes("cdn") && img.naturalWidth > 200 && img.naturalHeight > 200) {
+          urls.add(src);
+        }
+      });
+      return [...urls];
+    });
+
+    // For carousels: click through all slides to discover every image
+    const nextBtn = await page.$("[aria-label='Next'], button[aria-label*='next' i], .coreSpriteRightChevron");
+    if (nextBtn) {
+      const seen = new Set(imgUrls);
+      for (let i = 0; i < 10; i++) {
+        try {
+          await nextBtn.click();
+          await new Promise((r) => setTimeout(r, 800));
+          const newUrls = await page.evaluate(() => {
+            const urls: string[] = [];
+            document.querySelectorAll("img").forEach((img) => {
+              if (img.src.includes("cdn") && img.naturalWidth > 200) urls.push(img.src);
+            });
+            return urls;
+          });
+          let added = false;
+          for (const u of newUrls) {
+            if (!seen.has(u)) { imgUrls.push(u); seen.add(u); added = true; }
+          }
+          if (!added) break; // looped back to start
+        } catch { break; }
+      }
+    }
+
+    await browser.close();
+    browser = undefined;
+
+    if (!imgUrls.length) return null;
+
+    // Download all images
+    const results: { bytes: Uint8Array<ArrayBuffer>; type: string }[] = [];
+    for (const url of imgUrls) {
+      try {
+        const res = await fetch(url, {
+          headers: { "User-Agent": UA, "Referer": "https://www.instagram.com/" },
+          signal: AbortSignal.timeout(10000),
+        });
+        if (!res.ok) continue;
+        const ct = res.headers.get("content-type") ?? "image/jpeg";
+        const buf = Buffer.from(await res.arrayBuffer());
+        const out = await sharp(buf).jpeg({ quality: 88 }).toBuffer();
+        results.push({
+          bytes: new Uint8Array(out.buffer, out.byteOffset, out.byteLength) as Uint8Array<ArrayBuffer>,
+          type: ct.startsWith("image/") ? "image/jpeg" : ct,
+        });
+      } catch { /* skip failed downloads */ }
+    }
+
+    return results.length ? results : null;
+  } catch {
+    return null;
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+  }
+}
+
 export async function captureScreenshot(url: string, capped = false): Promise<Shot> {
   try {
     return await chromiumShot(url);
