@@ -126,6 +126,22 @@ export async function fetchItems(
   return out;
 }
 
+/** Every item library-wide that still carries an unconfirmed AI font guess (a "Name@ai"
+ *  token). Drives the global Font Review queue independently of the current view, so the
+ *  queue reflects the whole library rather than just the space you happen to be looking at. */
+export async function fetchAiFontItems(): Promise<Item[]> {
+  const { data, error } = await supabase
+    .from("items")
+    .select(ITEM_COLS)
+    .not("fonts", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(1000);
+  if (error) throw error;
+  return ((data ?? []) as unknown as Item[]).filter((i) =>
+    (i.fonts ?? []).some((f) => f.toLowerCase().endsWith("@ai"))
+  );
+}
+
 /** Top tags across the most recent saves — the taste profile. Scoped to one board when
  *  `spaceId` is given, so a warm-editorial project and a brutalist-dark project don't
  *  pollute each other's Discover feed. */

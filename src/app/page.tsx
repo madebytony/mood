@@ -34,6 +34,7 @@ import {
   embedItem,
   fetchColumnItems,
   fetchItems,
+  fetchAiFontItems,
   ITEMS_PAGE,
   fetchLibraries,
   fetchSpaces,
@@ -149,6 +150,9 @@ function App() {
   const [addTick, setAddTick] = useState(0);
   const [fontReviewOpen, setFontReviewOpen] = useState(false);
   const [reviewBusy, setReviewBusy] = useState<string | null>(null);
+  // Library-wide queue of items with unconfirmed AI font guesses (not scoped to the
+  // current view), so the Review-fonts affordance reflects everything pending.
+  const [aiFontItems, setAiFontItems] = useState<Item[]>([]);
   const toastId = useRef(0);
   const pendingId = useRef(0);
   const dragDepth = useRef(0);
@@ -436,21 +440,15 @@ function App() {
     setOpen((prev) => (prev?.id === updated.id ? updated : prev));
   }, []);
 
-  const typeScopeItems = useMemo(() => {
-    if (selected === "home") return [] as Item[];
-    const scoped = selected === "all" ? items : items.filter((i) => i.space_id === selected);
-    return scoped.filter((i) => spaceCaptionKind(i.space_id) === "type");
-  }, [items, selected, spaceCaptionKind]);
-
   const fontReviewQueue = useMemo(() => {
-    return typeScopeItems
+    return aiFontItems
       .map((item) => ({
         item,
         pending: (item.fonts ?? []).filter((f) => splitFontToken(f).provider === "ai"),
       }))
       .filter((x) => x.pending.length)
       .sort((a, b) => b.item.created_at.localeCompare(a.item.created_at));
-  }, [typeScopeItems]);
+  }, [aiFontItems]);
 
   const reviewCount = useMemo(
     () => fontReviewQueue.reduce((n, x) => n + x.pending.length, 0),
@@ -473,6 +471,13 @@ function App() {
         }
         const updated = await updateItem(item.id, { fonts: [...nextByBase.values()] });
         patchItemEverywhere(updated);
+        // Keep the library-wide review queue in sync: replace the item, then drop it once
+        // it has no AI guesses left to confirm.
+        setAiFontItems((prev) =>
+          prev
+            .map((i) => (i.id === updated.id ? updated : i))
+            .filter((i) => (i.fonts ?? []).some((f) => f.toLowerCase().endsWith("@ai")))
+        );
       } catch (e) {
         toast(`Font review failed: ${(e as Error).message}`, "error");
       } finally {
@@ -481,6 +486,11 @@ function App() {
     },
     [patchItemEverywhere, toast]
   );
+
+  // Load the library-wide AI font-guess queue once on mount (independent of the current view).
+  useEffect(() => {
+    fetchAiFontItems().then(setAiFontItems).catch(() => {});
+  }, []);
 
   // ---------- capture handlers ----------
 
@@ -1228,13 +1238,13 @@ function App() {
               </button>
             </>
           )}
-          {selected !== "home" && currentFeedMode === "type" && (
+          {selected !== "home" && reviewCount > 0 && (
             <button
               onClick={() => setFontReviewOpen(true)}
               className="rounded-lg border border-amber-300/30 bg-amber-500/10 px-2.5 py-1 text-[11px] text-amber-100 hover:border-amber-200/50"
-              title="Review AI-detected font guesses"
+              title="Review AI-detected font guesses across your whole library"
             >
-              Review fonts {reviewCount ? `(${reviewCount})` : ""}
+              Review fonts ({reviewCount})
             </button>
           )}
           {selected !== "home" && (
@@ -1514,7 +1524,7 @@ function App() {
             <div className="no-scrollbar flex-1 space-y-3 overflow-y-auto p-4">
               {!fontReviewQueue.length && (
                 <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4 text-sm text-zinc-400">
-                  No pending AI font guesses in this view.
+                  No pending AI font guesses — everything across your library is confirmed.
                 </div>
               )}
               {fontReviewQueue.map(({ item, pending }) => (
