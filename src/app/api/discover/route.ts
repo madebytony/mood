@@ -139,6 +139,10 @@ const DEV_RE =
 const CURATION_RE =
   /awwwards\.|siteinspire\.|httpster\.|minimal\.gallery|godly\.website|land-book\.|curated\.design|dark\.design|maxibestof\.|footer\.design|cssdesignawards\.|csswinner\.|thefwa\.|onepagelove\.|lapa\.ninja|landingfolio\.|saaspages\.|saaslandingpage\.|pageflows\.|mobbin\.|refero\.design|savee\.it|cosmos\.so|klikkentheke\.|bestwebsite\.gallery|webdesigninspiration|admiretheweb\.|siiimple\.|cssnectar\.|uijar\.|collectui\.|navbar\.gallery|footer\.gallery|seesaw\.website|deadsimplesites\.|brutalistwebsites\.|hoverstat\.es/i;
 const NAV_PATH_RE = /^\/(about|tags?|category|categories|login|sign|privacy|terms|jobs|submit|advertise|contact)\b/i;
+// Spam, parked, SEO-farm, and non-design domains that slip through gallery/search pipelines.
+// Add domains here as they appear — the list is checked on every candidate.
+const SPAM_RE =
+  /fortheloveofbread\.|\.xyz\/|blogspot\.|wordpress\.com|weebly\.|wixsite\.|hubspot\.|mailchimp\.com|clickfunnels\.|leadpages\.|squarespace\.com\/templates|beacons\.ai|linktr\.ee|campsite\.bio|bio\.link|carrd\.co|linkin\.bio|shor\.by|taplink\.|heylink\.me|allmylinks\.|lnk\.bio/i;
 const GALLERY_HOSTS = new Set([
   "siteinspire.com", "www.siteinspire.com", "httpster.net", "minimal.gallery",
   "godly.website", "land-book.com", "www.land-book.com", "dark.design", "www.dark.design",
@@ -191,7 +195,7 @@ async function arenaChannel(slug: string): Promise<Suggestion[]> {
       if (b?.class !== "Link" || !b?.source?.url) continue;
       let domain: string;
       try { domain = new URL(b.source.url).hostname.replace(/^www\./, ""); } catch { continue; }
-      if (SOCIAL_RE.test(domain) || DEV_RE.test(domain) || CURATION_RE.test(domain) || GALLERY_HOSTS.has(domain)) continue;
+      if (SOCIAL_RE.test(domain) || DEV_RE.test(domain) || CURATION_RE.test(domain) || SPAM_RE.test(domain) || GALLERY_HOSTS.has(domain)) continue;
       out.push({
         url: b.source.url,
         title: b.title || b.generated_title || null,
@@ -267,7 +271,7 @@ function extract(html: string, base: string, source: string): Suggestion[] {
       domain = u.hostname.replace(/^www\./, "");
       path = u.pathname;
     } catch { continue; }
-    if (SOCIAL_RE.test(domain) || DEV_RE.test(domain) || NAV_PATH_RE.test(path)) continue;
+    if (SOCIAL_RE.test(domain) || DEV_RE.test(domain) || SPAM_RE.test(domain) || NAV_PATH_RE.test(path)) continue;
     const key = href.split("?")[0];
     if (seen.has(key)) continue;
     seen.add(key);
@@ -598,7 +602,7 @@ async function webSearch(query: string, subjectMatters = false): Promise<Suggest
       try {
         const u = new URL(r.url);
         const domain = u.hostname.replace(/^www\./, "");
-        if (SOCIAL_RE.test(domain) || DEV_RE.test(domain) || CURATION_RE.test(domain)) return [];
+        if (SOCIAL_RE.test(domain) || DEV_RE.test(domain) || CURATION_RE.test(domain) || SPAM_RE.test(domain)) return [];
         return [{ url: r.url, title: r.title ?? null, image: null, domain, source: "web", blurb: r.blurb ?? null }];
       } catch { return []; }
     });
@@ -705,7 +709,7 @@ async function enrich(items: Suggestion[]): Promise<Suggestion[]> {
           if (!h) continue;
           const bare = h.replace(/^www\./, "");
           if (bare === galleryHost || bare.endsWith("." + galleryHost)) continue;
-          if (SOCIAL_RE.test(h) || DEV_RE.test(h) || GALLERY_HOSTS.has(h) || GALLERY_HOSTS.has(bare)) continue;
+          if (SOCIAL_RE.test(h) || DEV_RE.test(h) || SPAM_RE.test(h) || GALLERY_HOSTS.has(h) || GALLERY_HOSTS.has(bare)) continue;
           if (/google\.|apple\.|cdn\.|cloudfront|unsplash|typekit|fonts\.|webflow\.io$|framer\.com$/i.test(h)) continue;
           found = m[1];
           break;
@@ -842,6 +846,7 @@ async function runStreaming(opts: RunOpts): Promise<Response> {
           const finalItems = top.filter((s) => {
             if (exclude.has(s.domain) || exclude.has(s.url) || exclude.has(norm(s.url))) return false;
             if (s.source !== "seed" && s.source !== "web" && (CURATION_RE.test(s.domain) || DEV_RE.test(s.domain))) return false;
+            if (SPAM_RE.test(s.domain)) return false;
             if (seenDomains.has(s.domain)) return false;
             seenDomains.add(s.domain);
             return true;
@@ -959,6 +964,7 @@ async function run({ query, mode, img, taste, exclude, candidates, refKey, filte
     // web-search results are already pre-filtered by CURATION_RE inside webSearch(); don't
     // double-filter them here or legitimate agency sites with overlapping name patterns get dropped.
     if (s.source !== "seed" && s.source !== "web" && (CURATION_RE.test(s.domain) || DEV_RE.test(s.domain))) return false;
+    if (SPAM_RE.test(s.domain)) return false;
     if (seenDomains.has(s.domain)) return false;
     seenDomains.add(s.domain);
     return true;
