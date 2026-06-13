@@ -1,9 +1,8 @@
 /**
  * Corpus + items embedding_v2 backfill.
  *
- * Aggressively drains rows missing embedding_v2 using Cloudflare CLIP (no rate
- * limit). Run this once to drain the 1,345-row backlog that was infeasible with
- * Voyage's 3 RPM free tier.
+ * Drains rows missing embedding_v2 using HuggingFace CLIP (free, ~1k req/day).
+ * Falls back to Voyage (3 RPM) when HF_API_TOKEN is not set.
  *
  * GET  — cron entry (Vercel cron or manual curl with CRON_SECRET)
  * POST { corpus?: number, items?: number } — manual with specific batch sizes
@@ -12,7 +11,7 @@
  */
 import { createClient } from "@supabase/supabase-js";
 import { isAuthed } from "../../_lib/auth";
-import { getEmbedder, hasCfKey, CloudflareEmbedder } from "../../_lib/embedder";
+import { getEmbedder, hasClipKey, CloudflareEmbedder } from "../../_lib/embedder";
 import { hasVoyageKey, voyageEmbed, type VoyageContent } from "../../_lib/voyage";
 import { extractColorsFromImage, extractLabPalette } from "../../_lib/colors";
 import { inferFacetsFromText } from "@/lib/facets";
@@ -76,7 +75,7 @@ function itemEmbedText(row: { ai_caption?: string | null; tags?: string[] | null
 /** Embed `batch` corpus rows missing embedding_v2. Returns { embedded, remaining }. */
 async function backfillCorpus(batch: number): Promise<{ embedded: number; remaining: number }> {
   const embedder = getEmbedder();
-  const useCf = hasCfKey();
+  const useCf = hasClipKey();
   const db = admin();
 
   const { data } = await db
@@ -140,7 +139,7 @@ async function backfillCorpus(batch: number): Promise<{ embedded: number; remain
 /** Embed `batch` library items missing embedding_v2. Returns { embedded, remaining }. */
 async function backfillItems(batch: number): Promise<{ embedded: number; remaining: number }> {
   const embedder = getEmbedder();
-  const useCf = hasCfKey();
+  const useCf = hasClipKey();
   const db = admin();
 
   const { data } = await db
@@ -325,14 +324,14 @@ export async function GET(req: Request) {
   if (!(await isAuthorised(req))) {
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
-  if (!hasCfKey() && !hasVoyageKey()) {
+  if (!hasClipKey() && !hasVoyageKey()) {
     return Response.json({ error: "no embed key configured" }, { status: 503 });
   }
   try {
-    const corpusBatch = hasCfKey() ? CF_CORPUS_BATCH : VOYAGE_CORPUS_BATCH;
+    const corpusBatch = hasClipKey() ? CF_CORPUS_BATCH : VOYAGE_CORPUS_BATCH;
     const [corpus, items, paletteLab, facets, quality] = await Promise.all([
       backfillCorpus(corpusBatch),
-      backfillItems(hasCfKey() ? CF_ITEMS_BATCH : 4),
+      backfillItems(hasClipKey() ? CF_ITEMS_BATCH : 4),
       backfillPaletteLab(30),
       backfillFacets(200),
       backfillQualityScores(300),
@@ -349,11 +348,11 @@ export async function POST(req: Request) {
   if (!(await isAuthorised(req))) {
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
-  if (!hasCfKey() && !hasVoyageKey()) {
+  if (!hasClipKey() && !hasVoyageKey()) {
     return Response.json({ error: "no embed key configured" }, { status: 503 });
   }
   const body = await req.json().catch(() => ({}));
-  const corpusBatch = Math.min(Math.max(Number(body.corpus ?? (hasCfKey() ? CF_CORPUS_BATCH : VOYAGE_CORPUS_BATCH)), 0), 200);
+  const corpusBatch = Math.min(Math.max(Number(body.corpus ?? (hasClipKey() ? CF_CORPUS_BATCH : VOYAGE_CORPUS_BATCH)), 0), 200);
   const itemsBatch = Math.min(Math.max(Number(body.items ?? 0), 0), 100);
   const paletteBatch = Math.min(Math.max(Number(body.paletteLab ?? 30), 0), 200);
   const facetBatch = Math.min(Math.max(Number(body.facets ?? 200), 0), 500);

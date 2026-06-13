@@ -1,15 +1,16 @@
 /**
  * Provider-agnostic embedding interface — Phase 0.
  *
- * Primary:  Cloudflare Workers AI CLIP ViT-B/32 (free tier, 512-dim, no rate limit).
+ * Primary:  HuggingFace Inference API CLIP ViT-B/32 (free tier, 512-dim, ~1k req/day).
  * Fallback: Voyage multimodal-3.5 (1024-dim, 3 RPM on free tier) — kept for
  *           backward compat on the existing items.embedding column.
  *
- * Env vars required for Cloudflare:
- *   CF_ACCOUNT_ID   — Cloudflare account ID
- *   CF_API_TOKEN    — API token with "Workers AI" permission
+ * NOTE: Cloudflare Workers AI (@cf/openai/clip-vit-base-patch32) was removed from
+ * CF's public catalog. HuggingFace hosts the same model with a compatible API.
+ *
+ * Env vars:
+ *   HF_API_TOKEN    — HuggingFace API token (read access is sufficient)
  */
-import sharp from "sharp";
 import { voyageEmbed, type VoyageContent } from "./voyage";
 
 // ---------- interface ----------
@@ -23,61 +24,76 @@ export interface Embedder {
   embedHybrid(imageBase64: string, mimeType: string, text: string): Promise<number[]>;
 }
 
-// ---------- Cloudflare Workers AI CLIP ViT-B/32 ----------
+// ---------- HuggingFace Inference API CLIP ViT-B/32 ----------
 
-const CF_URL = (id: string) =>
-  `https://api.cloudflare.com/client/v4/accounts/${id}/ai/run/@cf/openai/clip-vit-base-patch32`;
+const HF_CLIP_URL =
+  "https://api-inference.huggingface.co/models/openai/clip-vit-base-patch32";
 
-export function hasCfKey(): boolean {
-  return !!(process.env.CF_ACCOUNT_ID && process.env.CF_API_TOKEN);
+export function hasHfKey(): boolean {
+  return !!process.env.HF_API_TOKEN;
 }
 
-async function cfCall(body: Record<string, unknown>): Promise<number[]> {
-  const res = await fetch(CF_URL(process.env.CF_ACCOUNT_ID!), {
+/** Returns true if a free 512-dim CLIP embedder is available (HF). */
+export function hasClipKey(): boolean {
+  return hasHfKey();
+}
+
+/** @deprecated CF CLIP model removed from catalog. Use hasClipKey() instead. */
+export function hasCfKey(): boolean {
+  return false;
+}
+
+async function hfTextCall(text: string): Promise<number[]> {
+  const res = await fetch(HF_CLIP_URL, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${process.env.CF_API_TOKEN}`,
+      Authorization: `Bearer ${process.env.HF_API_TOKEN}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ inputs: text.slice(0, 1000) }),
     signal: AbortSignal.timeout(30000),
   });
   if (!res.ok) {
     const msg = await res.text().catch(() => "");
-    throw new Error(`cf-clip ${res.status}: ${msg.slice(0, 200)}`);
+    throw new Error(`hf-clip-text ${res.status}: ${msg.slice(0, 200)}`);
   }
   const out = await res.json();
-  // { result: { shape: [1,512], data: [[...]] }, success: true }
-  const data = out?.result?.data;
-  const vec = Array.isArray(data?.[0]) ? data[0] : Array.isArray(data) ? data : null;
-  if (!vec) throw new Error("cf-clip: unexpected response shape");
+  // HF feature-extraction returns [[...512 floats...]]
+  const vec = Array.isArray(out?.[0]) ? out[0] : Array.isArray(out) ? out : null;
+  if (!vec || vec.length !== 512) throw new Error("hf-clip-text: unexpected response shape");
   return vec as number[];
 }
 
-/**
- * Resize and convert any image to the 224×224 RGB pixel array CLIP expects.
- * Returns a flat uint8 array of length 224*224*3 = 150,528.
- */
-async function toClipPixels(imageBase64: string): Promise<number[]> {
+async function hfImageCall(imageBase64: string): Promise<number[]> {
   const buf = Buffer.from(imageBase64, "base64");
-  const raw = await sharp(buf)
-    .resize(224, 224, { fit: "cover", position: "centre" })
-    .removeAlpha()
-    .raw()
-    .toBuffer();
-  return Array.from(new Uint8Array(raw));
+  const res = await fetch(HF_CLIP_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.HF_API_TOKEN}`,
+      "Content-Type": "application/octet-stream",
+    },
+    body: buf,
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!res.ok) {
+    const msg = await res.text().catch(() => "");
+    throw new Error(`hf-clip-image ${res.status}: ${msg.slice(0, 200)}`);
+  }
+  const out = await res.json();
+  const vec = Array.isArray(out?.[0]) ? out[0] : Array.isArray(out) ? out : null;
+  if (!vec || vec.length !== 512) throw new Error("hf-clip-image: unexpected response shape");
+  return vec as number[];
 }
 
-export class CloudflareEmbedder implements Embedder {
+export class HuggingFaceEmbedder implements Embedder {
   readonly dims = 512;
 
   async embedText(text: string): Promise<number[]> {
-    return cfCall({ text: text.slice(0, 1000) });
+    return hfTextCall(text);
   }
 
   async embedImage(imageBase64: string, _mimeType: string): Promise<number[]> {
-    const pixels = await toClipPixels(imageBase64);
-    return cfCall({ image: pixels });
+    return hfImageCall(imageBase64);
   }
 
   /**
@@ -120,17 +136,20 @@ export class VoyageEmbedder implements Embedder {
   }
 }
 
+// ---------- Kept for import compatibility in backfill route ----------
+export class CloudflareEmbedder extends HuggingFaceEmbedder {}
+
 // ---------- factory ----------
 
 let _embedder: Embedder | null = null;
 
 /**
- * Returns the best available embedder: Cloudflare CLIP when CF env vars are set,
+ * Returns the best available embedder: HuggingFace CLIP when HF_API_TOKEN is set,
  * else Voyage. Result is cached for the process lifetime.
  */
 export function getEmbedder(): Embedder {
   if (!_embedder) {
-    _embedder = hasCfKey() ? new CloudflareEmbedder() : new VoyageEmbedder();
+    _embedder = hasHfKey() ? new HuggingFaceEmbedder() : new VoyageEmbedder();
   }
   return _embedder;
 }
