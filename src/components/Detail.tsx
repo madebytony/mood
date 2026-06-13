@@ -2,13 +2,25 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Item, Space } from "@/lib/types";
-import { matchToItem, noteTitle, signedUrls, touchViewed, updateItem } from "@/lib/db";
+import { addFromUrl, matchToItem, noteTitle, signedUrls, touchViewed, updateItem } from "@/lib/db";
+import { authToken } from "@/lib/supabase";
 import { paletteSimilar } from "@/lib/media";
 import { isHtmlNote, plainToHtml } from "@/lib/noteHtml";
 import NoteEditor from "./NoteEditor";
 import { notice } from "./ui";
 import { useDialog } from "./useDialog";
-import { SparklesIcon, XIcon, ChevronLeftIcon, ChevronRightIcon, WarningIcon, ExternalLinkIcon } from "./icons";
+import { SparklesIcon, XIcon, ChevronLeftIcon, ChevronRightIcon, WarningIcon, ExternalLinkIcon, BookmarkIcon, CheckSquareIcon } from "./icons";
+
+interface StudioWork {
+  url: string;
+  title: string | null;
+  image: string | null;
+}
+
+interface StudioData {
+  studio: { name: string | null; domain: string; kind: string; url: string };
+  work: StudioWork[];
+}
 
 interface Props {
   item: Item;
@@ -22,6 +34,7 @@ interface Props {
   onOpenItem: (item: Item) => void;
   onWebSimilar: (query: string, imageUrl?: string | null, itemId?: string) => void;
   onDelete: (item: Item) => void;
+  toast: (msg: string, kind?: "info" | "error") => void;
 }
 
 function related(item: Item, all: Item[]): Item[] {
@@ -41,7 +54,7 @@ function related(item: Item, all: Item[]): Item[] {
     .map((r) => r.i);
 }
 
-export default function Detail({ item, spaces, allItems, siblings, urls, onClose, onChanged, onOpenItem, onWebSimilar, onDelete }: Props) {
+export default function Detail({ item, spaces, allItems, siblings, urls, onClose, onChanged, onOpenItem, onWebSimilar, onDelete, toast }: Props) {
   const [fullUrl, setFullUrl] = useState<string | null>(null);
   const touchStart = useRef<{ x: number; y: number } | null>(null);
   const [title, setTitle] = useState(item.title ?? "");
@@ -58,6 +71,11 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
   const [relUrls, setRelUrls] = useState<Map<string, string>>(new Map());
   const [paletteMode, setPaletteMode] = useState(false); // swap the rail to colour-palette neighbours
   const hasColor = (item.colors ?? []).some((c) => c !== "dark" && c !== "light");
+  const [studioData, setStudioData] = useState<StudioData | null>(null);
+  const [workExpanded, setWorkExpanded] = useState(false);
+  const [galleryIdx, setGalleryIdx] = useState<number | null>(null); // null = gallery closed
+  const [savingWork, setSavingWork] = useState<string | null>(null);
+  const [savedWork, setSavedWork] = useState<Set<string>>(new Set());
   const palette = paletteMode ? paletteSimilar(item, allItems) : [];
   const shown = paletteMode ? palette : rel;
 
@@ -74,7 +92,30 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
     const path = item.storage_path ?? item.thumb_path;
     if (path) signedUrls([path]).then((m) => setFullUrl(m.get(path) ?? null));
     touchViewed(item.id).catch(() => {});
+    setStudioData(null);
+    setWorkExpanded(false);
+    setGalleryIdx(null);
+    setSavedWork(new Set());
   }, [item]);
+
+  // Fetch studio info when source_domain exists
+  useEffect(() => {
+    let alive = true;
+    if (!item.source_domain) return;
+    (async () => {
+      const token = await authToken();
+      if (!token || !alive) return;
+      try {
+        const res = await fetch(`/api/directory/${encodeURIComponent(item.source_domain!)}`, {
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        });
+        if (!res.ok || !alive) return;
+        const data: StudioData = await res.json();
+        if (alive) setStudioData(data);
+      } catch {}
+    })();
+    return () => { alive = false; };
+  }, [item.source_domain]);
 
   // Sign any palette-neighbour thumbnails not already covered by the grid's signed URLs.
   useEffect(() => {
@@ -227,7 +268,73 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
             </button>
           )}
           <div className={`md:flex-1 ${scrollMode ? "md:overflow-y-auto" : "md:grid md:place-items-center md:overflow-hidden"}`}>
-            {fullUrl ? (
+            {galleryIdx !== null && studioData && studioData.work[galleryIdx] ? (() => {
+              const w = studioData.work[galleryIdx];
+              const hasPrev = galleryIdx > 0;
+              const hasNext = galleryIdx < studioData.work.length - 1;
+              return (
+                <div className="relative flex h-full flex-col">
+                  <div className="flex items-center justify-between gap-2 border-b border-white/5 px-4 py-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <button onClick={() => setGalleryIdx(null)} className="text-[11px] text-zinc-400 hover:text-zinc-200">
+                        ← Back
+                      </button>
+                      <span className="text-[11px] text-zinc-600">
+                        {galleryIdx + 1} / {studioData.work.length}
+                      </span>
+                    </div>
+                    {w.title && (
+                      <a href={w.url} target="_blank" rel="noreferrer" className="flex items-center gap-1 truncate text-[11px] text-zinc-300 hover:text-white hover:underline">
+                        {w.title} <ExternalLinkIcon className="h-3 w-3 shrink-0" />
+                      </a>
+                    )}
+                  </div>
+                  <div className="relative flex-1 grid place-items-center overflow-hidden">
+                    {hasPrev && (
+                      <button
+                        onClick={() => setGalleryIdx(galleryIdx - 1)}
+                        className="absolute left-3 top-1/2 z-20 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full bg-black/50 text-white backdrop-blur hover:bg-black/70"
+                      >
+                        <ChevronLeftIcon className="h-5 w-5" />
+                      </button>
+                    )}
+                    {hasNext && (
+                      <button
+                        onClick={() => setGalleryIdx(galleryIdx + 1)}
+                        className="absolute right-3 top-1/2 z-20 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full bg-black/50 text-white backdrop-blur hover:bg-black/70"
+                      >
+                        <ChevronRightIcon className="h-5 w-5" />
+                      </button>
+                    )}
+                    {w.image ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={w.image} alt={w.title ?? ""} className="max-h-[72dvh] w-full object-contain" />
+                    ) : (
+                      <div className="text-zinc-700">No image</div>
+                    )}
+                  </div>
+                  {/* thumbnail strip */}
+                  <div className="no-scrollbar flex gap-1.5 overflow-x-auto border-t border-white/5 p-2">
+                    {studioData.work.map((wi, i) => (
+                      <button
+                        key={wi.url}
+                        onClick={() => setGalleryIdx(i)}
+                        className={`h-12 w-16 shrink-0 overflow-hidden rounded-md border transition-colors ${
+                          i === galleryIdx ? "border-white/40" : "border-white/10 hover:border-white/25"
+                        }`}
+                      >
+                        {wi.image ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={wi.image} alt="" className="h-full w-full object-cover" />
+                        ) : (
+                          <div className="grid h-full w-full place-items-center bg-white/5 text-[8px] text-zinc-600">?</div>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })() : fullUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={fullUrl}
@@ -449,6 +556,126 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
                 <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-amber-300/90">
                   <WarningIcon className="h-3.5 w-3.5 shrink-0" /> This link may be dead — the source didn’t respond.
                 </div>
+              )}
+            </div>
+          )}
+
+          {studioData && (
+            <div className="space-y-3">
+              <div className="h-px bg-white/8" />
+              <div className="flex items-center justify-between gap-2">
+                <a
+                  href={studioData.studio.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-2 min-w-0 hover:underline"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={`https://www.google.com/s2/favicons?domain=${studioData.studio.domain}&sz=64`}
+                    alt=""
+                    className="h-4 w-4 shrink-0 rounded-sm"
+                  />
+                  <span className="text-sm font-medium text-zinc-200 truncate">
+                    {studioData.studio.name ?? studioData.studio.domain}
+                  </span>
+                </a>
+                <span
+                  className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ${
+                    studioData.studio.kind === "foundry"
+                      ? "bg-amber-500/15 text-amber-300 ring-amber-500/30"
+                      : "bg-sky-500/15 text-sky-300 ring-sky-500/30"
+                  }`}
+                >
+                  {studioData.studio.kind === "foundry" ? "Foundry" : "Agency"}
+                </span>
+              </div>
+              {studioData.work.length > 0 && (
+                <>
+                  <label className="block text-[11px] uppercase tracking-wider text-zinc-600">Recent work</label>
+                  <div className="space-y-2">
+                    {(workExpanded ? studioData.work : studioData.work.slice(0, 3)).map((w, i) => {
+                      const workIdx = workExpanded ? i : i;
+                      const isSaving = savingWork === w.url;
+                      const isSaved = savedWork.has(w.url);
+                      const bookmarks = spaces.find((s) => s.kind === "bookmarks");
+                      return (
+                        <div key={w.url} className="group/work flex gap-2.5 rounded-lg p-1 -mx-1 hover:bg-white/5">
+                          <button
+                            onClick={() => setGalleryIdx(workIdx)}
+                            className="h-14 w-20 shrink-0 overflow-hidden rounded-md border border-white/10 hover:border-white/30"
+                          >
+                            {w.image ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img
+                                src={w.image}
+                                alt=""
+                                className="h-full w-full object-cover"
+                                onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                              />
+                            ) : (
+                              <div className="grid h-full w-full place-items-center bg-white/5 text-[9px] text-zinc-600">No img</div>
+                            )}
+                          </button>
+                          <div className="flex flex-1 items-center justify-between gap-1 min-w-0">
+                            <button
+                              onClick={() => setGalleryIdx(workIdx)}
+                              className="text-left text-xs text-zinc-400 line-clamp-2 hover:text-zinc-200"
+                            >
+                              {w.title ?? new URL(w.url).pathname}
+                            </button>
+                            {bookmarks && (
+                              <button
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  if (isSaving || isSaved) return;
+                                  setSavingWork(w.url);
+                                  try {
+                                    await addFromUrl(w.url, bookmarks.id);
+                                    setSavedWork((prev) => new Set([...prev, w.url]));
+                                    toast(`Saved to ${bookmarks.name}`);
+                                  } catch (err) {
+                                    toast(`Couldn't save: ${(err as Error).message}`, "error");
+                                  } finally {
+                                    setSavingWork(null);
+                                  }
+                                }}
+                                disabled={isSaving || isSaved}
+                                title={isSaved ? "Saved" : "Save to Bookmarks"}
+                                className={`shrink-0 grid h-6 w-6 place-items-center rounded-full opacity-0 group-hover/work:opacity-100 transition-opacity ${
+                                  isSaved
+                                    ? "text-amber-300 opacity-100"
+                                    : isSaving
+                                    ? "text-zinc-500"
+                                    : "text-zinc-500 hover:text-amber-300"
+                                }`}
+                              >
+                                {isSaved ? (
+                                  <CheckSquareIcon className="h-3.5 w-3.5" />
+                                ) : isSaving ? (
+                                  <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                                    <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" className="opacity-25" />
+                                    <path fill="currentColor" className="opacity-75" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                                  </svg>
+                                ) : (
+                                  <BookmarkIcon className="h-3.5 w-3.5" />
+                                )}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {studioData.work.length > 3 && (
+                    <button
+                      onClick={() => setWorkExpanded((e) => !e)}
+                      className="text-[11px] text-zinc-400 hover:text-zinc-200 hover:underline"
+                    >
+                      {workExpanded ? "Show less" : `Show ${studioData.work.length - 3} more`}
+                    </button>
+                  )}
+                </>
               )}
             </div>
           )}

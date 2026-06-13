@@ -1461,6 +1461,7 @@ function App() {
             setSimilarQuery(q);
           }}
           onDelete={softDelete}
+          toast={toast}
         />
       )}
 

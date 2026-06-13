@@ -42,7 +42,7 @@ export interface CorpusCandidate {
 
 /** Sources where each URL is a distinct piece on a shared domain. Detected from the source
  *  string so it survives the `index/<source>` prefix retrieval adds. */
-export const MULTI_ENTRY_RE = /fontsinuse|itsnicethat|^studio\//;
+export const MULTI_ENTRY_RE = /fontsinuse|itsnicethat|^studio\/|^instagram\//;
 
 function admin() {
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -582,6 +582,84 @@ async function studioInstagram(cap = 25): Promise<CorpusCandidate[]> {
   return out;
 }
 
+/** Curated design Instagram accounts — editorial publications, type journals, and
+ *  inspiration curators. Their posts are first-class corpus candidates: high-quality
+ *  images + captions, updated daily, covering the full design spectrum. */
+const CURATOR_IG_ACCOUNTS: { handle: string; tags: string[]; kind: "site" | "type" }[] = [
+  { handle: "eyeondesign",        tags: ["graphic design", "editorial", "instagram"],   kind: "site" },
+  { handle: "itsnicethat",        tags: ["editorial", "graphic design", "instagram"],   kind: "site" },
+  { handle: "dezeen",             tags: ["architecture", "design", "instagram"],         kind: "site" },
+  { handle: "wallpapermag",       tags: ["design", "architecture", "instagram"],         kind: "site" },
+  { handle: "designboom",         tags: ["design", "innovation", "instagram"],           kind: "site" },
+  { handle: "slanted_magazine",   tags: ["typography", "graphic design", "instagram"],  kind: "type" },
+  { handle: "typematters",        tags: ["typography", "type design", "instagram"],      kind: "type" },
+  { handle: "typedesignclub",     tags: ["type design", "typography", "instagram"],      kind: "type" },
+  { handle: "lettercollective",   tags: ["typography", "lettering", "instagram"],        kind: "type" },
+  { handle: "fontsinuse",         tags: ["type in use", "typography", "instagram"],      kind: "type" },
+  { handle: "awwwards",           tags: ["web design", "interaction", "instagram"],      kind: "site" },
+  { handle: "siteinspire",        tags: ["web design", "inspiration", "instagram"],      kind: "site" },
+  { handle: "minimalissimo",      tags: ["minimal", "design", "instagram"],              kind: "site" },
+  { handle: "packagingoftheworld",tags: ["packaging", "branding", "instagram"],          kind: "site" },
+  { handle: "grainedit",          tags: ["graphic design", "vintage", "instagram"],      kind: "site" },
+];
+
+/** Harvest recent posts from curated design Instagram accounts — publications, type
+ *  journals, and editorial curators. Unlike studioInstagram (watched studio content),
+ *  these span the broader design world. Samples 10 accounts at random per run so all
+ *  cycle through over successive nightly harvests without blowing the Vercel time budget.
+ *  Posts land in corpus with source "instagram/<handle>" and domain "instagram.com". */
+async function curatorsInstagram(): Promise<CorpusCandidate[]> {
+  // Random rotation: 10 accounts per run ≈ all 15 covered every 1-2 nights
+  const shuffled = [...CURATOR_IG_ACCOUNTS].sort(() => Math.random() - 0.5);
+  const accounts = shuffled.slice(0, 10);
+  const out: CorpusCandidate[] = [];
+
+  for (const account of accounts) {
+    try {
+      const res = await fetch(
+        `https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(account.handle)}`,
+        {
+          headers: {
+            "user-agent": UA,
+            "x-ig-app-id": "936619743392459",
+            "accept": "*/*",
+          },
+          signal: AbortSignal.timeout(8000),
+        }
+      );
+      if (!res.ok) continue;
+      const data = await res.json();
+      const edges: unknown[] = data?.data?.user?.edge_owner_to_timeline_media?.edges ?? [];
+
+      for (const edge of edges.slice(0, 12)) {
+        const node = (edge as { node: Record<string, unknown> }).node;
+        if (node.is_video) continue;
+        const shortcode = node.shortcode as string | undefined;
+        if (!shortcode) continue;
+        const image = (node.thumbnail_src as string | null) ?? null;
+        if (!image) continue;
+        const captionEdges = (node.edge_media_to_caption as { edges: { node: { text: string } }[] } | undefined)?.edges ?? [];
+        const caption = captionEdges[0]?.node?.text?.replace(/[\r\n]+/g, " ").trim().slice(0, 200) ?? null;
+        out.push({
+          url: `https://www.instagram.com/p/${shortcode}/`,
+          domain: "instagram.com",
+          title: caption,
+          image,
+          tags: account.tags,
+          source: `instagram/${account.handle}`,
+          kind: account.kind,
+          multiEntry: true,
+        });
+      }
+    } catch { /* one account failing is fine */ }
+
+    // Brief pause — same rate-limit courtesy as studioInstagram
+    await new Promise((r) => setTimeout(r, 350));
+  }
+
+  return out;
+}
+
 /** Grow watched_studios automatically from gallery co-appearances in web_corpus.
  *  Any domain that has been indexed from 2+ distinct gallery sources but isn't yet
  *  in watched_studios is upserted as tier='discovered' with gallery_appearances set
@@ -753,8 +831,9 @@ export async function harvest(): Promise<{ found: number; added: number }> {
   const results = await Promise.allSettled([
     minimalGallery(), arena(), homepages(), brutalist(), httpsterArchives(),
     directSites(), typewolf(), itsnicethat(), fontsinuse(),
-    studioContent(),   // multi-entry: blog posts / work pages from watched studios
-    studioInstagram(), // multi-entry: recent Instagram posts from watched studios
+    studioContent(),      // multi-entry: blog posts / work pages from watched studios
+    studioInstagram(),    // multi-entry: recent Instagram posts from watched studios
+    curatorsInstagram(),  // multi-entry: design publications + type journals on Instagram
   ]);
   const cands = results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
   // Single-entry sources: one row per domain (a studio featured by 3 galleries = 1 row).
