@@ -1337,6 +1337,7 @@ export async function discover(query: string | null, extraExclude: string[] = []
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       q: augmentedQuery,
+      filterHints: filterAddendum || undefined,
       mode: filters?.kind === "type" ? "type" : mode,
       img: imageUrl || undefined,
       taste,

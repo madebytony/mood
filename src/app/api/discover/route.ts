@@ -386,7 +386,7 @@ async function judgeBatch(
     refImage,
   ];
   batch.forEach((x, i) => { parts.push({ text: `CANDIDATE ${i}:` }); parts.push({ inlineData: x.img }); });
-  parts.push({ text: `You are judging VISUAL design similarity for a designer's moodboard.${brief ? ` The designer described the target as: "${brief.slice(0, 260)}". The REFERENCE image is ground truth; use the description only to resolve ambiguity (e.g. a partially-loaded screenshot).` : ""}
+  parts.push({ text: `You are judging VISUAL design similarity for a designer's moodboard.${brief ? ` The designer described the target as: "${brief.slice(0, 300)}". The REFERENCE image is ground truth. If the description includes explicit style constraints (e.g. palette name, mood, layout, era), let them directly influence your axis scores — a candidate matching those constraints scores higher on the relevant axis even if the reference image is ambiguous.` : ""}
 
 For each CANDIDATE, FIRST decide "ok": is this a real, rendered website's design, or is it junk — a 404/error page, a loading/splash screen, a cookie-consent wall, a bot/"verify you are human" block, a near-blank page, or just a bare logo on an empty background? Junk is NOT moodboard material however it scores, so set "ok": false and don't bother scoring it well.
 
@@ -722,6 +722,10 @@ interface RunOpts {
   /** Verdict-memory key ("item:<id>" / "space:<id>") — lets the judge skip candidates
    *  already ruled out for this reference and persist new rulings. */
   refKey: string | null;
+  /** Natural-language serialisation of active colour/facet filters (e.g. "terracotta palette,
+   *  playful mood, editorial layout") — injected into the visual judge prompt so constraints
+   *  influence axis scores rather than just the upstream search query. */
+  filterHints: string | null;
 }
 
 export async function GET(req: Request) {
@@ -735,6 +739,7 @@ export async function GET(req: Request) {
     exclude: new Set((sp.get("exclude") ?? "").split(",").map((d) => d.trim()).filter(Boolean)),
     candidates: [],
     refKey: null,
+    filterHints: null,
   });
 }
 
@@ -763,10 +768,11 @@ export async function POST(req: Request) {
       } satisfies Suggestion];
     }),
     refKey: typeof body.refKey === "string" && /^(item|space):[\w-]+$/.test(body.refKey) ? body.refKey : null,
+    filterHints: typeof body.filterHints === "string" && body.filterHints ? body.filterHints : null,
   });
 }
 
-async function run({ query, mode, img, taste, exclude, candidates, refKey }: RunOpts): Promise<Response> {
+async function run({ query, mode, img, taste, exclude, candidates, refKey, filterHints }: RunOpts): Promise<Response> {
   try {
 
   let cands: Suggestion[];
@@ -797,7 +803,12 @@ async function run({ query, mode, img, taste, exclude, candidates, refKey }: Run
       ]);
       // Corpus candidates lead the pool: they're already taste-near by vector, so the judge
       // spends its scores on plausible matches first.
-      const ranked = await visualRank(refImage, [...candidates, ...mined, ...web, ...agg, ...arn], exclude, { brief: query, refKey });
+      // Merge explicit filter constraints into the judge brief so axis scores reflect them —
+      // without this, facet/colour filters only affect the upstream search query, not scoring.
+      const judgeBrief = filterHints
+        ? [query, `Explicit style constraints (weight in axis scores): ${filterHints}`].filter(Boolean).join(". ")
+        : query;
+      const ranked = await visualRank(refImage, [...candidates, ...mined, ...web, ...agg, ...arn], exclude, { brief: judgeBrief, refKey });
       if (ranked && ranked.length) { cands = ranked; visuallyRanked = true; }
       else cands = [...candidates, ...mined, ...web]; // judging unavailable — fall back to the text-ranked path
     } else {
