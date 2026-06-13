@@ -336,7 +336,10 @@ async function describeAesthetic(image: { inlineData: { mimeType: string; data: 
     });
     const t = geminiText(res).replace(/\s+/g, " ").trim();
     return t || null;
-  } catch { return null; }
+  } catch (e) {
+    console.warn("describeAesthetic failed:", (e as Error).message);
+    return null;
+  }
 }
 
 /* ---------------- visual re-rank: judge candidates against the reference pixels ---------------- */
@@ -542,7 +545,7 @@ async function visualRank(
       judged.push(...await judgeBatch(refImage, withImg.slice(i, i + 7), opts.brief ?? null));
       // Stream the current best results to the client after each batch
       if (opts.onBatch) {
-        const snapshot = judged.filter((j) => j.score >= 4).sort((a, b) => b.score - a.score);
+        const snapshot = judged.filter((j) => j.score >= 3).sort((a, b) => b.score - a.score);
         if (snapshot.length) opts.onBatch(snapshot.map(toSuggestion));
       }
       // Only early-stop after evaluating at least 14 candidates, and only when we have enough strong matches
@@ -608,7 +611,8 @@ async function webSearch(query: string, subjectMatters = false): Promise<Suggest
         return [{ url: r.url, title: r.title ?? null, image: null, domain, source: "web", blurb: r.blurb ?? null }];
       } catch { return []; }
     });
-  } catch {
+  } catch (e) {
+    console.warn("webSearch failed:", (e as Error).message);
     return [];
   }
 }
@@ -689,6 +693,12 @@ async function enrich(items: Suggestion[]): Promise<Suggestion[]> {
       }
       const html = (await res.text()).slice(0, 300_000);
       const base = res.url || i.url;
+      // Check the final URL after redirects — shortlinks can resolve to spam/social
+      const finalHost = hostOnly(base);
+      if (finalHost && (SOCIAL_RE.test(finalHost) || SPAM_RE.test(finalHost) || DEV_RE.test(finalHost))) {
+        dropped.add(i.url);
+        return;
+      }
       const og = (p: string) =>
         (new RegExp(`<meta[^>]+(?:property|name)=["']${p}["'][^>]+content=["']([^"']+)["']`, "i").exec(html) ??
           new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${p}["']`, "i").exec(html))?.[1] ?? null;

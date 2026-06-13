@@ -65,12 +65,19 @@ export function geminiText(response: any): string {
   return (response?.candidates?.[0]?.content?.parts ?? []).filter((p: any) => p.text && !p.thought).map((p: any) => p.text).join("\n");
 }
 
-/** Pull the first JSON object/array out of a model reply. */
+/** Pull the first JSON object/array out of a model reply.
+ *  If the result is an object with a single array value (e.g. {"picks": [...]}), unwrap it. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function parseJson(text: string): any {
   const m = text.match(/```json\s*([\s\S]*?)```/) ?? text.match(/(\[[\s\S]*\]|\{[\s\S]*\})/);
   if (!m) throw new Error("no json in reply");
-  return JSON.parse(m[1]);
+  const parsed = JSON.parse(m[1]);
+  // Unwrap common wrapper objects: {"results": [...]} or {"picks": [...]}
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const vals = Object.values(parsed);
+    if (vals.length === 1 && Array.isArray(vals[0])) return vals[0];
+  }
+  return parsed;
 }
 
 export { MODEL };
