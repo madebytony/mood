@@ -436,33 +436,23 @@ export default function Directory({ spaces, toast }: Props) {
 
   return (
     <div className="flex h-full flex-col">
-      {/* header */}
-      <div className="shrink-0 border-b border-white/8 px-6 pb-4 pt-6">
-        <h1 className="text-2xl font-semibold tracking-tight text-white">Directory</h1>
-        <p className="mt-1 text-sm text-zinc-500">
-          Curated agencies and type foundries
-        </p>
-
-        <div className="mt-4 flex items-center gap-2">
-          {/* filter tabs */}
-          <div className="flex gap-1 rounded-xl bg-white/5 p-1">
-            <button className={filterBtn("all", "All")} onClick={() => setFilter("all")}>All</button>
-            <button className={filterBtn("agencies", "Agencies")} onClick={() => setFilter("agencies")}>Agencies</button>
-            <button className={filterBtn("foundries", "Foundries")} onClick={() => setFilter("foundries")}>Foundries</button>
-          </div>
-
-          {/* search */}
-          <div className="relative ml-auto">
-            <SearchIcon className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-600" />
-            <input
-              ref={searchRef}
-              type="text"
-              placeholder="Search…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-48 rounded-lg border border-white/10 bg-white/5 py-2 pl-9 pr-3 text-sm text-zinc-300 placeholder-zinc-600 outline-none focus:border-white/25 focus:text-white"
-            />
-          </div>
+      {/* filter bar */}
+      <div className="shrink-0 border-b border-white/8 px-6 py-3 flex items-center gap-2">
+        <div className="flex gap-1 rounded-xl bg-white/5 p-1">
+          <button className={filterBtn("all", "All")} onClick={() => setFilter("all")}>All</button>
+          <button className={filterBtn("agencies", "Agencies")} onClick={() => setFilter("agencies")}>Agencies</button>
+          <button className={filterBtn("foundries", "Foundries")} onClick={() => setFilter("foundries")}>Foundries</button>
+        </div>
+        <div className="relative ml-auto">
+          <SearchIcon className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-600" />
+          <input
+            ref={searchRef}
+            type="text"
+            placeholder="Search studios…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-44 rounded-lg border border-white/10 bg-white/5 py-1.5 pl-9 pr-3 text-sm text-zinc-300 placeholder-zinc-600 outline-none focus:border-white/25 focus:text-white"
+          />
         </div>
       </div>
 
