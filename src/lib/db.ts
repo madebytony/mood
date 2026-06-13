@@ -1528,11 +1528,14 @@ export async function discover(query: string | null, extraExclude: string[] = []
     // thin explore pool → fall through to For You
   }
 
-  // --- Trending lane: engagement-velocity ranked corpus ---
+  // --- Rising lane: engagement-velocity ranked corpus. ---
+  // Pure trend signal: return whatever the index ranks as rising, or an empty list
+  // when there isn't enough activity yet. We deliberately DON'T fall through to For
+  // You — a "Rising" tab that silently serves taste-ranked results is misleading.
+  // The Feed renders an honest "warming up" empty state instead (see Feed.tsx).
   if (discoveryMode === "trending" && !query && mode !== "type") {
     const trending = await trendingCorpus(exclude, filters);
-    if (trending.length >= 6) return mmrDiversify(trending);
-    // no trending data yet → fall through to For You
+    return trending.length ? mmrDiversify(trending) : [];
   }
 
   // --- For You lane (default) + graded visual-similar path ---

@@ -424,6 +424,17 @@ export default function Feed({ spaces, inboxId, onBookmark, onOpenItem, onSaved,
         </div>
       )}
 
+      {/* Rising lane has its own honest empty state — it stays empty rather than
+          quietly serving For You results when there isn't enough activity yet. */}
+      {!loading && discoveryMode === "trending" && mode !== "type" && !query.trim() && !filteredCards.length && (
+        <div className="mx-auto max-w-sm py-12 text-center text-xs leading-relaxed text-zinc-600">
+          <div className="mb-1 text-zinc-400">Rising is warming up</div>
+          As sites get saved, opened, and liked, the fastest climbers from the last two weeks
+          surface here. There isn’t enough activity yet — try <span className="text-zinc-400">For You</span> or
+          {" "}<span className="text-zinc-400">Fresh</span> in the meantime.
+        </div>
+      )}
+
       <div className="columns-2 gap-3 sm:columns-3 lg:columns-4 xl:columns-5">
         {filteredCards
           .filter((card) => card.kind !== "suggestion" || !deadImg.has(card.s.url))
