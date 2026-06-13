@@ -236,7 +236,12 @@ export default function Feed({ spaces, inboxId, onBookmark, onOpenItem, onSaved,
    *  `initialQuery` as the persistent base so "Find more" keeps the original reference intent. */
   function findMore() {
     const base = compact ? (initialQuery?.trim() ?? "") : query.trim();
-    const q = [base, steer.trim(), ...seeds.current].filter(Boolean).join(" ").trim() || null;
+    // When the user provides a steer, use it as the primary query — the original brief
+    // becomes secondary context so Gemini focuses on the new direction.
+    const s = steer.trim();
+    const q = s
+      ? `${s}. (Reference context: ${base})`.trim()
+      : [base, ...seeds.current].filter(Boolean).join(" ").trim() || null;
     load(q, true);
   }
 
@@ -268,7 +273,14 @@ export default function Feed({ spaces, inboxId, onBookmark, onOpenItem, onSaved,
         <div className="mx-auto mb-2 flex max-w-xl items-center gap-2">
           <form
             className="flex flex-1 gap-1.5"
-            onSubmit={(e) => { e.preventDefault(); findMore(); }}
+            onSubmit={(e) => {
+              e.preventDefault();
+              const s = steer.trim();
+              if (!s) return;
+              const base = compact ? (initialQuery?.trim() ?? "") : query.trim();
+              // Fresh search steered by user input, original brief as context
+              load(`${s}. (Reference context: ${base})`.trim(), false);
+            }}
           >
             <input
               value={steer}
