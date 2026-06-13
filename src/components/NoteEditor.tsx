@@ -1,8 +1,7 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useEditor, EditorContent, type Editor } from "@tiptap/react";
-import { BubbleMenu } from "@tiptap/react/menus";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import { TaskList } from "@tiptap/extension-task-list";
@@ -22,50 +21,48 @@ interface Props {
   onCardColor?: (key: string | null) => void;
 }
 
-const btn = "grid h-7 w-7 place-items-center rounded-md text-zinc-300 hover:bg-white/10";
+const btn = "grid h-6 w-6 place-items-center rounded-md text-zinc-400 hover:bg-white/10 hover:text-zinc-200";
 const btnOn = "bg-white/15 text-white";
 
 function Toolbar({ editor }: { editor: Editor }) {
-  // useEditorState would be ideal, but reading isActive directly is fine inside BubbleMenu
-  // which only re-renders while visible.
   const is = (name: string, attrs?: Record<string, unknown>) => editor.isActive(name, attrs);
   return (
-    <div className="flex items-center gap-0.5 rounded-xl border border-white/10 bg-[#1e1e26] p-1 shadow-xl">
+    <div className="flex flex-col items-center gap-0.5 rounded-xl border border-white/10 bg-[#1e1e26]/90 p-1 shadow-xl backdrop-blur">
       <button className={`${btn} ${is("bold") ? btnOn : ""}`} title="Bold"
         onMouseDown={(e) => e.preventDefault()} onClick={() => editor.chain().focus().toggleBold().run()}>
-        <b>B</b>
+        <b className="text-[11px]">B</b>
       </button>
       <button className={`${btn} ${is("italic") ? btnOn : ""}`} title="Italic"
         onMouseDown={(e) => e.preventDefault()} onClick={() => editor.chain().focus().toggleItalic().run()}>
-        <i>I</i>
+        <i className="text-[11px]">I</i>
       </button>
       <button className={`${btn} ${is("underline") ? btnOn : ""}`} title="Underline"
         onMouseDown={(e) => e.preventDefault()} onClick={() => editor.chain().focus().toggleUnderline().run()}>
-        <u>U</u>
+        <u className="text-[11px]">U</u>
       </button>
-      <span className="mx-0.5 h-4 w-px bg-white/10" />
+      <span className="my-0.5 h-px w-4 bg-white/10" />
       <button className={`${btn} ${is("heading", { level: 1 }) ? btnOn : ""}`} title="Heading 1"
         onMouseDown={(e) => e.preventDefault()} onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}>
-        <span className="text-xs font-bold">H1</span>
+        <span className="text-[9px] font-bold">H1</span>
       </button>
       <button className={`${btn} ${is("heading", { level: 2 }) ? btnOn : ""}`} title="Heading 2"
         onMouseDown={(e) => e.preventDefault()} onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}>
-        <span className="text-xs font-bold">H2</span>
+        <span className="text-[9px] font-bold">H2</span>
       </button>
-      <span className="mx-0.5 h-4 w-px bg-white/10" />
+      <span className="my-0.5 h-px w-4 bg-white/10" />
       <button className={`${btn} ${is("bulletList") ? btnOn : ""}`} title="Bullet list"
         onMouseDown={(e) => e.preventDefault()} onClick={() => editor.chain().focus().toggleBulletList().run()}>
-        •
+        <span className="text-[11px]">•</span>
       </button>
       <button className={`${btn} ${is("orderedList") ? btnOn : ""}`} title="Numbered list"
         onMouseDown={(e) => e.preventDefault()} onClick={() => editor.chain().focus().toggleOrderedList().run()}>
-        <span className="text-xs">1.</span>
+        <span className="text-[9px]">1.</span>
       </button>
       <button className={`${btn} ${is("taskList") ? btnOn : ""}`} title="Checklist"
         onMouseDown={(e) => e.preventDefault()} onClick={() => editor.chain().focus().toggleTaskList().run()}>
-        ☑
+        <span className="text-[11px]">☑</span>
       </button>
-      <span className="mx-0.5 h-4 w-px bg-white/10" />
+      <span className="my-0.5 h-px w-4 bg-white/10" />
       <button className={`${btn} ${is("link") ? btnOn : ""}`} title="Link"
         onMouseDown={(e) => e.preventDefault()}
         onClick={() => {
@@ -75,19 +72,19 @@ function Toolbar({ editor }: { editor: Editor }) {
           if (url === "") { editor.chain().focus().extendMarkRange("link").unsetLink().run(); return; }
           editor.chain().focus().extendMarkRange("link").setLink({ href: url }).run();
         }}>
-        🔗
+        <span className="text-[11px]">🔗</span>
       </button>
-      <span className="mx-0.5 h-4 w-px bg-white/10" />
+      <span className="my-0.5 h-px w-4 bg-white/10" />
       {TEXT_COLORS.map((c) => (
         <button
           key={c.label}
           title={`Text: ${c.label}`}
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => c.value ? editor.chain().focus().setColor(c.value).run() : editor.chain().focus().unsetColor().run()}
-          className="grid h-7 w-5 place-items-center"
+          className="grid h-6 w-6 place-items-center"
         >
           <span
-            className="h-3.5 w-3.5 rounded-full border border-white/20"
+            className="h-3 w-3 rounded-full border border-white/20"
             style={{ background: c.value || "transparent" }}
           />
         </button>
@@ -98,8 +95,8 @@ function Toolbar({ editor }: { editor: Editor }) {
 
 export default function NoteEditor({ html, onChange, onBlur, autoFocus, cardColor, onCardColor }: Props) {
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Track the last HTML we actually persisted so the unmount flush only saves real changes.
   const lastSaved = useRef(html);
+  const [focused, setFocused] = useState(!!autoFocus);
 
   const editor = useEditor({
     immediatelyRender: false,
@@ -122,10 +119,10 @@ export default function NoteEditor({ html, onChange, onBlur, autoFocus, cardColo
       const out = editor.getHTML();
       debounce.current = setTimeout(() => { lastSaved.current = out; onChange(out); }, 350);
     },
+    onFocus: () => setFocused(true),
+    onBlur: () => setFocused(false),
   });
 
-  // On unmount: flush the latest HTML (the debounce timer would otherwise be cleared unsaved),
-  // so closing the note right after formatting still persists the change.
   useEffect(() => {
     return () => {
       if (debounce.current) clearTimeout(debounce.current);
@@ -140,7 +137,7 @@ export default function NoteEditor({ html, onChange, onBlur, autoFocus, cardColo
   if (!editor) return null;
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="relative flex h-full flex-col">
       {onCardColor && (
         <div className="mb-1.5 flex shrink-0 items-center gap-1" onPointerDown={(e) => e.stopPropagation()}>
           {CARD_TINTS.map((t) => (
@@ -162,9 +159,14 @@ export default function NoteEditor({ html, onChange, onBlur, autoFocus, cardColo
           )}
         </div>
       )}
-      <BubbleMenu editor={editor}>
-        <Toolbar editor={editor} />
-      </BubbleMenu>
+      {focused && (
+        <div
+          className="absolute -left-10 top-0 z-10"
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <Toolbar editor={editor} />
+        </div>
+      )}
       <div className="min-h-0 flex-1 overflow-y-auto" onPointerDown={(e) => e.stopPropagation()}>
         <EditorContent editor={editor} />
       </div>

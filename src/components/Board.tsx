@@ -802,7 +802,7 @@ export default function Board({
                 </div>
               )}
 
-              {!isColumn && (
+              {!isColumn && !isCollapsed && (
                 <div
                   onPointerDown={(e) => { e.stopPropagation(); onResizeDown(e, key); }}
                   title="Drag to resize"
