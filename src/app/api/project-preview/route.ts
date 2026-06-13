@@ -116,6 +116,7 @@ function extractImages(html: string, base: URL): string[] {
   if (og) add(resolve(og, base));
 
   // 2. <img> tags
+  IMG_TAG_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = IMG_TAG_RE.exec(html)) !== null) {
     const attrs = m[1];
@@ -129,6 +130,7 @@ function extractImages(html: string, base: URL): string[] {
   }
 
   // 3. background-image: url(...) in inline styles
+  BG_RE.lastIndex = 0;
   while ((m = BG_RE.exec(html)) !== null) {
     const resolved = resolve(m[1], base);
     if (resolved && isMeaningful(resolved, "")) add(resolved);

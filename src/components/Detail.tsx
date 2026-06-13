@@ -115,9 +115,9 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
     let alive = true;
     setPreviewLoading(true);
     (async () => {
-      const token = await authToken();
-      if (!token || !alive) return;
       try {
+        const token = await authToken();
+        if (!token || !alive) return;
         const res = await fetch(`/api/project-preview?url=${encodeURIComponent(item.source_url!)}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
@@ -165,9 +165,9 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
     setPreviewLoading(true);
     let alive = true;
     (async () => {
-      const token = await authToken();
-      if (!token || !alive) return;
       try {
+        const token = await authToken();
+        if (!token || !alive) return;
         const res = await fetch(`/api/project-preview?url=${encodeURIComponent(w.url)}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
@@ -221,12 +221,18 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") return onClose();
       if ((e.target as HTMLElement)?.closest?.("input, textarea, select, [contenteditable]")) return;
+      // Navigate preview images when they're showing
+      if (previewImages && previewImages.length > 1) {
+        if (e.key === "ArrowLeft" && imageIdx > 0) { setImageIdx(imageIdx - 1); return; }
+        if (e.key === "ArrowRight" && imageIdx < previewImages.length - 1) { setImageIdx(imageIdx + 1); return; }
+        return;
+      }
       if (e.key === "ArrowLeft" && prevItem) onOpenItem(prevItem);
       if (e.key === "ArrowRight" && nextItem) onOpenItem(nextItem);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, prevItem, nextItem, onOpenItem]);
+  }, [onClose, prevItem, nextItem, onOpenItem, previewImages, imageIdx]);
 
   function onTouchStart(e: React.TouchEvent) {
     touchStart.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
@@ -335,7 +341,7 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
               <ChevronRightIcon className="h-5 w-5" />
             </button>
           )}
-          <div className={`md:flex-1 ${scrollMode ? "md:overflow-y-auto" : "md:grid md:place-items-center md:overflow-hidden"}`}>
+          <div className={`md:flex-1 ${previewImages || galleryIdx !== null ? "md:overflow-hidden" : scrollMode ? "md:overflow-y-auto" : "md:grid md:place-items-center md:overflow-hidden"}`}>
             {galleryIdx !== null && studioData && studioData.work[galleryIdx] ? (() => {
               const w = studioData.work[galleryIdx];
               // Use preview images if loaded, otherwise fall back to single corpus image
@@ -347,7 +353,13 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
                 <div className="relative flex h-full flex-col">
                   <div className="flex items-center justify-between gap-2 border-b border-white/5 px-4 py-2">
                     <div className="flex items-center gap-2 min-w-0">
-                      <button onClick={() => { setGalleryIdx(null); setPreviewImages(null); setImageIdx(0); }} className="text-[11px] text-zinc-400 hover:text-zinc-200">
+                      <button onClick={() => {
+                        setGalleryIdx(null);
+                        setImageIdx(0);
+                        // Restore item's own preview from cache (don't lose it)
+                        const cached = item.source_url ? previewCache.get(item.source_url) : null;
+                        setPreviewImages(cached ?? null);
+                      }} className="text-[11px] text-zinc-400 hover:text-zinc-200">
                         ← Back
                       </button>
                       {imgs.length > 1 && (
@@ -762,14 +774,13 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
                   <label className="block text-[11px] uppercase tracking-wider text-zinc-600">Recent work</label>
                   <div className="space-y-2">
                     {(workExpanded ? studioData.work : studioData.work.slice(0, 3)).map((w, i) => {
-                      const workIdx = workExpanded ? i : i;
                       const isSaving = savingWork === w.url;
                       const isSaved = savedWork.has(w.url);
                       const bookmarks = spaces.find((s) => s.kind === "bookmarks");
                       return (
                         <div key={w.url} className="group/work flex gap-2.5 rounded-lg p-1 -mx-1 hover:bg-white/5">
                           <button
-                            onClick={() => setGalleryIdx(workIdx)}
+                            onClick={() => setGalleryIdx(i)}
                             className="h-14 w-20 shrink-0 overflow-hidden rounded-md border border-white/10 hover:border-white/30"
                           >
                             {w.image ? (
@@ -786,7 +797,7 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
                           </button>
                           <div className="flex flex-1 items-center justify-between gap-1 min-w-0">
                             <button
-                              onClick={() => setGalleryIdx(workIdx)}
+                              onClick={() => setGalleryIdx(i)}
                               className="text-left text-xs text-zinc-400 line-clamp-2 hover:text-zinc-200"
                             >
                               {w.title ?? new URL(w.url).pathname}
