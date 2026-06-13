@@ -116,6 +116,7 @@ async function backfillCorpus(batch: number): Promise<{ embedded: number; remain
       embedded++;
     } catch (e) {
       if (/429/.test((e as Error).message)) break; // Voyage rate limited
+      console.error("[backfill] embed error (primary):", (e as Error).message, "row:", row.id);
       // fallback: text-only
       if (text) {
         try {
@@ -124,7 +125,9 @@ async function backfillCorpus(batch: number): Promise<{ embedded: number; remain
           if (palette_lab.length) patch2.palette_lab = palette_lab;
           await db.from("web_corpus").update(patch2).eq("id", row.id);
           embedded++;
-        } catch { /* skip this row */ }
+        } catch (e2) {
+          console.error("[backfill] embed error (fallback):", (e2 as Error).message, "row:", row.id);
+        }
       }
     }
   }
