@@ -137,33 +137,24 @@ function Card({
 
   return (
     <div className={`group relative ${selected ? "rounded-xl ring-2 ring-white/80" : ""}`}>
-      {isBookmark && item.source_url ? (
+      <button
+        onClick={() => onOpen(item)}
+        className="card-in lift block w-full overflow-hidden rounded-xl border border-white/5 bg-white/[0.03] text-left hover:border-white/15"
+      >
+        {inner}
+      </button>
+      {/* Quick-open the source URL without going through the detail panel */}
+      {isBookmark && item.source_url && (
         <a
           href={item.source_url}
           target="_blank"
           rel="noreferrer"
-          className="card-in lift block w-full overflow-hidden rounded-xl border border-white/5 bg-white/[0.03] text-left hover:border-white/15"
-        >
-          {inner}
-        </a>
-      ) : (
-        <button
-          onClick={() => onOpen(item)}
-          className="card-in lift block w-full overflow-hidden rounded-xl border border-white/5 bg-white/[0.03] text-left hover:border-white/15"
-        >
-          {inner}
-        </button>
-      )}
-      {/* bookmark cards open the site on click — this hover control reaches the in-app panel
-          (tags, "more like this", delete) that the click would otherwise have opened. */}
-      {isBookmark && (
-        <button
-          onClick={(e) => { e.stopPropagation(); onOpen(item); }}
-          title="Details — tags, similar, delete"
+          onClick={(e) => e.stopPropagation()}
+          title="Open link"
           className="absolute right-2 top-2 z-10 hidden h-6 w-6 place-items-center rounded-full border border-white/40 bg-black/60 text-white/70 backdrop-blur hover:text-white group-hover:grid pointer-coarse:grid"
         >
-          <DotsIcon className="h-3.5 w-3.5" />
-        </button>
+          <ExternalLinkIcon className="h-3 w-3" />
+        </a>
       )}
       {item.type === "image" && item.source_domain && (
         <div className="pointer-events-none absolute inset-x-0 bottom-0 hidden rounded-b-xl bg-gradient-to-t from-black/70 to-transparent px-3 pb-2 pt-6 text-[11px] text-zinc-300 group-hover:block">
