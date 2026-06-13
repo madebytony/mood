@@ -247,22 +247,22 @@ export default function Feed({ spaces, inboxId, onBookmark, onOpenItem, onSaved,
           e.preventDefault();
           load(query.trim() || null);
         }}
-        className="mx-auto mb-2 flex max-w-xl gap-2 pt-1"
+        className="mx-auto mb-1.5 flex max-w-xl gap-2 pt-1"
       >
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Describe what you're hunting for… e.g. brutalist e-commerce, editorial type"
-          className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm outline-none placeholder:text-zinc-600 focus:border-white/30"
+          className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs outline-none placeholder:text-zinc-600 focus:border-white/30"
         />
-        <button className="shrink-0 rounded-xl bg-white px-4 text-sm font-medium text-black hover:bg-zinc-200">
+        <button className="shrink-0 rounded-xl bg-white px-3 py-2 text-xs font-medium text-black hover:bg-zinc-200">
           {loading ? "…" : "Discover"}
         </button>
       </form>
       )}
 
       {briefControls && (
-        <div className="mx-auto mb-3 max-w-xl space-y-2">
+        <div className="mx-auto mb-2 max-w-xl space-y-1.5">
           {/* LAB colour swatch picker */}
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="text-[10px] uppercase tracking-wider text-zinc-600">Colour</span>
@@ -320,39 +320,37 @@ export default function Feed({ spaces, inboxId, onBookmark, onOpenItem, onSaved,
       )}
 
       {!compact && (
-        <div className="mx-auto mb-2 flex max-w-xl gap-1 rounded-xl border border-white/10 bg-white/[0.03] p-1">
+        <div className="mx-auto mb-2 flex max-w-xl items-center gap-1.5">
+          <div className="flex gap-0.5 rounded-lg border border-white/10 bg-white/[0.03] p-0.5">
+            {([
+              { id: "foryou",   label: "For You" },
+              { id: "fresh",    label: "Fresh" },
+              { id: "trending", label: "Rising" },
+              { id: "explore",  label: "Explore" },
+            ] as const).map((m) => (
+              <button
+                key={m.id}
+                onClick={() => setDiscoveryMode(m.id)}
+                className={`rounded-md px-2 py-0.5 text-[10px] transition-colors ${
+                  discoveryMode === m.id
+                    ? "bg-white text-black"
+                    : "text-zinc-400 hover:bg-white/10 hover:text-white"
+                }`}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+          <span className="h-3.5 w-px bg-white/10" />
           {([
-            { id: "foryou",   label: "For You" },
-            { id: "fresh",    label: "Fresh" },
-            { id: "trending", label: "Rising" },
-            { id: "explore",  label: "Explore" },
-          ] as const).map((m) => (
-            <button
-              key={m.id}
-              onClick={() => setDiscoveryMode(m.id)}
-              className={`flex-1 rounded-lg px-2.5 py-1 text-[11px] transition-colors ${
-                discoveryMode === m.id
-                  ? "bg-white text-black"
-                  : "text-zinc-400 hover:bg-white/10 hover:text-white"
-              }`}
-            >
-              {m.label}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {!compact && (
-        <div className="mx-auto mb-3 flex max-w-xl items-center justify-center gap-1.5">
-          {([
-            { id: "all", label: "Everything" },
-            { id: "site", label: "Site design" },
+            { id: "all", label: "All" },
+            { id: "site", label: "Sites" },
             { id: "type", label: "Type" },
           ] as const).map((l) => (
             <button
               key={l.id}
               onClick={() => setLane(l.id)}
-              className={`rounded-full border px-2.5 py-1 text-[11px] ${
+              className={`rounded-full border px-2 py-0.5 text-[10px] ${
                 lane === l.id
                   ? "border-white bg-white text-black"
                   : "border-white/10 text-zinc-400 hover:border-white/30 hover:text-zinc-200"
@@ -361,13 +359,13 @@ export default function Feed({ spaces, inboxId, onBookmark, onOpenItem, onSaved,
               {l.label}
             </button>
           ))}
-          <span className="mx-0.5 h-4 w-px bg-white/10" />
+          <span className="h-3.5 w-px bg-white/10" />
           {COLOR_NAMES.map((c) => (
             <button
               key={c}
               onClick={() => setPaletteFilter(paletteFilter === c ? null : c)}
               title={`${c} palette`}
-              className={`h-4 w-4 shrink-0 rounded-full border transition-transform ${
+              className={`h-3.5 w-3.5 shrink-0 rounded-full border transition-transform ${
                 paletteFilter === c ? "scale-125 border-white" : "border-white/20 hover:scale-110"
               }`}
               style={{ background: COLOR_HEX[c] }}
