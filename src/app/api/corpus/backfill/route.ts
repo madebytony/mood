@@ -205,7 +205,6 @@ async function backfillItems(batch: number): Promise<{ embedded: number; remaini
     .from("items")
     .select("id,thumb_path,ai_caption,tags,fonts,colors,title")
     .is("embedding_v2", null)
-    .not("thumb_path", "is", null)
     .order("created_at", { ascending: false })
     .limit(batch);
 
@@ -412,7 +411,7 @@ export async function POST(req: Request) {
   }
   const body = await req.json().catch(() => ({}));
   const corpusBatch = Math.min(Math.max(Number(body.corpus ?? (hasClipKey() ? CF_CORPUS_BATCH : VOYAGE_CORPUS_BATCH)), 0), 200);
-  const itemsBatch = Math.min(Math.max(Number(body.items ?? 0), 0), 100);
+  const itemsBatch = Math.min(Math.max(Number(body.items ?? (hasClipKey() ? CF_ITEMS_BATCH : 4)), 0), 100);
   const paletteBatch = Math.min(Math.max(Number(body.paletteLab ?? 30), 0), 200);
   const facetBatch = Math.min(Math.max(Number(body.facets ?? 200), 0), 500);
   const qualityBatch = Math.min(Math.max(Number(body.quality ?? 300), 0), 1000);
