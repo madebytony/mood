@@ -4,7 +4,95 @@ import sharp from "sharp";
  * Server-side palette extraction — a faithful port of the client's extractColors/nameOf
  * (src/lib/media.ts) so corpus rows and library items share one colour vocabulary:
  * up to 3 dominant hue buckets (>=8% coverage) + a dark/light tone token.
+ *
+ * Also exports CIELAB conversion + extractLabPalette for the Phase 2 colour engine.
  */
+
+// ---------- CIELAB colour space ----------
+
+/** sRGB [0-255] → linear (no gamma). */
+function linearize(c: number): number {
+  const x = c / 255;
+  return x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+}
+
+/** Linear sRGB → XYZ (D65 illuminant). */
+function rgbToXyz(r: number, g: number, b: number): [number, number, number] {
+  const rl = linearize(r), gl = linearize(g), bl = linearize(b);
+  const x = rl * 0.4124564 + gl * 0.3575761 + bl * 0.1804375;
+  const y = rl * 0.2126729 + gl * 0.7151522 + bl * 0.0721750;
+  const z = rl * 0.0193339 + gl * 0.1191920 + bl * 0.9503041;
+  return [x, y, z];
+}
+
+function f(t: number): number {
+  return t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116;
+}
+
+/** sRGB [0-255] → CIELAB [L*, a*, b*]. D65 / 2° observer. */
+export function rgbToLab(r: number, g: number, b: number): [number, number, number] {
+  const [x, y, z] = rgbToXyz(r, g, b);
+  // D65 reference white
+  const fx = f(x / 0.95047), fy = f(y / 1.00000), fz = f(z / 1.08883);
+  const L = 116 * fy - 16;
+  const a = 500 * (fx - fy);
+  const bb = 200 * (fy - fz);
+  return [Math.round(L * 10) / 10, Math.round(a * 10) / 10, Math.round(bb * 10) / 10];
+}
+
+/** CIE76 delta-E between two LAB colours. */
+export function deltaE(lab1: [number, number, number], lab2: [number, number, number]): number {
+  return Math.sqrt(
+    Math.pow(lab1[0] - lab2[0], 2) +
+    Math.pow(lab1[1] - lab2[1], 2) +
+    Math.pow(lab1[2] - lab2[2], 2)
+  );
+}
+
+/**
+ * Extract dominant CIELAB colours from an image buffer.
+ * Returns 3–5 LAB triples for the most common pixel clusters (>= 5% coverage).
+ * Used to populate palette_lab for delta-E colour-verified discovery.
+ */
+export async function extractLabPalette(buf: Buffer): Promise<Array<[number, number, number]>> {
+  try {
+    const { data } = await sharp(buf, { limitInputPixels: 80_000_000 })
+      .resize(32, 32, { fit: "fill" })
+      .removeAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+
+    // Build a map of quantised RGB → count (quantise to 16-step buckets to cluster nearby shades)
+    const buckets = new Map<string, { count: number; r: number; g: number; b: number }>();
+    const px = data.length / 3;
+    for (let i = 0; i < data.length; i += 3) {
+      const r = Math.round(data[i] / 16) * 16;
+      const g = Math.round(data[i + 1] / 16) * 16;
+      const b = Math.round(data[i + 2] / 16) * 16;
+      const key = `${r},${g},${b}`;
+      const prev = buckets.get(key);
+      if (prev) {
+        prev.count++;
+        // accumulate for weighted-mean centroid
+        prev.r += data[i]; prev.g += data[i + 1]; prev.b += data[i + 2];
+      } else {
+        buckets.set(key, { count: 1, r: data[i], g: data[i + 1], b: data[i + 2] });
+      }
+    }
+
+    return [...buckets.values()]
+      .filter((b) => b.count / px >= 0.05) // >= 5% coverage
+      .sort((a, z) => z.count - a.count)
+      .slice(0, 5)
+      .map((b) => rgbToLab(
+        Math.round(b.r / b.count),
+        Math.round(b.g / b.count),
+        Math.round(b.b / b.count),
+      ));
+  } catch {
+    return [];
+  }
+}
 
 function nameOf(r: number, g: number, b: number): string {
   const mx = Math.max(r, g, b) / 255;

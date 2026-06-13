@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Item, Space } from "@/lib/types";
-import { addFromUrl, discover, markSeen, resurface, type DiscoverFilters, type Suggestion } from "@/lib/db";
+import { addFromUrl, discover, logDiscoveryEvent, markSeen, resurface, type DiscoverFilters, type DiscoveryMode, type Suggestion } from "@/lib/db";
+import { LAB_SWATCHES, FACET_VOCABULARY } from "@/lib/facets";
 import { signedUrls } from "@/lib/db";
 import { COLOR_HEX, COLOR_NAMES } from "@/lib/media";
 import { SkeletonGrid } from "./ui";
@@ -25,6 +26,8 @@ interface Props {
   tasteSpaceId?: string;
   /** "More like this item": corpus retrieval queries with this item's own vector. */
   similarToItemId?: string | null;
+  /** Show palette LAB swatch picker + facet chips even in compact mode (brief builder). */
+  briefControls?: boolean;
 }
 
 type FeedCard = { kind: "suggestion"; s: Suggestion } | { kind: "library"; item: Item };
@@ -35,7 +38,7 @@ type TypeTab = "foundries" | "fonts" | "inuse";
  *  grey placeholder while it generates the capture, so we retry once to pull the finished shot. */
 const shot = (u: string) => `https://s.wordpress.com/mshots/v1/${encodeURIComponent(u)}?w=600&h=750`;
 
-export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, compact = false, initialQuery, initialImage, defaultSpaceId, mode, tasteSpaceId, similarToItemId }: Props) {
+export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, compact = false, initialQuery, initialImage, defaultSpaceId, mode, tasteSpaceId, similarToItemId, briefControls = false }: Props) {
   const [cards, setCards] = useState<FeedCard[]>([]);
   const [urls, setUrls] = useState<Map<string, string>>(new Map());
   const [query, setQuery] = useState("");
@@ -44,6 +47,9 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
   // plus a palette filter served by the corpus's extracted colours.
   const [lane, setLane] = useState<"all" | "site" | "type">("all");
   const [paletteFilter, setPaletteFilter] = useState<string | null>(null);
+  const [labFilter, setLabFilter] = useState<[number, number, number] | null>(null);
+  const [facetFilters, setFacetFilters] = useState<Record<string, string[]>>({});
+  const [discoveryMode, setDiscoveryMode] = useState<DiscoveryMode>("foryou");
   const [loading, setLoading] = useState(false);
   const [picking, setPicking] = useState<Suggestion | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
@@ -94,20 +100,26 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
       setLoading(true);
       try {
         if (!append) shown.current = new Set();
-        const filters: DiscoverFilters | undefined = compact
-          ? undefined
-          : {
-              ...(lane !== "all" ? { kind: lane } : {}),
-              ...(paletteFilter ? { color: paletteFilter } : {}),
-            };
+        const hasBriefFilters = briefControls && (labFilter !== null || Object.keys(facetFilters).length > 0);
+        const filters: DiscoverFilters | undefined =
+          !compact || hasBriefFilters
+            ? {
+                ...(lane !== "all" ? { kind: lane } : {}),
+                ...(paletteFilter ? { color: paletteFilter } : {}),
+                ...(labFilter ? { colorLab: labFilter } : {}),
+                ...(Object.keys(facetFilters).length ? { facets: facetFilters } : {}),
+              }
+            : undefined;
         const [suggestions, gems] = await Promise.all([
-          discover(q, [...shown.current], mode, initialImage, tasteSpaceId, similarToItemId, filters),
+          discover(q, [...shown.current], mode, initialImage, tasteSpaceId, similarToItemId, filters, discoveryMode),
           q || compact || append ? Promise.resolve([] as Item[]) : resurface(6),
         ]);
         if (seq !== loadSeq.current) return; // superseded by a newer load
         // belt-and-braces: never show a card twice this session, even if the server re-offers it
         const fresh = suggestions.filter((s) => !shown.current.has(s.url));
         for (const s of fresh) shown.current.add(s.url);
+        // Log impressions for the learning loop — fire-and-forget
+        for (const s of fresh) logDiscoveryEvent(s.url, "impression", { lane: discoveryMode }).catch(() => {});
         const mixed: FeedCard[] = [];
         const sug = fresh.map((s): FeedCard => ({ kind: "suggestion", s }));
         const lib = gems.map((item): FeedCard => ({ kind: "library", item }));
@@ -128,7 +140,7 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
         if (seq === loadSeq.current) setLoading(false);
       }
     },
-    [toast, compact, mode, initialImage, tasteSpaceId, similarToItemId, lane, paletteFilter]
+    [toast, compact, briefControls, mode, initialImage, tasteSpaceId, similarToItemId, lane, paletteFilter, labFilter, facetFilters, discoveryMode]
   );
 
   useEffect(() => {
@@ -169,12 +181,18 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
 
   async function dismiss(s: Suggestion) {
     setCards((c) => c.filter((x) => x.kind !== "suggestion" || x.s.url !== s.url));
-    await markSeen(s.url, "disliked").catch(() => {});
+    await Promise.all([
+      markSeen(s.url, "disliked").catch(() => {}),
+      logDiscoveryEvent(s.url, "dislike", { lane: discoveryMode }).catch(() => {}),
+    ]);
   }
 
   async function like(s: Suggestion) {
     engage(s);
-    await markSeen(s.url, "liked").catch(() => {});
+    await Promise.all([
+      markSeen(s.url, "liked").catch(() => {}),
+      logDiscoveryEvent(s.url, "like", { lane: discoveryMode }).catch(() => {}),
+    ]);
     toast("Noted — Find More will lean this way");
   }
 
@@ -209,6 +227,86 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
           {loading ? "…" : "Discover"}
         </button>
       </form>
+      )}
+
+      {briefControls && (
+        <div className="mx-auto mb-3 max-w-xl space-y-2">
+          {/* LAB colour swatch picker */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[10px] uppercase tracking-wider text-zinc-600">Colour</span>
+            {LAB_SWATCHES.map((s) => (
+              <button
+                key={s.name}
+                title={s.name}
+                onClick={() => setLabFilter(labFilter && labFilter.every((v, i) => v === s.lab[i]) ? null : s.lab as [number, number, number])}
+                className={`h-5 w-5 shrink-0 rounded-full border transition-transform ${
+                  labFilter && labFilter.every((v, i) => v === s.lab[i])
+                    ? "scale-125 border-white"
+                    : "border-white/20 hover:scale-110"
+                }`}
+                style={{ background: s.hex }}
+              />
+            ))}
+            {labFilter && (
+              <button onClick={() => setLabFilter(null)} className="text-[10px] text-zinc-500 hover:text-zinc-300">✕ clear</button>
+            )}
+          </div>
+          {/* Facet chips */}
+          {Object.entries(FACET_VOCABULARY).map(([facetKey, labels]) => (
+            <div key={facetKey} className="flex flex-wrap items-center gap-1">
+              <span className="text-[10px] uppercase tracking-wider text-zinc-600 capitalize">{facetKey}</span>
+              {labels.map((label) => {
+                const active = (facetFilters[facetKey] ?? []).includes(label);
+                return (
+                  <button
+                    key={label}
+                    onClick={() => {
+                      setFacetFilters((prev) => {
+                        const cur = prev[facetKey] ?? [];
+                        const next = active ? cur.filter((x) => x !== label) : [...cur, label];
+                        if (!next.length) {
+                          const { [facetKey]: _, ...rest } = prev;
+                          void _;
+                          return rest;
+                        }
+                        return { ...prev, [facetKey]: next };
+                      });
+                    }}
+                    className={`rounded-full border px-2 py-0.5 text-[10px] transition-colors ${
+                      active
+                        ? "border-white bg-white text-black"
+                        : "border-white/10 text-zinc-500 hover:border-white/30 hover:text-zinc-300"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!compact && (
+        <div className="mx-auto mb-3 flex max-w-xl gap-1 rounded-xl border border-white/10 bg-white/[0.03] p-1">
+          {([
+            { id: "foryou", label: "For You" },
+            { id: "fresh",  label: "Fresh" },
+            { id: "explore",label: "Explore" },
+          ] as const).map((m) => (
+            <button
+              key={m.id}
+              onClick={() => setDiscoveryMode(m.id)}
+              className={`flex-1 rounded-lg px-3 py-1.5 text-xs transition-colors ${
+                discoveryMode === m.id
+                  ? "bg-white text-black"
+                  : "text-zinc-400 hover:bg-white/10 hover:text-white"
+              }`}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
       )}
 
       {!compact && (

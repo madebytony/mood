@@ -711,7 +711,9 @@ function embedText(item: Item): string {
     .join(". ");
 }
 
-/** Embed one item (image + caption hybrid) in the background. Silently no-ops without a key. */
+/** Embed one item (image + caption hybrid) in the background.
+ *  Writes embedding (Voyage 1024-dim) and embedding_v2 (CLIP 512-dim) when both are
+ *  available. Silently no-ops without any embed key. */
 export async function embedItem(item: Item): Promise<boolean> {
   if (voyageDown()) return false;
   const text = embedText(item);
@@ -733,9 +735,11 @@ export async function embedItem(item: Item): Promise<boolean> {
     }
     if (!res.ok) return false;
     voyageCooldownUntil = 0;
-    const { embedding } = await res.json();
+    const { embedding, embedding_v2 } = await res.json();
     if (!Array.isArray(embedding)) return false;
-    const { error } = await supabase.from("items").update({ embedding }).eq("id", item.id);
+    const patch: Record<string, unknown> = { embedding };
+    if (Array.isArray(embedding_v2)) patch.embedding_v2 = embedding_v2;
+    const { error } = await supabase.from("items").update(patch).eq("id", item.id);
     return !error;
   } catch {
     return false; // background job — never surface errors
@@ -870,14 +874,18 @@ export async function backfillThumbs(onThumb?: (item: Item) => void, batch = 4):
   }
 }
 
-/** Visual nearest-neighbours for an item, library-wide. Empty when not yet embedded. */
+/** Visual nearest-neighbours for an item, library-wide. Prefers v2 (CLIP) index;
+ *  falls back to v1 (Voyage) when the item hasn't been re-embedded yet. */
 export async function matchToItem(itemId: string, count = 12): Promise<Item[]> {
+  const { data: v2, error: e2 } = await supabase.rpc("match_to_item_v2", { p_item_id: itemId, p_count: count });
+  if (!e2 && (v2 ?? []).length) return (v2 ?? []) as Item[];
   const { data, error } = await supabase.rpc("match_to_item", { p_item_id: itemId, p_count: count });
   if (error) return [];
   return (data ?? []) as Item[];
 }
 
-/** Semantic text -> image search. Returns null when embeddings are unavailable. */
+/** Semantic text -> image search. Prefers the v2 (CLIP) index; falls back to v1 (Voyage).
+ *  Returns null when no embedding service is reachable. */
 export async function semanticSearch(query: string, count = 60): Promise<Item[] | null> {
   if (voyageDown()) return null;
   try {
@@ -892,7 +900,12 @@ export async function semanticSearch(query: string, count = 60): Promise<Item[] 
     }
     if (!res.ok) return null;
     voyageCooldownUntil = 0;
-    const { embedding } = await res.json();
+    const { embedding, embedding_v2 } = await res.json();
+    // Try v2 index first (CLIP 512-dim); fall back to v1 (Voyage 1024-dim)
+    if (embedding_v2) {
+      const { data: v2, error: e2 } = await supabase.rpc("match_items_v2", { p_query: embedding_v2, p_count: count });
+      if (!e2 && (v2 ?? []).length) return (v2 ?? []) as Item[];
+    }
     const { data, error } = await supabase.rpc("match_items", { p_query: embedding, p_count: count });
     if (error) return null;
     return (data ?? []) as Item[];
@@ -927,7 +940,15 @@ export interface DiscoverFilters {
   kind?: "site" | "type";
   /** Named palette bucket (e.g. "red", "dark") — corpus rows carry extracted colours. */
   color?: string;
+  /** CIE LAB target [L, a, b] for delta-E colour-verified discovery (Phase 2). */
+  colorLab?: [number, number, number];
+  /** Structured facet constraints — keys from FACET_VOCABULARY, values are required labels.
+   *  e.g. { mood: ["crafted", "heritage"], era: ["contemporary"] } */
+  facets?: Record<string, string[]>;
 }
+
+/** Discovery policy: controls *how* candidates are retrieved, independent of content type. */
+export type DiscoveryMode = "foryou" | "fresh" | "explore";
 
 export async function corpusSimilar(
   query: string | null,
@@ -940,8 +961,12 @@ export async function corpusSimilar(
   excludeUrls: string[] = []
 ): Promise<Suggestion[]> {
   try {
+    // --- v2 path: CLIP 512-dim (preferred when available) ---
+    const v2Result = await corpusSimilarV2(query, spaceId, count, excludeDomains, itemId, minSimOverride, filters, excludeUrls);
+    if (v2Result !== null) return v2Result;
+
+    // --- v1 fallback: Voyage 1024-dim ---
     let queryVec: unknown = null;
-    // same-modality floor (item/board vectors vs corpus screenshot vectors); tune as the index grows
     let minSim = 0.42;
     if (itemId) {
       const { data } = await supabase.from("items").select("embedding").eq("id", itemId).single();
@@ -952,7 +977,7 @@ export async function corpusSimilar(
       queryVec = data ?? null;
     }
     if (!queryVec && query && !voyageDown()) {
-      minSim = 0.32; // cross-modal (text query vs image docs) cosines run lower
+      minSim = 0.32;
       const res = await apiFetch("/api/ai/embed", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -971,51 +996,262 @@ export async function corpusSimilar(
       p_exclude_urls: excludeUrls.slice(0, 400),
     });
     if (error) return [];
-    type CorpusRow = { url: string; domain: string; title: string | null; image: string | null; blurb: string | null; tags: string[]; source: string; similarity: number };
-    return ((data ?? []) as CorpusRow[]).filter((r) => r.similarity >= minSim).map((r) => ({
-      url: r.url,
-      title: r.title,
-      image: r.image,
-      domain: r.domain,
-      source: `index/${r.source}`,
-      blurb: [
-        r.tags?.length ? r.tags.slice(0, 3).join(", ") : null,
-        `${Math.round(r.similarity * 100)}% taste match`,
-      ].filter(Boolean).join(" — "),
-    }));
+    return corpusRowsToSuggestions(data ?? [], minSim);
   } catch {
     return [];
   }
 }
 
-export async function discover(query: string | null, extraExclude: string[] = [], mode?: "type", imageUrl?: string | null, tasteSpaceId?: string, similarToItemId?: string | null, filters?: DiscoverFilters): Promise<Suggestion[]> {
-  // For web-similar searches (query set), skip library domain exclusions — the user wants
-  // aesthetic matches even if they've already saved work from those domains.
-  // For Discover (no query), exclude library domains so we don't re-surface known work.
+/** v2 corpus similarity using CLIP 512-dim index. Returns null when no v2 query
+ *  vector can be obtained (not yet embedded), so the caller falls back to v1. */
+async function corpusSimilarV2(
+  query: string | null,
+  spaceId: string | null,
+  count: number,
+  excludeDomains: string[],
+  itemId: string | null | undefined,
+  minSimOverride: number | undefined,
+  filters: DiscoverFilters | undefined,
+  excludeUrls: string[],
+): Promise<Suggestion[] | null> {
+  try {
+    let queryVec: unknown = null;
+    let minSim = 0.35; // CLIP cosines are calibrated differently; start a touch lower
+    if (itemId) {
+      const { data } = await supabase.from("items").select("embedding_v2").eq("id", itemId).single();
+      queryVec = data?.embedding_v2 ?? null;
+    }
+    if (!queryVec && (spaceId || !query)) {
+      const { data } = await supabase.rpc("space_centroid_v2", { p_space_id: spaceId });
+      queryVec = data ?? null;
+    }
+    if (!queryVec && query && !voyageDown()) {
+      minSim = 0.25; // cross-modal text→image floor
+      const res = await apiFetch("/api/ai/embed", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: query, input_type: "query" }),
+      });
+      if (res.ok) {
+        const body = await res.json();
+        queryVec = body.embedding_v2 ?? null;
+      }
+    }
+    if (minSimOverride !== undefined) minSim = minSimOverride;
+    if (!queryVec) return null; // no v2 vector available — fall back
+
+    // --- Colour-verified path: use match_corpus_colour_v2 when a LAB target is given ---
+    if (filters?.colorLab) {
+      const { data: colourData, error: colourErr } = await supabase.rpc("match_corpus_colour_v2", {
+        p_query: queryVec,
+        p_target_lab: filters.colorLab,
+        p_max_de: 28,
+        p_count: count,
+        p_exclude: excludeDomains.slice(0, 400),
+        p_kind: filters.kind ?? null,
+        p_exclude_urls: excludeUrls.slice(0, 400),
+      });
+      if (!colourErr && (colourData ?? []).length) {
+        // Add delta-E to blurb for explainability
+        const hits = (colourData as Array<CorpusRow & { min_delta_e?: number }>)
+          .filter((r) => r.similarity >= minSim)
+          .map((r) => ({
+            url: r.url,
+            title: r.title,
+            image: r.image,
+            domain: r.domain,
+            source: `index/${r.source}`,
+            blurb: [
+              r.tags?.length ? r.tags.slice(0, 2).join(", ") : null,
+              r.min_delta_e != null ? `colour ΔE ${Math.round(r.min_delta_e)}` : null,
+              `${Math.round(r.similarity * 100)}% match`,
+            ].filter(Boolean).join(" · "),
+          }));
+        if (hits.length) return hits;
+      }
+      // No colour-matched results — fall through to regular v2 search without the LAB gate
+    }
+
+    // --- Facet path: use match_corpus_facets_v2 when facet constraints are given ---
+    if (filters?.facets && Object.keys(filters.facets).length) {
+      const { data: facetData, error: facetErr } = await supabase.rpc("match_corpus_facets_v2", {
+        p_query: queryVec,
+        p_facets: filters.facets,
+        p_count: count,
+        p_exclude: excludeDomains.slice(0, 400),
+        p_kind: filters.kind ?? null,
+        p_exclude_urls: excludeUrls.slice(0, 400),
+      });
+      if (!facetErr && (facetData ?? []).length) {
+        const hits = corpusRowsToSuggestions(facetData ?? [], minSim);
+        if (hits.length) return hits;
+      }
+    }
+
+    const { data, error } = await supabase.rpc("match_corpus_v2", {
+      p_query: queryVec,
+      p_count: count,
+      p_exclude: excludeDomains.slice(0, 400),
+      p_kind: filters?.kind ?? null,
+      p_color: filters?.color ?? null,
+      p_exclude_urls: excludeUrls.slice(0, 400),
+    });
+    if (error || !(data ?? []).length) return null;
+    const hits = corpusRowsToSuggestions(data ?? [], minSim);
+    return hits.length ? hits : null;
+  } catch {
+    return null;
+  }
+}
+
+type CorpusRow = { url: string; domain: string; title: string | null; image: string | null; blurb: string | null; tags: string[]; source: string; similarity: number };
+
+function corpusRowsToSuggestions(rows: CorpusRow[], minSim: number): Suggestion[] {
+  return rows.filter((r) => r.similarity >= minSim).map((r) => ({
+    url: r.url,
+    title: r.title,
+    image: r.image,
+    domain: r.domain,
+    source: `index/${r.source}`,
+    blurb: [
+      r.tags?.length ? r.tags.slice(0, 3).join(", ") : null,
+      `${Math.round(r.similarity * 100)}% taste match`,
+    ].filter(Boolean).join(" — "),
+  }));
+}
+
+// ---------- Phase 1: lane helpers ----------
+
+/** Reciprocal Rank Fusion: fuse multiple ranked candidate lists into one.
+ *  Standard constant k=60 — robust across list sizes. Dedupes by URL. */
+function rrfFuse(lists: Suggestion[][], k = 60): Suggestion[] {
+  const scores = new Map<string, number>();
+  const items = new Map<string, Suggestion>();
+  for (const list of lists) {
+    for (let i = 0; i < list.length; i++) {
+      const s = list[i];
+      scores.set(s.url, (scores.get(s.url) ?? 0) + 1 / (k + i + 1));
+      if (!items.has(s.url)) items.set(s.url, s);
+    }
+  }
+  return [...scores.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([url]) => items.get(url)!)
+    .filter(Boolean);
+}
+
+/** MMR-lite diversity pass: cap each domain at 2 appearances so one source
+ *  can't flood the feed. Preserves relative ranking within the cap. */
+function mmrDiversify(items: Suggestion[]): Suggestion[] {
+  const counts = new Map<string, number>();
+  return items.filter((s) => {
+    const n = counts.get(s.domain) ?? 0;
+    if (n >= 2) return false;
+    counts.set(s.domain, n + 1);
+    return true;
+  });
+}
+
+type FreshRow = { url: string; domain: string; title: string | null; image: string | null; blurb: string | null; tags: string[]; source: string };
+
+/** Fresh lane: recency-ordered corpus, no taste signal. */
+async function freshCorpus(exclude: string[], filters?: DiscoverFilters): Promise<Suggestion[]> {
+  try {
+    const excludeDomains = [...new Set(exclude.map(toDomain))].filter(Boolean);
+    const excludeUrls = exclude.filter((e) => /^https?:\/\//i.test(e));
+    const { data, error } = await supabase.rpc("fresh_corpus_v2", {
+      p_count: 30,
+      p_exclude: excludeDomains.slice(0, 400),
+      p_kind: filters?.kind ?? null,
+      p_color: filters?.color ?? null,
+      p_exclude_urls: excludeUrls.slice(0, 400),
+    });
+    if (error || !data?.length) return [];
+    return (data as FreshRow[]).map((r) => ({
+      url: r.url, title: r.title, image: r.image, domain: r.domain,
+      source: `index/${r.source}`,
+      blurb: r.tags?.length ? r.tags.slice(0, 3).join(", ") : null,
+    }));
+  } catch { return []; }
+}
+
+/** Explore lane: random corpus sample, excluding near-taste duplicates. */
+async function exploreCorpus(spaceId: string | null, exclude: string[], filters?: DiscoverFilters): Promise<Suggestion[]> {
+  try {
+    const excludeDomains = [...new Set(exclude.map(toDomain))].filter(Boolean);
+    const excludeUrls = exclude.filter((e) => /^https?:\/\//i.test(e));
+    const { data: centroid } = await supabase.rpc("space_centroid_v2", { p_space_id: spaceId });
+    const { data, error } = await supabase.rpc("explore_corpus_v2", {
+      p_query: centroid ?? null,
+      p_count: 30,
+      p_exclude: excludeDomains.slice(0, 400),
+      p_kind: filters?.kind ?? null,
+      p_color: filters?.color ?? null,
+      p_exclude_urls: excludeUrls.slice(0, 400),
+    });
+    if (error || !data?.length) return [];
+    return (data as FreshRow[]).map((r) => ({
+      url: r.url, title: r.title, image: r.image, domain: r.domain,
+      source: `index/${r.source}`,
+      blurb: r.tags?.length ? r.tags.slice(0, 3).join(", ") : null,
+    }));
+  } catch { return []; }
+}
+
+/** Log a discovery interaction — fire-and-forget, never throws. */
+export async function logDiscoveryEvent(
+  url: string,
+  kind: "impression" | "open" | "save" | "like" | "dislike" | "dwell",
+  opts: { lane?: string; refKey?: string; model?: string; value?: number } = {}
+): Promise<void> {
+  try {
+    const { data } = await supabase.auth.getUser();
+    if (!data.user) return;
+    await supabase.from("discovery_events").insert({
+      user_id: data.user.id,
+      url,
+      kind,
+      lane: opts.lane ?? null,
+      ref_key: opts.refKey ?? null,
+      model: opts.model ?? null,
+      value: opts.value ?? null,
+    });
+  } catch { /* best-effort */ }
+}
+
+export async function discover(query: string | null, extraExclude: string[] = [], mode?: "type", imageUrl?: string | null, tasteSpaceId?: string, similarToItemId?: string | null, filters?: DiscoverFilters, discoveryMode: DiscoveryMode = "foryou"): Promise<Suggestion[]> {
   const [taste, domains, seen] = await Promise.all([
     tasteProfile(tasteSpaceId),
     query ? Promise.resolve([] as string[]) : libraryDomains(),
     seenUrls(),
   ]);
   const exclude = [...extraExclude, ...domains, ...seen].slice(0, 400);
-
-  // Corpus retrieval: instant vector hits over the owned index. When a reference image
-  // exists they become CANDIDATES for the server's visual judge (graded 0-10 against the
-  // reference — retrieval proposes, grading decides). Without a reference image there's
-  // nothing to grade against, so confident corpus hits return directly. Type mode keeps
-  // its dedicated foundry pipeline.
   const graded = !!imageUrl && !!query;
+
+  // --- Fresh lane: recency-sorted corpus, no taste signal ---
+  if (discoveryMode === "fresh" && !query && mode !== "type") {
+    const fresh = await freshCorpus(exclude, filters);
+    if (fresh.length >= 6) return mmrDiversify(fresh);
+    // thin fresh corpus → fall through to For You
+  }
+
+  // --- Explore lane: random far-from-centroid corpus ---
+  if (discoveryMode === "explore" && !query && mode !== "type") {
+    const explored = await exploreCorpus(tasteSpaceId ?? null, exclude, filters);
+    if (explored.length >= 6) return mmrDiversify(explored);
+    // thin explore pool → fall through to For You
+  }
+
+  // --- For You lane (default) + graded visual-similar path ---
   let corpus: Suggestion[] = [];
   if (mode !== "type") {
     const excludeDomains = [...new Set([...exclude.map(toDomain), ...domains])].filter(Boolean);
-    // multi-entry rows (blogs, Fonts In Use) are excluded by exact URL, not domain, so an
-    // already-shown/saved article doesn't bury the rest of its domain
     const excludeUrls = exclude.filter((e) => /^https?:\/\//i.test(e));
-    // grading filters junk itself, so feed it a wider, lower-floor candidate set
     corpus = await corpusSimilar(query, tasteSpaceId ?? null, 24, excludeDomains, similarToItemId, graded ? 0.25 : undefined, filters, excludeUrls);
-    // palette filtering only the index can honour — live-web results have unknown colours
+    // palette filtering only the index can honour — return directly, live-web has unknown colours
     if (filters?.color) return corpus;
-    if (!graded && corpus.length >= 10) return corpus;
+    // Phase 1: the corpus≥10 early-return bypass is removed — always run the full pipeline
+    // so live-web results fill gaps and the corpus is enriched with every search.
   }
 
   const res = await apiFetch("/api/discover", {
@@ -1023,7 +1259,6 @@ export async function discover(query: string | null, extraExclude: string[] = []
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       q: query || undefined,
-      // Type lane thin in the index? Top up from the live foundry pipeline.
       mode: filters?.kind === "type" ? "type" : mode,
       img: imageUrl || undefined,
       taste,
@@ -1035,9 +1270,10 @@ export async function discover(query: string | null, extraExclude: string[] = []
   if (!res.ok) throw new Error("Discover failed");
   const { items } = await res.json();
   const fromApi = (items ?? []) as Suggestion[];
-  if (graded) return fromApi; // corpus candidates were judged server-side — already included or cut
-  const have = new Set(corpus.map((c) => c.domain));
-  return [...corpus, ...fromApi.filter((i) => !have.has(i.domain))];
+  if (graded) return fromApi; // corpus candidates were judged server-side
+
+  // RRF fusion of corpus taste-matches + live-web results, then MMR diversity pass
+  return mmrDiversify(rrfFuse([corpus, fromApi]));
 }
 
 /** Distil one board's references into a named aesthetic via Gemini — a style brief that can

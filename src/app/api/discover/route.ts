@@ -1,7 +1,8 @@
 import { isAuthed } from "../_lib/auth";
 import { gemini, geminiDisabled, geminiText, hasGeminiKey, parseJson } from "../_lib/gemini";
 import { badVerdictDomains, corpusEmbeddingsByDomain, ingestCandidates, saveVerdicts, upsertScreenshotEmbedding, MULTI_ENTRY_RE, type CorpusCandidate, type Verdict } from "../_lib/corpus";
-import { hasVoyageKey, voyageEmbed, type VoyageContent } from "../_lib/voyage";
+import { hasVoyageKey } from "../_lib/voyage";
+import { getEmbedder, hasCfKey } from "../_lib/embedder";
 import { extractColorsFromImage, hueOverlap, toneOf } from "../_lib/colors";
 
 export const maxDuration = 120;
@@ -426,13 +427,15 @@ const cosine = (a: number[], b: number[]): number => {
 };
 
 /** Embed an already-fetched candidate screenshot (so prerank and corpus enrichment share
- *  one download). Returns null on any failure — prerank degrades gracefully. */
+ *  one download). Returns null on any failure — prerank degrades gracefully.
+ *  Uses the configured embedder (CF CLIP 512-dim or Voyage 1024-dim). */
 async function embedShot(img: { mimeType: string; data: string }, text: string | null): Promise<number[] | null> {
   try {
-    const content: VoyageContent[] = [];
-    if (text) content.push({ type: "text", text: text.slice(0, 500) });
-    content.push({ type: "image_base64", image_base64: `data:${img.mimeType};base64,${img.data}` });
-    return await voyageEmbed(content, "document");
+    const embedder = getEmbedder();
+    if (text) {
+      return await embedder.embedHybrid(img.data, img.mimeType, text.slice(0, 500));
+    }
+    return await embedder.embedImage(img.data, img.mimeType);
   } catch { return null; }
 }
 
@@ -485,14 +488,12 @@ async function visualRank(
   // so every search deepens the index. Palette is a deterministic side-channel because
   // multimodal embeddings under-weight colour: tone agreement and hue overlap nudge the
   // ordering on top of cosine.
-  if (hasVoyageKey()) {
+  if (hasCfKey() || hasVoyageKey()) {
     try {
+      const embedder = getEmbedder();
       const refBuf = Buffer.from(refImage.inlineData.data, "base64");
       const [refVec, refColors] = await Promise.all([
-        voyageEmbed(
-          [{ type: "image_base64", image_base64: `data:${refImage.inlineData.mimeType};base64,${refImage.inlineData.data}` }],
-          "query"
-        ),
+        embedder.embedImage(refImage.inlineData.data, refImage.inlineData.mimeType),
         extractColorsFromImage(refBuf),
       ]);
       const refTone = toneOf(refColors);

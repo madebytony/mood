@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import sharp from "sharp";
 import { voyageEmbed, type VoyageContent } from "./voyage";
+import { getEmbedder, hasCfKey } from "./embedder";
 import { extractColorsFromImage } from "./colors";
 import { safeFetch } from "./ssrf";
 
@@ -630,8 +631,10 @@ export async function saveVerdicts(refKey: string, verdicts: Verdict[]): Promise
 
 /* ---------------- embedding reuse + screenshot enrichment ---------------- */
 
-/** Stored corpus vectors for these domains — judged candidates that are already indexed
- *  shouldn't be re-embedded. PostgREST returns pgvector as a string; parse it. */
+/** Stored corpus v2 vectors for these domains — judged candidates that are already indexed
+ *  shouldn't be re-embedded. Prefers embedding_v2 (512-dim CLIP); falls back to
+ *  embedding (1024-dim Voyage) when v2 is not yet populated. PostgREST returns pgvector
+ *  as a string; parse it. */
 export async function corpusEmbeddingsByDomain(domains: string[]): Promise<Map<string, number[]>> {
   const out = new Map<string, number[]>();
   if (!domains.length) return out;
@@ -639,11 +642,11 @@ export async function corpusEmbeddingsByDomain(domains: string[]): Promise<Map<s
     const db = admin();
     const { data } = await db
       .from("web_corpus")
-      .select("domain,embedding")
+      .select("domain,embedding_v2")
       .in("domain", domains.slice(0, 100))
-      .not("embedding", "is", null);
+      .not("embedding_v2", "is", null);
     for (const r of data ?? []) {
-      const emb = typeof r.embedding === "string" ? JSON.parse(r.embedding) : r.embedding;
+      const emb = typeof r.embedding_v2 === "string" ? JSON.parse(r.embedding_v2) : r.embedding_v2;
       if (Array.isArray(emb)) out.set(r.domain as string, emb as number[]);
     }
   } catch { /* fall back to embedding fresh */ }
@@ -652,35 +655,49 @@ export async function corpusEmbeddingsByDomain(domains: string[]): Promise<Map<s
 
 /** Enrich the index from the judge pipeline: the screenshot was already fetched and embedded
  *  to pre-rank candidates — keep both, so this site is instantly retrievable next time.
- *  Never clobbers an existing richer row; only fills missing embeddings. */
+ *  Writes embedding_v2 (the v2 CLIP space); never clobbers an existing richer row. */
 export async function upsertScreenshotEmbedding(cand: CorpusCandidate, image: string | null, embedding: number[], colors: string[] = []): Promise<void> {
   if (!okDomain(cand.domain)) return;
   try {
     const db = admin();
+    // embedding param now carries the v2 vector (512-dim from embedShot in discover route)
     await db.from("web_corpus").upsert(
       [{
         url: cand.url, domain: cand.domain, title: cand.title, image: image ?? cand.image,
-        blurb: cand.blurb ?? null, tags: cand.tags, source: cand.source, embedding, colors,
+        blurb: cand.blurb ?? null, tags: cand.tags, source: cand.source, embedding_v2: embedding, colors,
         last_seen_at: new Date().toISOString(),
       }],
       { onConflict: "url", ignoreDuplicates: true }
     );
-    await db.from("web_corpus").update({ embedding, colors }).eq("url", cand.url).is("embedding", null);
+    await db.from("web_corpus").update({ embedding_v2: embedding, colors }).eq("url", cand.url).is("embedding_v2", null);
   } catch { /* enrichment is best-effort */ }
 }
 
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 
-async function imagePart(url: string): Promise<{ part: VoyageContent; buf: Buffer } | null> {
+interface ImageData {
+  part: VoyageContent;   // for Voyage backward compat
+  base64: string;         // pure base64, no data-URI prefix
+  mimeType: string;
+  buf: Buffer;
+}
+
+async function imagePart(url: string): Promise<ImageData | null> {
   try {
     const res = await fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(12000) });
     if (!res.ok) return null;
-    const type = (res.headers.get("content-type") ?? "").split(";")[0];
-    if (!type.startsWith("image/")) return null;
+    const mimeType = (res.headers.get("content-type") ?? "").split(";")[0];
+    if (!mimeType.startsWith("image/")) return null;
     const raw = await res.arrayBuffer();
     if (raw.byteLength > MAX_IMAGE_BYTES || raw.byteLength < 2000) return null;
     const buf = Buffer.from(raw);
-    return { part: { type: "image_base64", image_base64: `data:${type};base64,${buf.toString("base64")}` }, buf };
+    const base64 = buf.toString("base64");
+    return {
+      part: { type: "image_base64", image_base64: `data:${mimeType};base64,${base64}` },
+      base64,
+      mimeType,
+      buf,
+    };
   } catch { return null; }
 }
 
@@ -693,17 +710,18 @@ function embedTextOf(row: { title: string | null; tags: string[] | null; blurb: 
   ].filter(Boolean).join(". ").slice(0, 1000);
 }
 
-/** Embed up to `batch` unembedded rows (screenshot + tags + palette + title -> one hybrid
- *  vector; named colours extracted from the same download). Stops early on rate limits;
- *  safe to call repeatedly until `remaining` hits 0. */
+/** Embed up to `batch` unembedded rows into embedding_v2 (512-dim CLIP) using the
+ *  configured embedder. Cloudflare CLIP has no rate limit so batches can be large;
+ *  Voyage falls back gracefully on 429. Safe to call repeatedly until remaining=0. */
 export async function embedPending(batch = 6): Promise<{ embedded: number; remaining: number; rateLimited: boolean }> {
+  const embedder = getEmbedder();
+  const useCf = hasCfKey();
   const db = admin();
   const { data } = await db
     .from("web_corpus")
     .select("id,url,title,image,blurb,tags,source")
-    .is("embedding", null)
-    // curated multi-entry rows (blogs, Fonts In Use) jump the backlog so those lanes go live
-    // quickly; everything else stays oldest-first
+    .is("embedding_v2", null)
+    // multi-entry rows (blogs, Fonts In Use) jump the queue — those lanes go live quickly
     .order("multi_entry", { ascending: false })
     .order("created_at", { ascending: true })
     .limit(batch);
@@ -713,25 +731,36 @@ export async function embedPending(batch = 6): Promise<{ embedded: number; remai
     const img = row.image ? await imagePart(row.image) : null;
     const colors = img ? await extractColorsFromImage(img.buf) : [];
     const text = embedTextOf(row, colors);
-    const content: VoyageContent[] = [];
-    if (text) content.push({ type: "text", text });
-    if (img) content.push(img.part);
-    if (!content.length) {
-      // nothing embeddable — drop the row rather than retrying it forever
+    if (!img && !text) {
       await db.from("web_corpus").delete().eq("id", row.id);
       continue;
     }
     try {
-      const embedding = await voyageEmbed(content, "document");
-      await db.from("web_corpus").update({ embedding, colors }).eq("id", row.id);
+      let embedding_v2: number[];
+      if (useCf) {
+        if (img && text) {
+          embedding_v2 = await embedder.embedHybrid(img.base64, img.mimeType, text);
+        } else if (img) {
+          embedding_v2 = await embedder.embedImage(img.base64, img.mimeType);
+        } else {
+          embedding_v2 = await embedder.embedText(text);
+        }
+      } else {
+        // Voyage path: multimodal content array
+        const content: VoyageContent[] = [];
+        if (text) content.push({ type: "text", text });
+        if (img) content.push(img.part);
+        embedding_v2 = await voyageEmbed(content, "document");
+      }
+      await db.from("web_corpus").update({ embedding_v2, colors }).eq("id", row.id);
       embedded++;
     } catch (e) {
       if (/429/.test((e as Error).message)) { rateLimited = true; break; }
-      // terminal for this row (bad image etc.) — keep text-only as a fallback attempt
+      // terminal error (bad image etc.) — try text-only as last resort
       if (img && text) {
         try {
-          const embedding = await voyageEmbed([{ type: "text", text }], "document");
-          await db.from("web_corpus").update({ embedding, colors }).eq("id", row.id);
+          const embedding_v2 = await embedder.embedText(text);
+          await db.from("web_corpus").update({ embedding_v2, colors }).eq("id", row.id);
           embedded++;
         } catch { /* leave for a future pass */ }
       }
@@ -740,19 +769,21 @@ export async function embedPending(batch = 6): Promise<{ embedded: number; remai
   const { count } = await db
     .from("web_corpus")
     .select("*", { count: "exact", head: true })
-    .is("embedding", null);
+    .is("embedding_v2", null);
   return { embedded, remaining: count ?? 0, rateLimited };
 }
 
-/** Backfill palettes for rows embedded BEFORE colour extraction existed: re-extract from the
- *  stored image, rebuild the embed text with the palette line, and re-embed in place (the
- *  old vector stays live until the new one lands). */
+/** Backfill palettes for rows embedded before colour extraction existed: re-extract
+ *  from the stored image, rebuild embed text with the palette, and re-embed into
+ *  embedding_v2 in place. Old embedding stays live until the new one lands. */
 export async function recolorPending(batch = 10): Promise<{ recolored: number; remaining: number; rateLimited: boolean }> {
+  const embedder = getEmbedder();
+  const useCf = hasCfKey();
   const db = admin();
   const { data } = await db
     .from("web_corpus")
     .select("id,url,title,image,blurb,tags,source")
-    .not("embedding", "is", null)
+    .not("embedding_v2", "is", null)
     .eq("colors", "{}")
     .not("image", "is", null)
     .order("created_at", { ascending: true })
@@ -762,7 +793,6 @@ export async function recolorPending(batch = 10): Promise<{ recolored: number; r
   for (const row of data ?? []) {
     const img = await imagePart(row.image!);
     if (!img) {
-      // unreadable image — mark with tone-less sentinel so we don't retry forever
       await db.from("web_corpus").update({ colors: ["unknown"] }).eq("id", row.id);
       continue;
     }
@@ -771,23 +801,31 @@ export async function recolorPending(batch = 10): Promise<{ recolored: number; r
       await db.from("web_corpus").update({ colors: ["unknown"] }).eq("id", row.id);
       continue;
     }
+    const text = embedTextOf(row, colors);
     try {
-      const embedding = await voyageEmbed(
-        [{ type: "text", text: embedTextOf(row, colors) }, img.part],
-        "document"
-      );
-      await db.from("web_corpus").update({ embedding, colors }).eq("id", row.id);
+      let embedding_v2: number[];
+      if (useCf) {
+        embedding_v2 = text
+          ? await embedder.embedHybrid(img.base64, img.mimeType, text)
+          : await embedder.embedImage(img.base64, img.mimeType);
+      } else {
+        embedding_v2 = await voyageEmbed(
+          [{ type: "text", text: embedTextOf(row, colors) }, img.part],
+          "document"
+        );
+      }
+      await db.from("web_corpus").update({ embedding_v2, colors }).eq("id", row.id);
       recolored++;
     } catch (e) {
       if (/429/.test((e as Error).message)) { rateLimited = true; break; }
-      await db.from("web_corpus").update({ colors }).eq("id", row.id); // palette still useful without re-embed
+      await db.from("web_corpus").update({ colors }).eq("id", row.id);
       recolored++;
     }
   }
   const { count } = await db
     .from("web_corpus")
     .select("*", { count: "exact", head: true })
-    .not("embedding", "is", null)
+    .not("embedding_v2", "is", null)
     .eq("colors", "{}")
     .not("image", "is", null);
   return { recolored, remaining: count ?? 0, rateLimited };
