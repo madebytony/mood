@@ -47,6 +47,10 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
   const [loading, setLoading] = useState(false);
   const [picking, setPicking] = useState<Suggestion | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
+  // Suggestion URLs whose image (og + screenshot fallback) both failed — hide rather than
+  // show a broken tile. (Valid-but-poor images, e.g. logos/loading screens, need the server-side
+  // quality gate — see DISCOVERY-V3-PLAN §8.)
+  const [deadImg, setDeadImg] = useState<Set<string>>(new Set());
   const shown = useRef(new Set<string>());      // everything already offered this session
   const seeds = useRef<string[]>([]);            // descriptors of what you engaged with
   const inflightQ = useRef<string | null>(null); // dedupe double-fired identical loads (StrictMode)
@@ -287,7 +291,9 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
       )}
 
       <div className="columns-2 gap-3 sm:columns-3 lg:columns-4 xl:columns-5">
-        {filteredCards.map((card) =>
+        {filteredCards
+          .filter((card) => card.kind !== "suggestion" || !deadImg.has(card.s.url))
+          .map((card) =>
           card.kind === "suggestion" ? (
             <div
               key={`s-${card.s.url}`}
@@ -300,7 +306,7 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
                   src={card.s.image ?? shot(card.s.url)}
                   alt=""
                   loading="lazy"
-                  className="min-h-28 w-full bg-white/[0.04] object-cover object-top opacity-0 transition-opacity duration-500"
+                  className="aspect-[4/5] w-full bg-white/[0.04] object-cover object-top opacity-0 transition-opacity duration-500"
                   onLoad={(e) => {
                     const el = e.currentTarget;
                     // mShots serves a ~400px grey placeholder while generating — retry once for the real shot.
@@ -317,6 +323,9 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
                       // og:image failed — fall back to a screenshot
                       el.dataset.fb = "1";
                       el.src = shot(card.s.url);
+                    } else {
+                      // both og:image and the screenshot failed — drop the card, don't show a broken tile
+                      setDeadImg((d) => (d.has(card.s.url) ? d : new Set(d).add(card.s.url)));
                     }
                   }}
                 />
@@ -353,7 +362,7 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
             >
               {card.item.thumb_path && urls.get(card.item.thumb_path) ? (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={urls.get(card.item.thumb_path)} alt="" loading="lazy" className="w-full object-cover" />
+                <img src={urls.get(card.item.thumb_path)} alt="" loading="lazy" className="aspect-[4/5] w-full object-cover object-top" />
               ) : (
                 <div className="px-4 py-5 text-sm text-zinc-300">{(card.item.content ?? card.item.title ?? "").slice(0, 200)}</div>
               )}

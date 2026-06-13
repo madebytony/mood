@@ -1,6 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
 import { bearer, isClipToken } from "../_lib/auth";
-import { captureVetted, PoisonedCaptureError } from "../_lib/capture";
 import { extFor, imageDims, sha1hex } from "../_lib/image";
 import { assertPublicUrl, safeFetch } from "../_lib/ssrf";
 import { clientIp, rateLimit, tooManyRequests } from "../_lib/ratelimit";
@@ -87,6 +86,8 @@ export async function POST(req: Request) {
     let title = body.title ?? null;
     let fonts: string[] = [];
     let tech: string[] = [];
+    // A page capture that can't produce a clean shot degrades to a bookmark rather than dropping.
+    let degradeToLink = false;
 
     if (body.kind === "image" && body.image?.startsWith("data:")) {
       const m = /^data:([^;]+);base64,(.*)$/.exec(body.image);
@@ -100,17 +101,53 @@ export async function POST(req: Request) {
       contentType = res.headers.get("content-type") ?? "image/jpeg";
       bytes = new Uint8Array(await res.arrayBuffer());
       sourceUrl = body.page_url ?? body.url;
-    } else if (body.kind === "page" && body.url) {
+    } else if ((body.kind === "page" || body.kind === "url") && body.url) {
       await assertPublicUrl(body.url);
-      const shot = await captureVetted(body.url, false);
-      contentType = shot.type;
-      bytes = shot.bytes;
-      fonts = shot.fonts ?? [];
-      tech = shot.tech ?? [];
       sourceUrl = body.url;
       title = title ?? body.url.replace(/^https?:\/\/(www\.)?/, "").split("/")[0];
+      // kind:"url" is an explicit bookmark; kind:"page" tries a screenshot first.
+      if (body.kind === "url") {
+        degradeToLink = true;
+      } else {
+        try {
+          // Dynamic import keeps the capture pipeline's heavy deps (sharp/puppeteer) out of the
+          // image-clip path, so a load failure there can never 500 an image save.
+          const { captureVetted } = await import("../_lib/capture");
+          const shot = await captureVetted(body.url, false);
+          contentType = shot.type;
+          bytes = shot.bytes;
+          fonts = shot.fonts ?? [];
+          tech = shot.tech ?? [];
+        } catch {
+          // Fire-and-forget capture must never silently drop: no clean screenshot
+          // (poison/blocked/error, or the pipeline failed) → save the page as a bookmark.
+          degradeToLink = true;
+        }
+      }
     } else {
       throw new ClientError("unsupported clip");
+    }
+
+    let domain: string | null = null;
+    try { domain = sourceUrl ? new URL(sourceUrl).hostname.replace(/^www\./, "") : null; } catch {}
+
+    // Bookmark fallback (or explicit kind:"url"): a link card, no screenshot — never a dropped item.
+    if (degradeToLink || !bytes) {
+      const { data: item, error } = await db
+        .from("items")
+        .insert({
+          space_id: spaceId,
+          user_id: uid,
+          type: "link",
+          title: title ?? domain,
+          source_url: sourceUrl,
+          source_domain: domain,
+          tags: [],
+        })
+        .select()
+        .single();
+      if (error) throw error;
+      return Response.json({ ok: true, id: item.id, saved: "link" }, { headers: cors });
     }
 
     const ext = extFor(contentType);
@@ -119,9 +156,6 @@ export async function POST(req: Request) {
     const path = `media/${hash}.${ext}`;
     const up = await db.storage.from("media").upload(path, bytes, { upsert: true, contentType });
     if (up.error) throw up.error;
-
-    let domain: string | null = null;
-    try { domain = sourceUrl ? new URL(sourceUrl).hostname.replace(/^www\./, "") : null; } catch {}
 
     const { data: item, error } = await db
       .from("items")
@@ -150,11 +184,6 @@ export async function POST(req: Request) {
     // message so Supabase/Postgres internals never leak to the extension.
     if (err instanceof ClientError) {
       return Response.json({ error: err.message }, { status: 400, headers: cors });
-    }
-    // Capture produced only a junk shot (loading/blocked/error page) — tell the extension
-    // rather than letting a poisoned card into the library.
-    if (err instanceof PoisonedCaptureError) {
-      return Response.json({ error: `couldn't capture clean content — ${err.message}` }, { status: 422, headers: cors });
     }
     if (err.message?.startsWith("blocked")) {
       return Response.json({ error: "url not allowed" }, { status: 400, headers: cors });
