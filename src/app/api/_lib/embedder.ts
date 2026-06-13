@@ -43,46 +43,60 @@ export function hasCfKey(): boolean {
   return false;
 }
 
-async function hfTextCall(text: string): Promise<number[]> {
-  const res = await fetch(HF_CLIP_URL, {
+/** Retry HF call once on 503 model-loading response (cold start). */
+async function hfFetch(body: BodyInit, contentType: string): Promise<number[]> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${process.env.HF_API_TOKEN}`,
+    "Content-Type": contentType,
+  };
+
+  let res = await fetch(HF_CLIP_URL, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.HF_API_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ inputs: text.slice(0, 1000) }),
-    signal: AbortSignal.timeout(30000),
+    headers,
+    body,
+    signal: AbortSignal.timeout(40000),
   });
+
+  // HF returns 503 with {"estimated_time": N} while the model cold-starts
+  if (res.status === 503) {
+    const payload = await res.json().catch(() => ({}));
+    const wait = Math.min(Math.ceil((payload?.estimated_time ?? 20) * 1000), 25000);
+    console.log(`[hf-clip] model loading, waiting ${wait}ms…`);
+    await new Promise((r) => setTimeout(r, wait));
+    res = await fetch(HF_CLIP_URL, {
+      method: "POST",
+      headers,
+      body,
+      signal: AbortSignal.timeout(40000),
+    });
+  }
+
   if (!res.ok) {
     const msg = await res.text().catch(() => "");
-    throw new Error(`hf-clip-text ${res.status}: ${msg.slice(0, 200)}`);
+    throw new Error(`hf-clip ${res.status}: ${msg.slice(0, 300)}`);
   }
+
   const out = await res.json();
-  // HF feature-extraction returns [[...512 floats...]]
+  // Feature-extraction returns [[...512 floats...]] or [...512 floats...]
   const vec = Array.isArray(out?.[0]) ? out[0] : Array.isArray(out) ? out : null;
-  if (!vec || vec.length !== 512) throw new Error("hf-clip-text: unexpected response shape");
+  if (!vec || vec.length !== 512) {
+    throw new Error(`hf-clip: unexpected shape — got ${JSON.stringify(out).slice(0, 200)}`);
+  }
   return vec as number[];
 }
 
-async function hfImageCall(imageBase64: string): Promise<number[]> {
+async function hfTextCall(text: string): Promise<number[]> {
+  return hfFetch(
+    JSON.stringify({ inputs: text.slice(0, 1000) }),
+    "application/json"
+  );
+}
+
+async function hfImageCall(imageBase64: string, mimeType: string): Promise<number[]> {
   const buf = Buffer.from(imageBase64, "base64");
-  const res = await fetch(HF_CLIP_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.HF_API_TOKEN}`,
-      "Content-Type": "application/octet-stream",
-    },
-    body: buf,
-    signal: AbortSignal.timeout(30000),
-  });
-  if (!res.ok) {
-    const msg = await res.text().catch(() => "");
-    throw new Error(`hf-clip-image ${res.status}: ${msg.slice(0, 200)}`);
-  }
-  const out = await res.json();
-  const vec = Array.isArray(out?.[0]) ? out[0] : Array.isArray(out) ? out : null;
-  if (!vec || vec.length !== 512) throw new Error("hf-clip-image: unexpected response shape");
-  return vec as number[];
+  // HF CLIP image feature-extraction expects the actual image MIME type, not octet-stream
+  const ct = mimeType.startsWith("image/") ? mimeType : "image/jpeg";
+  return hfFetch(buf, ct);
 }
 
 export class HuggingFaceEmbedder implements Embedder {
@@ -92,8 +106,8 @@ export class HuggingFaceEmbedder implements Embedder {
     return hfTextCall(text);
   }
 
-  async embedImage(imageBase64: string, _mimeType: string): Promise<number[]> {
-    return hfImageCall(imageBase64);
+  async embedImage(imageBase64: string, mimeType: string): Promise<number[]> {
+    return hfImageCall(imageBase64, mimeType);
   }
 
   /**
