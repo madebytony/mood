@@ -11,7 +11,7 @@
  */
 import { createClient } from "@supabase/supabase-js";
 import { isAuthed } from "../../_lib/auth";
-import { getEmbedder, hasClipKey, CloudflareEmbedder } from "../../_lib/embedder";
+import { getEmbedder, hasClipKey, jinaEmbedTexts, CloudflareEmbedder } from "../../_lib/embedder";
 import { hasVoyageKey, voyageEmbed, type VoyageContent } from "../../_lib/voyage";
 import { extractColorsFromImage, extractLabPalette } from "../../_lib/colors";
 import { inferFacetsFromText } from "@/lib/facets";
@@ -94,53 +94,95 @@ async function backfillCorpus(batch: number): Promise<{ embedded: number; remain
     rows.map(row => row.image ? fetchImageData(row.image) : Promise.resolve(null))
   );
 
+  // Pre-compute colors, palettes, and embed text for every row (parallel).
+  const rowExtras = await Promise.all(
+    rows.map(async (row, i) => {
+      const imgResult = imgResults[i];
+      const img = imgResult.status === "fulfilled" ? imgResult.value : null;
+      const colors = img ? await extractColorsFromImage(img.buf) : [];
+      const palette_lab = img ? await extractLabPalette(img.buf) : [];
+      const text = corpusEmbedText(row, colors);
+      return { img, colors, palette_lab, text };
+    })
+  );
+
   let embedded = 0;
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
-    const imgResult = imgResults[i];
-    const img = imgResult.status === "fulfilled" ? imgResult.value : null;
-    const colors = img ? await extractColorsFromImage(img.buf) : [];
-    const palette_lab = img ? await extractLabPalette(img.buf) : [];
-    const text = corpusEmbedText(row, colors);
-    if (!img && !text) {
-      await db.from("web_corpus").delete().eq("id", row.id);
-      continue;
-    }
+
+  if (useCf) {
+    // Batch all text embeddings into ONE Jina API call.
+    // jina-clip-v2 charges 8192 tokens/image vs ~50/text — batching text keeps us inside
+    // the free daily quota and collapses 50 rate-limited calls → 1.
+    // CLIP text vectors are visually-aligned (joint training), so similarity search quality
+    // is preserved. New items get full hybrid embeddings at harvest/upload time.
+    const validIndices = rowExtras
+      .map((e, i) => (e.text ? i : -1))
+      .filter((i) => i >= 0);
+    const validTexts = validIndices.map((i) => rowExtras[i].text);
+
+    let batchVecs: number[][] = [];
     try {
-      let embedding_v2: number[];
-      if (useCf) {
-        embedding_v2 = img && text
-          ? await embedder.embedHybrid(img.base64, img.mimeType, text)
-          : img
-          ? await embedder.embedImage(img.base64, img.mimeType)
-          : await embedder.embedText(text);
+      batchVecs = validTexts.length ? await jinaEmbedTexts(validTexts) : [];
+    } catch (e) {
+      const emsg = (e as Error).message;
+      if (/429/.test(emsg)) {
+        console.warn("[backfill] Jina rate limit on batch call — 0 embedded this run");
       } else {
-        const content: VoyageContent[] = [];
-        if (text) content.push({ type: "text", text });
-        if (img) content.push(img.voyagePart);
-        embedding_v2 = await voyageEmbed(content, "document");
+        console.error("[backfill] Jina batch error:", emsg);
       }
+    }
+
+    for (let k = 0; k < validIndices.length; k++) {
+      const i = validIndices[k];
+      const row = rows[i];
+      const { colors, palette_lab } = rowExtras[i];
+      const embedding_v2 = batchVecs[k];
+      if (!embedding_v2) continue;
       const patch: Record<string, unknown> = { embedding_v2, colors };
       if (palette_lab.length) patch.palette_lab = palette_lab;
       await db.from("web_corpus").update(patch).eq("id", row.id);
       embedded++;
-    } catch (e) {
-      const emsg = (e as Error).message;
-      if (/429/.test(emsg)) {
-        if (hasClipKey()) { console.warn("[backfill] Jina rate limit, skipping row:", row.id); continue; }
-        break; // Voyage: hard rate limit — stop batch
+    }
+
+    // Delete corpus rows that have neither image nor text (no signal to embed).
+    for (let i = 0; i < rows.length; i++) {
+      const { img, text } = rowExtras[i];
+      if (!img && !text) {
+        await db.from("web_corpus").delete().eq("id", rows[i].id);
       }
-      console.error("[backfill] embed error (primary):", emsg, "row:", row.id);
-      // fallback: text-only
-      if (text) {
-        try {
-          const embedding_v2 = await embedder.embedText(text);
-          const patch2: Record<string, unknown> = { embedding_v2, colors };
-          if (palette_lab.length) patch2.palette_lab = palette_lab;
-          await db.from("web_corpus").update(patch2).eq("id", row.id);
-          embedded++;
-        } catch (e2) {
-          console.error("[backfill] embed error (fallback):", (e2 as Error).message, "row:", row.id);
+    }
+  } else {
+    // Voyage: sequential, break on 429
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const { img, colors, palette_lab, text } = rowExtras[i];
+      if (!img && !text) {
+        await db.from("web_corpus").delete().eq("id", row.id);
+        continue;
+      }
+      try {
+        const content: VoyageContent[] = [];
+        if (text) content.push({ type: "text", text });
+        if (img) content.push(img.voyagePart);
+        const embedding_v2 = await voyageEmbed(content, "document");
+        const patch: Record<string, unknown> = { embedding_v2, colors };
+        if (palette_lab.length) patch.palette_lab = palette_lab;
+        await db.from("web_corpus").update(patch).eq("id", row.id);
+        embedded++;
+      } catch (e) {
+        const emsg = (e as Error).message;
+        if (/429/.test(emsg)) break; // Voyage hard rate limit — stop batch
+        console.error("[backfill] embed error (primary):", emsg, "row:", row.id);
+        // fallback: text-only
+        if (text) {
+          try {
+            const embedding_v2 = await embedder.embedText(text);
+            const patch2: Record<string, unknown> = { embedding_v2, colors };
+            if (palette_lab.length) patch2.palette_lab = palette_lab;
+            await db.from("web_corpus").update(patch2).eq("id", row.id);
+            embedded++;
+          } catch (e2) {
+            console.error("[backfill] embed error (fallback):", (e2 as Error).message, "row:", row.id);
+          }
         }
       }
     }

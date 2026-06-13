@@ -44,6 +44,12 @@ export function hasHfKey(): boolean {
   return false;
 }
 
+/** Embed a batch of texts in a single Jina API call (for efficient backfill). */
+export async function jinaEmbedTexts(texts: string[]): Promise<number[][]> {
+  if (!texts.length) return [];
+  return jinaEmbed(texts.map((t) => ({ text: t.slice(0, 1000) })));
+}
+
 async function jinaEmbed(inputs: Array<{ text: string } | { image: string }>): Promise<number[][]> {
   const res = await fetch(JINA_EMBED_URL, {
     method: "POST",
