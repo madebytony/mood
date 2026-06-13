@@ -965,6 +965,8 @@ export async function backfillEmbeddings(batch = 12): Promise<void> {
       if (ok) failures = 0;
       await new Promise((r) => setTimeout(r, 1500));
     }
+  } catch (e) {
+    console.error("backfillEmbeddings:", e);
   } finally {
     backfillRunning = false;
   }
@@ -1506,7 +1508,7 @@ async function discoverStreaming(
       let data = "";
       for (const line of lines) {
         if (line.startsWith("event: ")) eventName = line.slice(7);
-        else if (line.startsWith("data: ")) data += line.slice(6);
+        else if (line.startsWith("data: ")) data += (data ? "\n" : "") + line.slice(6);
       }
       if (eventName === "items" && data) {
         try {

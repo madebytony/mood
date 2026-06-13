@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import { isAuthed } from "../../_lib/auth";
+import { isAuthed, bearer, isCronSecret } from "../../_lib/auth";
 import { harvest, embedPending, recolorPending, hygiene } from "../../_lib/corpus";
 
 async function updateTrendScores(): Promise<{ trendRowsUpdated: number }> {
@@ -28,9 +28,8 @@ export const maxDuration = 120;
  *  Vercel sends `Authorization: Bearer <CRON_SECRET>` when the env var is set — or by
  *  the normal app auth for manual triggering. */
 export async function GET(req: Request) {
-  const auth = req.headers.get("authorization");
-  const cronOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
-  if (!cronOk && !(await isAuthed(req))) {
+  const auth = bearer(req);
+  if (!isCronSecret(auth) && !(await isAuthed(req))) {
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
   try {

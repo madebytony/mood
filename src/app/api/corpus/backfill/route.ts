@@ -10,7 +10,7 @@
  * Both are idempotent. Safe to call repeatedly — always reads remaining count.
  */
 import { createClient } from "@supabase/supabase-js";
-import { isAuthed } from "../../_lib/auth";
+import { isAuthed, bearer, isCronSecret } from "../../_lib/auth";
 import { getEmbedder, hasClipKey, jinaEmbedTexts, CloudflareEmbedder } from "../../_lib/embedder";
 import { hasVoyageKey, voyageEmbed, type VoyageContent } from "../../_lib/voyage";
 import { extractColorsFromImage, extractLabPalette } from "../../_lib/colors";
@@ -371,9 +371,7 @@ async function backfillFacets(batch: number): Promise<{ filled: number; remainin
 }
 
 function isAuthorised(req: Request): Promise<boolean> {
-  const auth = req.headers.get("authorization");
-  const cronOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
-  if (cronOk) return Promise.resolve(true);
+  if (isCronSecret(bearer(req))) return Promise.resolve(true);
   return isAuthed(req);
 }
 

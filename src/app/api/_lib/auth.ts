@@ -32,6 +32,13 @@ export function isClipToken(token: string | null): boolean {
   return timingSafeEqual(sha256(token), sha256(expected));
 }
 
+/** Verify a cron request's Bearer token against CRON_SECRET (timing-safe). */
+export function isCronSecret(token: string | null): boolean {
+  const expected = process.env.CRON_SECRET;
+  if (!expected || !token) return false;
+  return timingSafeEqual(sha256(token), sha256(expected));
+}
+
 function sha256(s: string): Buffer {
   return createHash("sha256").update(s).digest();
 }

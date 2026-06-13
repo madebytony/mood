@@ -75,6 +75,7 @@ async function typeWebSearch(query: string | null, taste: string[]): Promise<Sug
     return arr.flatMap((r: any) => {
       try {
         const u = new URL(r.url);
+        if (u.protocol !== "http:" && u.protocol !== "https:") return [];
         const domain = u.hostname.replace(/^www\./, "");
         if (FONT_AGGREGATORS.test(domain) || SOCIAL_RE.test(domain) || DEV_RE.test(domain)) return [];
         return [{ url: r.url, title: r.title ?? null, image: null, domain, source: "web", blurb: r.blurb ?? null }];

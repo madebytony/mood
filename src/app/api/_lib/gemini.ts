@@ -28,7 +28,7 @@ interface GeminiBody {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function gemini(body: GeminiBody, timeoutMs = 45000): Promise<any> {
   if (geminiDisabled()) throw new Error("gemini disabled: cooling down");
-  const url = `${API}/${MODEL}:generateContent?key=${process.env.GEMINI_API_KEY}`;
+  const url = `${API}/${MODEL}:generateContent`;
   // Disable thinking by default — none of our routes benefit from extended reasoning,
   // and thinking tokens slow responses and cost extra on 2.5+ models.
   const merged: GeminiBody = {
@@ -43,7 +43,7 @@ export async function gemini(body: GeminiBody, timeoutMs = 45000): Promise<any> 
     if (attempt) await sleep(500 * 2 ** (attempt - 1) + Math.floor(Math.random() * 250)); // ~0.6s, ~1.1s
     const res = await fetch(url, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "x-goog-api-key": process.env.GEMINI_API_KEY! },
       body: JSON.stringify(merged),
       signal: AbortSignal.timeout(timeoutMs),
     });

@@ -47,6 +47,7 @@ export async function voyageEmbed(
       const out = await res.json();
       const emb = out?.data?.[0]?.embedding;
       if (!Array.isArray(emb)) throw new Error("voyage: no embedding in response");
+      if (emb.length !== 1024) throw new Error(`voyage: unexpected dimension ${emb.length} (expected 1024)`);
       return emb;
     }
     lastErr = `${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`;
