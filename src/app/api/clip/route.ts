@@ -111,28 +111,21 @@ export async function POST(req: Request) {
       sourceUrl = body.url;
       title = title ?? body.url.replace(/^https?:\/\/(www\.)?/, "").split("/")[0];
 
-      // Instagram/Threads: pull the og:image directly — these platforms block screenshots
-      // but serve high-res images via meta tags on public posts.
+      // Instagram/Threads: use the public oEmbed API to get the post image.
+      // These platforms block og:image from server-side fetches and screenshots,
+      // but the oEmbed endpoint returns thumbnail_url without auth for public posts.
       const isInstagram = /^https?:\/\/(www\.)?(instagram\.com|threads\.net)\//i.test(body.url);
       if (isInstagram) {
         try {
-          const ogRes = await safeFetch(body.url, {
-            headers: { "user-agent": "Mozilla/5.0 (compatible; Mood/1.0)" },
-            signal: AbortSignal.timeout(10000),
-          });
-          if (ogRes.ok) {
-            const html = (await ogRes.text()).slice(0, 200_000);
-            const ogImg = (
-              /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i.exec(html) ??
-              /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i.exec(html)
-            )?.[1];
-            const ogTitle = (
-              /<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i.exec(html) ??
-              /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["']/i.exec(html)
-            )?.[1];
-            if (ogTitle) title = ogTitle.slice(0, 200);
-            if (ogImg) {
-              const imgRes = await safeFetch(ogImg, { signal: AbortSignal.timeout(15000) });
+          const oembedUrl = `https://api.instagram.com/oembed/?url=${encodeURIComponent(body.url)}`;
+          const oRes = await fetch(oembedUrl, { signal: AbortSignal.timeout(10000) });
+          if (oRes.ok) {
+            const oembed = await oRes.json();
+            if (oembed.title) title = String(oembed.title).slice(0, 200);
+            else if (oembed.author_name) title = oembed.author_name;
+            const thumbUrl = oembed.thumbnail_url;
+            if (thumbUrl) {
+              const imgRes = await fetch(thumbUrl, { signal: AbortSignal.timeout(15000) });
               if (imgRes.ok) {
                 contentType = imgRes.headers.get("content-type") ?? "image/jpeg";
                 if (contentType.startsWith("image/")) {

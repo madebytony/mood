@@ -615,7 +615,22 @@ export async function enrichLinkThumbs(
     const batch = items.slice(i, i + BATCH);
     await Promise.all(batch.map(async (item) => {
       try {
-        const meta = await fetchLinkMeta(item.source_url!);
+        const url = item.source_url!;
+        const isInstagram = /^https?:\/\/(www\.)?(instagram\.com|threads\.net)\//i.test(url);
+        let meta: { image: string | null; title: string | null };
+
+        if (isInstagram) {
+          // Instagram blocks og:image from server-side fetches; use their public oEmbed API
+          const oRes = await fetch(`https://api.instagram.com/oembed/?url=${encodeURIComponent(url)}`, {
+            signal: AbortSignal.timeout(10000),
+          });
+          if (!oRes.ok) return;
+          const oembed = await oRes.json();
+          meta = { image: oembed.thumbnail_url ?? null, title: oembed.title ?? oembed.author_name ?? null };
+        } else {
+          meta = await fetchLinkMeta(url);
+        }
+
         if (!meta.image) return;
         const blob = await fetchRemoteImage(meta.image);
         const processed = await processImage(blob);
