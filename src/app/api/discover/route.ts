@@ -371,11 +371,12 @@ interface JudgedCandidate { c: Suggestion; score: number; axes: AxisScores | nul
 
 const clamp10 = (n: unknown): number => (typeof n === "number" && Number.isFinite(n) ? Math.max(0, Math.min(10, Math.round(n))) : 0);
 
-/** Composite ruling with the palette gate enforced in CODE, not prompt-trust: a candidate
- *  whose palette contradicts the reference cannot exceed 3 however good its layout. */
+/** Composite ruling with a soft palette gate: truly wrong palettes (≤ 2) cap the score,
+ *  but moderate mismatches (3-4) are penalised without being hard-capped. */
 function composite(a: AxisScores): number {
   const weighted = Math.round(0.4 * a.palette + 0.25 * a.typography + 0.2 * a.layout + 0.15 * a.mood);
-  return a.palette <= 4 ? Math.min(3, weighted) : weighted;
+  if (a.palette <= 2) return Math.min(2, weighted); // truly wrong palette
+  return weighted;
 }
 
 /** Judge one batch: rationale-first axis scoring (small batches keep the model's attention
@@ -544,7 +545,8 @@ async function visualRank(
         const snapshot = judged.filter((j) => j.score >= 4).sort((a, b) => b.score - a.score);
         if (snapshot.length) opts.onBatch(snapshot.map(toSuggestion));
       }
-      if (judged.filter((j) => j.score >= 5).length >= 6) break;
+      // Only early-stop after evaluating at least 14 candidates, and only when we have enough strong matches
+      if (i >= 14 && judged.filter((j) => j.score >= 5).length >= 8) break;
     }
   } catch { /* fall through with whatever was judged */ }
   if (!judged.length) return null;
