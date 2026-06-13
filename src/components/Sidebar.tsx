@@ -7,7 +7,7 @@ import { createLibrary, createSpace, renameSpace, deleteSpace } from "@/lib/db";
 import { supabase, authToken } from "@/lib/supabase";
 import { ask, confirmDialog, notice } from "./ui";
 import { useDialog } from "./useDialog";
-import { SparklesIcon, InboxIcon, PhoneIcon } from "./icons";
+import { SparklesIcon, InboxIcon, BookmarkIcon, PhoneIcon } from "./icons";
 
 interface Props {
   libraries: Library[];
@@ -175,13 +175,14 @@ export default function Sidebar({ libraries, libraryModes, spaces, selected, cou
                     >
                       <span className="flex items-center gap-1.5">
                         {s.kind === "inbox" && <InboxIcon className="h-3.5 w-3.5 shrink-0 text-zinc-500" />}
+                        {s.kind === "bookmarks" && <BookmarkIcon className="h-3.5 w-3.5 shrink-0 text-zinc-500" />}
                         <span className="truncate">{s.name}</span>
                       </span>
                     </button>
                   )}
                   <span className="flex items-center gap-1">
                     <span className="text-xs text-zinc-600">{counts.get(s.id) ?? ""}</span>
-                    {s.kind !== "inbox" && (
+                    {s.kind !== "inbox" && s.kind !== "bookmarks" && (
                       <button
                         onClick={() => removeSpace(s)}
                         className="hidden rounded px-1 text-zinc-600 hover:text-red-400 group-hover:block"

@@ -51,6 +51,7 @@ import {
   unstackItem,
   updateItem,
   updateStack,
+  getOrCreateBookmarks,
 } from "@/lib/db";
 import { COLOR_NAMES, COLOR_HEX } from "@/lib/media";
 import type { Item, Library, LibraryMode, Space, Stack } from "@/lib/types";
@@ -310,6 +311,15 @@ function App() {
     loadStructure().catch((e) => toast(String(e.message ?? e), "error"));
   }, [loadStructure, toast]);
 
+  // Auto-create the Bookmarks space on first load if it doesn't exist yet
+  const bmCreated = useRef(false);
+  useEffect(() => {
+    if (bmCreated.current || !libraries.length || !spaces.length) return;
+    if (spaces.some((s) => s.kind === "bookmarks")) { bmCreated.current = true; return; }
+    bmCreated.current = true;
+    getOrCreateBookmarks(spaces, libraries).then(() => loadStructure()).catch(() => {});
+  }, [spaces, libraries, loadStructure]);
+
   useEffect(() => {
     const t = setTimeout(
       () => loadItems().catch((e) => toast(String(e.message ?? e), "error")),
@@ -333,11 +343,21 @@ function App() {
   }, [selected]);
 
   const inbox = useMemo(() => spaces.find((s) => s.kind === "inbox"), [spaces]);
+  const bookmarks = useMemo(() => spaces.find((s) => s.kind === "bookmarks"), [spaces]);
   const currentSpace = useMemo(
     () => (selected !== "all" && selected !== "home" ? spaces.find((s) => s.id === selected) : undefined),
     [spaces, selected]
   );
   const targetSpace = currentSpace?.id ?? inbox?.id;
+
+  /** Bookmark a URL: auto-creates the Bookmarks space on first use, then saves the URL there. */
+  const handleBookmark = useCallback(async (url: string) => {
+    const bmId = bookmarks?.id ?? await getOrCreateBookmarks(spaces, libraries);
+    await addFromUrl(url, bmId);
+    invalidateViewCache();
+    loadStructure();
+  }, [bookmarks, spaces, libraries, invalidateViewCache, loadStructure]);
+
   const effectiveLibraryModes = useMemo<Record<string, LibraryMode>>(() => {
     const out: Record<string, LibraryMode> = {};
     for (const lib of libraries) {
@@ -1108,6 +1128,42 @@ function App() {
               <span className="flex items-center gap-1.5"><SparklesIcon className="h-3.5 w-3.5" />{briefBusy ? "Reading the board…" : "Explore style"}</span>
             </button>
           )}
+          {currentSpace?.kind === "bookmarks" && (
+            <>
+              <label
+                className="cursor-pointer rounded-lg border border-white/10 px-2.5 py-1 text-[11px] text-zinc-400 hover:border-white/30 hover:text-zinc-200"
+                title="Import Chrome bookmarks, Pocket export, or social saves (HTML, CSV, or JSON)"
+              >
+                <span className="flex items-center gap-1.5">Import bookmarks</span>
+                <input
+                  type="file"
+                  accept=".html,.htm,.csv,.tsv,.json,.txt"
+                  className="hidden"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file || !currentSpace) return;
+                    e.target.value = ""; // reset so same file can be re-selected
+                    try {
+                      const text = await file.text();
+                      const { parseBookmarksHtml, parseBookmarksCsv, parseSocialJson, importBookmarks } = await import("@/lib/db");
+                      const ext = file.name.split(".").pop()?.toLowerCase();
+                      const entries = ext === "csv" || ext === "tsv"
+                        ? parseBookmarksCsv(text)
+                        : ext === "json"
+                          ? parseSocialJson(text)
+                          : parseBookmarksHtml(text);
+                      if (!entries.length) { toast("No bookmarks found in file", "error"); return; }
+                      const n = await importBookmarks(entries, currentSpace.id);
+                      toast(n ? `Imported ${n} bookmark${n === 1 ? "" : "s"}` : "All bookmarks already imported");
+                      invalidateViewCache(); loadItems(); loadStructure();
+                    } catch (err) {
+                      toast(`Import failed: ${(err as Error).message}`, "error");
+                    }
+                  }}
+                />
+              </label>
+            </>
+          )}
           {selected !== "home" && currentFeedMode === "type" && (
             <button
               onClick={() => setFontReviewOpen(true)}
@@ -1186,8 +1242,9 @@ function App() {
             <Feed
               spaces={spaces}
               inboxId={inbox?.id}
+              onBookmark={handleBookmark}
               onOpenItem={(i) => setOpen(i)}
-              onSaved={() => loadItems()}
+              onSaved={() => { invalidateViewCache(); loadItems(); loadStructure(); }}
               toast={toast}
             />
           ) : showBoard ? (
@@ -1498,11 +1555,12 @@ function App() {
                 similarToItemId={similarItemId}
                 spaces={spaces}
                 inboxId={inbox?.id}
+                onBookmark={handleBookmark}
                 onOpenItem={(i) => {
                   setSimilarQuery(null);
                   setOpen(i);
                 }}
-                onSaved={loadItems}
+                onSaved={() => { invalidateViewCache(); loadItems(); loadStructure(); }}
                 toast={toast}
               />
             </div>

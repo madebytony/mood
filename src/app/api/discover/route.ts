@@ -451,7 +451,7 @@ async function visualRank(
   refImage: { inlineData: { mimeType: string; data: string } },
   pool: Suggestion[],
   exclude: Set<string>,
-  opts: { brief?: string | null; refKey?: string | null } = {},
+  opts: { brief?: string | null; refKey?: string | null; onBatch?: (items: Suggestion[]) => void } = {},
 ): Promise<Suggestion[] | null> {
   // Verdict memory: never pay to re-judge something already ruled out for this reference.
   const ruledOut = opts.refKey ? new Set(await badVerdictDomains(opts.refKey)) : new Set<string>();
@@ -522,10 +522,24 @@ async function visualRank(
   }
 
   // Judge in small batches, best candidates first; stop once enough genuine matches survive.
+  // When onBatch is provided (SSE streaming), emit the current best results after each batch
+  // so the client renders cards incrementally instead of waiting for the full pipeline.
   const judged: JudgedCandidate[] = [];
+  const toSuggestion = (j: JudgedCandidate): Suggestion => ({
+    ...j.c,
+    image: j.c.image ?? MSHOT(j.c.url),
+    blurb: j.why
+      ? `${j.why} — ${j.score}/10${j.axes ? ` (palette ${j.axes.palette})` : ""}`
+      : j.c.blurb ?? null,
+  });
   try {
     for (let i = 0; i < withImg.length && i < 28; i += 7) {
       judged.push(...await judgeBatch(refImage, withImg.slice(i, i + 7), opts.brief ?? null));
+      // Stream the current best results to the client after each batch
+      if (opts.onBatch) {
+        const snapshot = judged.filter((j) => j.score >= 4).sort((a, b) => b.score - a.score);
+        if (snapshot.length) opts.onBatch(snapshot.map(toSuggestion));
+      }
       if (judged.filter((j) => j.score >= 5).length >= 6) break;
     }
   } catch { /* fall through with whatever was judged */ }
@@ -749,7 +763,7 @@ export async function POST(req: Request) {
   if (!(await isAuthed(req))) return Response.json({ error: "unauthorized" }, { status: 401 });
   const body = await req.json().catch(() => ({}));
   const rawCands = Array.isArray(body.candidates) ? body.candidates.slice(0, 30) : [];
-  return run({
+  const opts: RunOpts = {
     query: typeof body.q === "string" && body.q ? body.q : null,
     mode: typeof body.mode === "string" ? body.mode : null,
     img: typeof body.img === "string" && body.img ? body.img : null,
@@ -769,6 +783,92 @@ export async function POST(req: Request) {
     }),
     refKey: typeof body.refKey === "string" && /^(item|space):[\w-]+$/.test(body.refKey) ? body.refKey : null,
     filterHints: typeof body.filterHints === "string" && body.filterHints ? body.filterHints : null,
+  };
+  // SSE streaming: when the client sends Accept: text/event-stream, stream visual-judge
+  // results batch-by-batch instead of waiting for the full pipeline.
+  const wantsStream = (req.headers.get("accept") ?? "").includes("text/event-stream");
+  if (wantsStream && opts.img && opts.query) return runStreaming(opts);
+  return run(opts);
+}
+
+/** SSE streaming variant: emits visual-judge results batch-by-batch as they're scored,
+ *  so the client renders cards incrementally instead of waiting 10-13s for the full pipeline.
+ *  Events: "items" (array of Suggestion), "done" (empty). */
+async function runStreaming(opts: RunOpts): Promise<Response> {
+  const { query, img, taste, exclude, candidates, refKey, filterHints } = opts;
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      const emit = (event: string, data: unknown) => {
+        try { controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)); }
+        catch { /* controller closed */ }
+      };
+      try {
+        const refImage = img ? await fetchImagePart(img) : null;
+        if (!refImage) { emit("done", {}); controller.close(); return; }
+
+        // Parallel: describeAesthetic + webSearch + arena + aggregate
+        const aestheticP = describeAesthetic(refImage);
+        const webP = webSearch(query!);
+        const arenaP = arena().catch(() => [] as Suggestion[]);
+        const aggP = aggregate().catch(() => [] as Suggestion[]);
+        const aesthetic = await aestheticP;
+        const [web, mined, arn, agg] = await Promise.all([
+          webP,
+          galleryMine(aesthetic ?? query!).catch(() => [] as Suggestion[]),
+          arenaP,
+          aggP,
+        ]);
+
+        const judgeBrief = filterHints
+          ? [query, `Explicit style constraints (weight in axis scores): ${filterHints}`].filter(Boolean).join(". ")
+          : query;
+        const ranked = await visualRank(
+          refImage,
+          [...candidates, ...mined, ...web, ...agg, ...arn],
+          exclude,
+          {
+            brief: judgeBrief,
+            refKey,
+            onBatch: (items) => emit("items", items),
+          },
+        );
+
+        // Final enrichment + dedup pass on the full result set
+        if (ranked && ranked.length) {
+          const norm = (u: string) => u.replace(/\/+$/, "");
+          const seenDomains = new Set<string>();
+          const top = await enrich(ranked.slice(0, 20).map((c) => ({ ...c })));
+          const finalItems = top.filter((s) => {
+            if (exclude.has(s.domain) || exclude.has(s.url) || exclude.has(norm(s.url))) return false;
+            if (s.source !== "seed" && s.source !== "web" && (CURATION_RE.test(s.domain) || DEV_RE.test(s.domain))) return false;
+            if (seenDomains.has(s.domain)) return false;
+            seenDomains.add(s.domain);
+            return true;
+          });
+          emit("items", finalItems);
+          // Best-effort corpus ingest
+          try {
+            await ingestCandidates(
+              finalItems.filter((s) => s.source === "web")
+                .map((s) => ({ url: s.url, domain: s.domain, title: s.title, image: s.image, blurb: s.blurb ?? null, tags: [], source: "websearch" }))
+            );
+          } catch { /* best-effort */ }
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (!/failed to fetch|fetch failed|network/i.test(msg)) console.error("discover stream failed:", e);
+      }
+      emit("done", {});
+      controller.close();
+    },
+  });
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
   });
 }
 
@@ -792,14 +892,20 @@ async function run({ query, mode, img, taste, exclude, candidates, refKey, filte
     // pool is gathered (aesthetic web search + gallery/Are.na pools), (3) every candidate's own
     // screenshot is judged against the reference pixels, and only confirmed look-matches survive.
     const refImage = img ? await fetchImagePart(img) : null;
-    const aesthetic = refImage ? await describeAesthetic(refImage) : null;
-    const searchQuery = aesthetic ? `${aesthetic} · ${query}`.slice(0, 400) : query;
     if (refImage) {
+      // Parallelise: describeAesthetic, webSearch, arena, aggregate all start together.
+      // Only galleryMine needs the aesthetic result, so it starts once that resolves —
+      // overlapping with the other fetches instead of blocking them. Saves ~2-3s.
+      const aestheticP = describeAesthetic(refImage);
+      const webP = webSearch(query);
+      const arenaP = arena().catch(() => [] as Suggestion[]);
+      const aggP = aggregate().catch(() => [] as Suggestion[]);
+      const aesthetic = await aestheticP;
       const [web, mined, arn, agg] = await Promise.all([
-        webSearch(searchQuery),
+        webP,
         galleryMine(aesthetic ?? query).catch(() => [] as Suggestion[]),
-        arena().catch(() => [] as Suggestion[]),
-        aggregate().catch(() => [] as Suggestion[]),
+        arenaP,
+        aggP,
       ]);
       // Corpus candidates lead the pool: they're already taste-near by vector, so the judge
       // spends its scores on plausible matches first.
@@ -813,7 +919,7 @@ async function run({ query, mode, img, taste, exclude, candidates, refKey, filte
       else cands = [...candidates, ...mined, ...web]; // judging unavailable — fall back to the text-ranked path
     } else {
       // No reference image -> the query is a typed brief; a named sector is intentional.
-      cands = [...candidates, ...await webSearch(searchQuery, !img)];
+      cands = [...candidates, ...await webSearch(query, !img)];
     }
   } else {
     // Discover endless feed: general inspiration — curated Are.na channels + gallery pool

@@ -478,6 +478,119 @@ export async function deleteItemStorage(item: Item): Promise<void> {
   await supabase.storage.from("media").remove(paths);
 }
 
+/** Lazily ensure a Bookmarks space exists in the user's first library.
+ *  Returns its ID — used by the like action and bookmark import. */
+export async function getOrCreateBookmarks(spaces: Space[], libraries: Library[]): Promise<string> {
+  const existing = spaces.find((s) => s.kind === "bookmarks");
+  if (existing) return existing.id;
+  const lib = libraries[0];
+  if (!lib) throw new Error("No library");
+  const uid = await userId();
+  const { data, error } = await supabase
+    .from("spaces")
+    .insert({ library_id: lib.id, user_id: uid, name: "Bookmarks", kind: "bookmarks" })
+    .select()
+    .single();
+  if (error) throw error;
+  return data.id;
+}
+
+/** Parse a Chrome/Firefox bookmarks HTML export and return [{url, title}] pairs. */
+export function parseBookmarksHtml(html: string): { url: string; title: string }[] {
+  const out: { url: string; title: string }[] = [];
+  const re = /<a\b[^>]*href="(https?:\/\/[^"]+)"[^>]*>([^<]*)<\/a>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html))) {
+    const url = m[1].trim();
+    const title = m[2].trim();
+    if (url) out.push({ url, title: title || url });
+  }
+  return out;
+}
+
+/** Parse a CSV (Twitter/X bookmarks, Pocket export, generic) and return [{url, title}] pairs.
+ *  Detects URL-containing columns automatically. */
+export function parseBookmarksCsv(csv: string): { url: string; title: string }[] {
+  const out: { url: string; title: string }[] = [];
+  const lines = csv.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (!lines.length) return out;
+  for (const line of lines) {
+    // Find URLs in each line (handles any CSV structure)
+    const urls = line.match(/https?:\/\/[^\s,"]+/g);
+    if (!urls) continue;
+    // First non-URL field is the title
+    const fields = line.split(/[,\t]/).map((f) => f.replace(/^"|"$/g, "").trim());
+    const title = fields.find((f) => !/^https?:\/\//.test(f) && f.length > 1) ?? urls[0];
+    for (const url of urls) out.push({ url, title });
+  }
+  return out;
+}
+
+/** Parse Instagram/Pinterest/social JSON data exports.
+ *  Handles Instagram liked_posts.json, saved_posts.json, saved_collections.json,
+ *  and generic JSON arrays with href/url fields. */
+export function parseSocialJson(raw: string): { url: string; title: string }[] {
+  const out: { url: string; title: string }[] = [];
+  try {
+    const data = JSON.parse(raw);
+    // Walk the entire JSON tree looking for objects with href or url fields
+    // This handles Instagram's nested format (likes_media_likes → string_list_data → href)
+    // as well as flat arrays from Pinterest, Are.na, etc.
+    function walk(obj: unknown) {
+      if (!obj || typeof obj !== "object") return;
+      if (Array.isArray(obj)) { for (const item of obj) walk(item); return; }
+      const rec = obj as Record<string, unknown>;
+      const href = (typeof rec.href === "string" && rec.href) ||
+                   (typeof rec.url === "string" && rec.url) ||
+                   (typeof rec.link === "string" && rec.link);
+      if (href && /^https?:\/\//.test(href)) {
+        const title = (typeof rec.value === "string" && rec.value) || // Instagram: username
+                      (typeof rec.title === "string" && rec.title) ||
+                      (typeof rec.name === "string" && rec.name) ||
+                      href;
+        out.push({ url: href, title });
+      }
+      // Recurse into nested objects/arrays
+      for (const v of Object.values(rec)) walk(v);
+    }
+    walk(data);
+  } catch { /* invalid JSON */ }
+  return out;
+}
+
+/** Batch-import bookmarks into a space. Skips duplicates by source_url. Returns the count imported. */
+export async function importBookmarks(entries: { url: string; title: string }[], spaceId: string): Promise<number> {
+  const uid = await userId();
+  // Check which URLs already exist in this space
+  const urls = entries.map((e) => e.url);
+  const { data: existing } = await supabase
+    .from("items")
+    .select("source_url")
+    .eq("space_id", spaceId)
+    .in("source_url", urls.slice(0, 500));
+  const have = new Set((existing ?? []).map((r) => r.source_url));
+  const fresh = entries.filter((e) => !have.has(e.url)).slice(0, 200); // cap at 200 per import
+  if (!fresh.length) return 0;
+  // Batch insert as link cards (metadata enrichment happens async via background processing)
+  const rows = fresh.map((e) => {
+    let domain = "";
+    try { domain = new URL(e.url).hostname.replace(/^www\./, ""); } catch { /* skip */ }
+    return {
+      space_id: spaceId,
+      user_id: uid,
+      type: "link" as const,
+      title: e.title,
+      source_url: e.url,
+      source_domain: domain,
+      tags: [],
+      colors: [],
+    };
+  });
+  const { error } = await supabase.from("items").insert(rows);
+  if (error) throw error;
+  return rows.length;
+}
+
 export async function createSpace(libraryId: string, name: string): Promise<Space> {
   const uid = await userId();
   const { data, error } = await supabase
@@ -1275,7 +1388,57 @@ export async function logDiscoveryEvent(
   } catch { /* best-effort */ }
 }
 
-export async function discover(query: string | null, extraExclude: string[] = [], mode?: "type", imageUrl?: string | null, tasteSpaceId?: string, similarToItemId?: string | null, filters?: DiscoverFilters, discoveryMode: DiscoveryMode = "foryou"): Promise<Suggestion[]> {
+/** Consume SSE stream from /api/discover, calling onPartial as batches arrive. */
+async function discoverStreaming(
+  body: object,
+  onPartial: (items: Suggestion[]) => void,
+): Promise<Suggestion[]> {
+  const res = await apiFetch("/api/discover", {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "text/event-stream" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error("Discover failed");
+  const ct = res.headers.get("content-type") ?? "";
+  // Server may not support streaming yet — fall back to JSON
+  if (!ct.includes("text/event-stream")) {
+    const { items } = await res.json();
+    return (items ?? []) as Suggestion[];
+  }
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let allItems: Suggestion[] = [];
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    // Parse SSE events: "event: <name>\ndata: <json>\n\n"
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop()!; // keep the incomplete trailing chunk
+    for (const part of parts) {
+      const lines = part.split("\n");
+      let eventName = "";
+      let data = "";
+      for (const line of lines) {
+        if (line.startsWith("event: ")) eventName = line.slice(7);
+        else if (line.startsWith("data: ")) data += line.slice(6);
+      }
+      if (eventName === "items" && data) {
+        try {
+          // Each "items" event is a SNAPSHOT (all current good matches), not a delta —
+          // replace the previous set so the UI shows the latest sorted results.
+          allItems = JSON.parse(data) as Suggestion[];
+          onPartial(allItems);
+        } catch { /* malformed event, skip */ }
+      }
+    }
+  }
+  return allItems;
+}
+
+export async function discover(query: string | null, extraExclude: string[] = [], mode?: "type", imageUrl?: string | null, tasteSpaceId?: string, similarToItemId?: string | null, filters?: DiscoverFilters, discoveryMode: DiscoveryMode = "foryou", onPartial?: (items: Suggestion[]) => void): Promise<Suggestion[]> {
   const [taste, domains, seen] = await Promise.all([
     tasteProfile(tasteSpaceId),
     query ? Promise.resolve([] as string[]) : libraryDomains(),
@@ -1332,19 +1495,33 @@ export async function discover(query: string | null, extraExclude: string[] = []
     ? [query, filterAddendum].filter(Boolean).join(", ")
     : query || undefined;
 
+  // Progressive display: emit corpus results immediately so the UI shows cards in ~200ms
+  // while the full web-search + visual-judge pipeline runs (10-13s).
+  if (graded && onPartial && corpus.length) {
+    onPartial(mmrDiversify(corpus));
+  }
+
+  const discoverBody = {
+    q: augmentedQuery,
+    filterHints: filterAddendum || undefined,
+    mode: filters?.kind === "type" ? "type" : mode,
+    img: imageUrl || undefined,
+    taste,
+    exclude,
+    candidates: graded ? corpus : [],
+    refKey: similarToItemId ? `item:${similarToItemId}` : tasteSpaceId ? `space:${tasteSpaceId}` : undefined,
+  };
+
+  // When streaming is available (graded + callback), consume SSE for incremental results
+  if (graded && onPartial) {
+    const streamed = await discoverStreaming(discoverBody, onPartial);
+    return streamed;
+  }
+
   const res = await apiFetch("/api/discover", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      q: augmentedQuery,
-      filterHints: filterAddendum || undefined,
-      mode: filters?.kind === "type" ? "type" : mode,
-      img: imageUrl || undefined,
-      taste,
-      exclude,
-      candidates: graded ? corpus : [],
-      refKey: similarToItemId ? `item:${similarToItemId}` : tasteSpaceId ? `space:${tasteSpaceId}` : undefined,
-    }),
+    body: JSON.stringify(discoverBody),
   });
   if (!res.ok) throw new Error("Discover failed");
   const { items } = await res.json();
@@ -1361,6 +1538,7 @@ export async function discover(query: string | null, extraExclude: string[] = []
  *  pixels from the board. Returns null ONLY when the board has no described items at all;
  *  if just the brief generation fails (Gemini down), brief is null but the caller can still
  *  proceed — corpus-centroid retrieval doesn't need a brief. */
+const briefCache = new Map<string, { hash: string; brief: string | null; at: number }>();
 export async function boardBrief(spaceId: string, name?: string): Promise<{ brief: string | null; image: string | null; images: string[] } | null> {
   const { data } = await supabase
     .from("items")
@@ -1371,22 +1549,33 @@ export async function boardBrief(spaceId: string, name?: string): Promise<{ brie
   const items = (data ?? []) as unknown as Item[];
   const described = items.filter((i) => i.ai_caption || (i.tags ?? []).length);
   if (!described.length) return null;
+
+  // Cache brief by space + item-set hash: same board → skip the Gemini call (saves 3-5s).
+  // Invalidated when items change (hash differs) or after 1 hour.
+  const itemIds = described.slice(0, 30).map((i) => i.id).sort().join(",");
+  const hash = itemIds; // IDs are UUIDs — same set of items means same brief
+  const cached = briefCache.get(spaceId);
   let brief: string | null = null;
-  try {
-    const res = await apiFetch("/api/ai/brief", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        name,
-        items: described.slice(0, 30).map((i) => ({
-          caption: i.ai_caption,
-          tags: i.tags,
-          colors: i.colors,
-        })),
-      }),
-    });
-    if (res.ok) brief = (await res.json()).brief ?? null;
-  } catch { /* brief is a nice-to-have; centroid retrieval works without it */ }
+  if (cached && cached.hash === hash && Date.now() - cached.at < 3600_000) {
+    brief = cached.brief;
+  } else {
+    try {
+      const res = await apiFetch("/api/ai/brief", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name,
+          items: described.slice(0, 30).map((i) => ({
+            caption: i.ai_caption,
+            tags: i.tags,
+            colors: i.colors,
+          })),
+        }),
+      });
+      if (res.ok) brief = (await res.json()).brief ?? null;
+    } catch { /* brief is a nice-to-have; centroid retrieval works without it */ }
+    briefCache.set(spaceId, { hash, brief, at: Date.now() });
+  }
   // Rep thumbs: items NEAREST the board's centroid (top 3), not most-recent.
   // Returns multiple references for multi-reference board search.
   let repThumbs: string[] = [];

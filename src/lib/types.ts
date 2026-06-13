@@ -15,7 +15,7 @@ export interface Space {
   library_id: string;
   user_id: string;
   name: string;
-  kind: "normal" | "inbox";
+  kind: "normal" | "inbox" | "bookmarks";
   view: "grid" | "board";
   sort: number;
   created_at: string;
