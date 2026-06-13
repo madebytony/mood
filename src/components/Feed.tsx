@@ -105,6 +105,7 @@ export default function Feed({ spaces, inboxId, onBookmark, onOpenItem, onSaved,
       setLoading(true);
       try {
         if (!append) shown.current = new Set();
+        let didPartial = false; // tracks whether progressive display rendered anything
         const hasBriefFilters = briefControls && (labFilter !== null || Object.keys(facetFilters).length > 0);
         const filters: DiscoverFilters | undefined =
           !compact || hasBriefFilters
@@ -118,14 +119,16 @@ export default function Feed({ spaces, inboxId, onBookmark, onOpenItem, onSaved,
         const [suggestions, gems] = await Promise.all([
           discover(q, [...shown.current], mode, initialImage, tasteSpaceId, similarToItemId, filters, discoveryMode,
             // Progressive display: show corpus/streamed results immediately while the full
-            // pipeline runs. Each call replaces previous partial results for this load sequence.
+            // pipeline runs. First batch replaces old cards; subsequent batches accumulate.
             (partial) => {
               if (seq !== loadSeq.current) return; // superseded
               const fresh = partial.filter((s) => !shown.current.has(s.url));
               if (!fresh.length) return;
               for (const s of fresh) shown.current.add(s.url);
               const mixed = fresh.map((s): FeedCard => ({ kind: "suggestion", s }));
-              setCards((prev) => (append ? [...prev, ...mixed] : mixed));
+              const isFirst = !didPartial;
+              didPartial = true;
+              setCards((prev) => (append || !isFirst ? [...prev, ...mixed] : mixed));
             },
           ),
           q || compact || append ? Promise.resolve([] as Item[]) : resurface(6),
@@ -150,7 +153,11 @@ export default function Feed({ spaces, inboxId, onBookmark, onOpenItem, onSaved,
           if ((i + 1) % 5 === 0 && li < lib.length) mixed.push(lib[li++]);
         });
         while (li < lib.length) mixed.push(lib[li++]);
-        setCards((prev) => (append ? [...prev, ...mixed] : mixed));
+        // If progressive display already rendered results and nothing new remains,
+        // don't wipe the cards that are already showing.
+        if (mixed.length || !didPartial) {
+          setCards((prev) => (append || didPartial ? [...prev, ...mixed] : mixed));
+        }
         const paths = gems.map((g) => g.thumb_path).filter(Boolean) as string[];
         if (paths.length) setUrls(await signedUrls(paths));
       } catch (e) {
