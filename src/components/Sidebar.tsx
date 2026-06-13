@@ -134,14 +134,18 @@ export default function Sidebar({ libraries, libraryModes, spaces, selected, cou
                   onClick={() =>
                     onSetLibraryMode(lib.id, (libraryModes[lib.id] ?? "default") === "type" ? "default" : "type")
                   }
-                  title="Toggle design/type mode"
+                  title={
+                    (libraryModes[lib.id] ?? "default") === "type"
+                      ? "Typography mode ON — AI detects fonts and groups by foundry. Click to switch back to design mode."
+                      : "Switch to typography mode — AI will identify fonts and show foundries/fonts/in-use tabs"
+                  }
                   className={`rounded-full border px-2 py-0.5 text-[10px] ${
                     (libraryModes[lib.id] ?? "default") === "type"
                       ? "border-amber-300/40 bg-amber-500/15 text-amber-100"
                       : "border-white/10 text-zinc-500 hover:text-zinc-300"
                   }`}
                 >
-                  {(libraryModes[lib.id] ?? "default") === "type" ? "Type" : "Design"}
+                  {(libraryModes[lib.id] ?? "default") === "type" ? "Aa Typography" : "Aa"}
                 </button>
                 <button
                   onClick={() => addSpace(lib.id)}
