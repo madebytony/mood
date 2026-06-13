@@ -121,6 +121,7 @@ export default function Feed({ spaces, inboxId, onBookmark, onOpenItem, onSaved,
               if (seq !== loadSeq.current) return; // superseded
               const fresh = partial.filter((s) => !shown.current.has(s.url));
               if (!fresh.length) return;
+              for (const s of fresh) shown.current.add(s.url);
               const mixed = fresh.map((s): FeedCard => ({ kind: "suggestion", s }));
               setCards((prev) => (append ? [...prev, ...mixed] : mixed));
             },
