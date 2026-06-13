@@ -125,8 +125,12 @@ async function backfillCorpus(batch: number): Promise<{ embedded: number; remain
       await db.from("web_corpus").update(patch).eq("id", row.id);
       embedded++;
     } catch (e) {
-      if (/429/.test((e as Error).message)) break; // Voyage rate limited
-      console.error("[backfill] embed error (primary):", (e as Error).message, "row:", row.id);
+      const emsg = (e as Error).message;
+      if (/429/.test(emsg)) {
+        if (hasClipKey()) { console.warn("[backfill] Jina rate limit, skipping row:", row.id); continue; }
+        break; // Voyage: hard rate limit — stop batch
+      }
+      console.error("[backfill] embed error (primary):", emsg, "row:", row.id);
       // fallback: text-only
       if (text) {
         try {
