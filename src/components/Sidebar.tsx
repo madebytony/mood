@@ -66,8 +66,9 @@ export default function Sidebar({ libraries, libraryModes, spaces, selected, cou
   async function addSpace(libraryId: string) {
     const name = await ask({ title: "New space", placeholder: "e.g. Client moodboard", confirmLabel: "Create" });
     if (!name) return;
-    await createSpace(libraryId, name);
-    onChanged();
+    const space = await createSpace(libraryId, name);
+    await onChanged();
+    onSelect(space.id);
   }
 
   async function addLibrary() {

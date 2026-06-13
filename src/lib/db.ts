@@ -709,7 +709,7 @@ export async function createStack(spaceId: string, name: string, itemIds: string
     .select()
     .single();
   if (error) throw error;
-  const { error: e2 } = await supabase.from("items").update({ stack_id: data.id }).in("id", itemIds);
+  const { error: e2 } = await supabase.from("items").update({ stack_id: data.id, space_id: spaceId }).in("id", itemIds);
   if (e2) throw e2;
   return data;
 }

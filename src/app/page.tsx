@@ -99,9 +99,24 @@ function App() {
   const [autoEditId, setAutoEditId] = useState<string | null>(null);
   const [spaceCounts, setSpaceCounts] = useState<Map<string, number>>(new Map());
   const [urls, setUrls] = useState<Map<string, string>>(new Map());
-  const [selected, setSelected] = useState<string | "all" | "home">("home");
-  const [search, setSearch] = useState("");
-  const [colorFilter, setColorFilter] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | "all" | "home">(() => {
+    if (typeof window === "undefined") return "home";
+    const p = new URLSearchParams(window.location.search);
+    const s = p.get("s");
+    if (s) return s;
+    const h = decodeURIComponent(window.location.hash.slice(1));
+    if (h === "all" || h === "home") return h;
+    if (h.startsWith("s/")) return h.slice(2);
+    return "home";
+  });
+  const [search, setSearch] = useState(() => {
+    if (typeof window === "undefined") return "";
+    return new URLSearchParams(window.location.search).get("q") ?? "";
+  });
+  const [colorFilter, setColorFilter] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return new URLSearchParams(window.location.search).get("c") ?? null;
+  });
   const [typeTab, setTypeTab] = useState<"foundries" | "fonts" | "inuse">("foundries");
   const [open, setOpen] = useState<Item | null>(null);
   const [filing, setFiling] = useState<Item | null>(null);
@@ -159,23 +174,10 @@ function App() {
   }, []);
 
   // ---------- URL state: refresh / share restores the view ----------
-  // Read once on mount: ?s=<space|all|home>&q=<search>&c=<colour>. Falls back to the legacy
-  // #s/<id> hash so older bookmarks still resolve. The write-back effect lives lower, after
-  // `showBoard` is known (so it can mirror grid/board into ?v).
-  useEffect(() => {
-    const p = new URLSearchParams(window.location.search);
-    const s = p.get("s");
-    if (s) setSelected(s);
-    else {
-      const h = decodeURIComponent(window.location.hash.slice(1));
-      if (h === "all" || h === "home") setSelected(h);
-      else if (h.startsWith("s/")) setSelected(h.slice(2));
-    }
-    const q = p.get("q");
-    if (q) setSearch(q);
-    const c = p.get("c");
-    if (c) setColorFilter(c);
-  }, []);
+  // selected / search / colorFilter are initialised from URL params via lazy useState
+  // initialisers (above), so they're correct before the first render — no effect needed.
+  // The write-back effect lives lower, after `showBoard` is known (so it can mirror
+  // grid/board into ?v).
 
   const toast = useCallback((text: string, kind: Toast["kind"] = "info") => {
     const id = ++toastId.current;
@@ -1085,6 +1087,7 @@ function App() {
           counts={counts}
           onSelect={(id) => {
             setSelected(id);
+            setSearch("");
             setColorFilter(null);
           }}
           onSetLibraryMode={setLibraryMode}
@@ -1103,6 +1106,7 @@ function App() {
               counts={counts}
               onSelect={(id) => {
                 setSelected(id);
+                setSearch("");
                 setColorFilter(null);
                 setSidebarOpen(false);
               }}
@@ -1380,8 +1384,8 @@ function App() {
       <nav className="fixed inset-x-0 bottom-0 z-30 flex items-stretch border-t border-white/10 bg-[#0f0f12]/65 pb-[env(safe-area-inset-bottom)] backdrop-blur-2xl backdrop-saturate-150 md:hidden">
         {(
           [
-            { key: "home", icon: <HomeIcon className="h-5 w-5" />, label: "Home", fn: () => { setSelected("home"); setColorFilter(null); } },
-            { key: "all", icon: <GridIcon className="h-5 w-5" />, label: "All", fn: () => { setSelected("all"); setColorFilter(null); } },
+            { key: "home", icon: <HomeIcon className="h-5 w-5" />, label: "Home", fn: () => { setSelected("home"); setSearch(""); setColorFilter(null); } },
+            { key: "all", icon: <GridIcon className="h-5 w-5" />, label: "All", fn: () => { setSelected("all"); setSearch(""); setColorFilter(null); } },
             { key: "add", icon: null, label: "Add", fn: () => setAddTick((t) => t + 1) },
             { key: "spaces", icon: <MenuIcon className="h-5 w-5" />, label: "Spaces", fn: () => setSidebarOpen(true) },
           ] as const
@@ -1441,15 +1445,26 @@ function App() {
           >
             <div className="px-2 pb-2 text-xs uppercase tracking-wider text-zinc-500">File to…</div>
             <div className="max-h-72 space-y-1 overflow-y-auto">
-              {spaces.filter((s) => s.kind !== "inbox").map((s) => (
-                <button
-                  key={s.id}
-                  onClick={() => fileTo(filing, s.id)}
-                  className="w-full rounded-xl px-4 py-2.5 text-left text-sm text-zinc-200 hover:bg-white/10"
-                >
-                  {s.name}
-                </button>
-              ))}
+              {libraries.map((lib) => {
+                const libSpaces = spaces.filter((s) => s.library_id === lib.id && s.kind !== "inbox");
+                if (!libSpaces.length) return null;
+                return (
+                  <div key={lib.id}>
+                    {libraries.length > 1 && (
+                      <div className="px-4 pb-1 pt-2 text-[10px] uppercase tracking-wider text-zinc-500">{lib.name}</div>
+                    )}
+                    {libSpaces.map((s) => (
+                      <button
+                        key={s.id}
+                        onClick={() => fileTo(filing, s.id)}
+                        className="w-full rounded-xl px-4 py-2.5 text-left text-sm text-zinc-200 hover:bg-white/10"
+                      >
+                        {s.name}
+                      </button>
+                    ))}
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
