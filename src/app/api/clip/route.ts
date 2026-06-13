@@ -110,8 +110,41 @@ export async function POST(req: Request) {
       await assertPublicUrl(body.url);
       sourceUrl = body.url;
       title = title ?? body.url.replace(/^https?:\/\/(www\.)?/, "").split("/")[0];
-      // kind:"url" is an explicit bookmark; kind:"page" tries a screenshot first.
-      if (body.kind === "url") {
+
+      // Instagram/Threads: pull the og:image directly — these platforms block screenshots
+      // but serve high-res images via meta tags on public posts.
+      const isInstagram = /^https?:\/\/(www\.)?(instagram\.com|threads\.net)\//i.test(body.url);
+      if (isInstagram) {
+        try {
+          const ogRes = await safeFetch(body.url, {
+            headers: { "user-agent": "Mozilla/5.0 (compatible; Mood/1.0)" },
+            signal: AbortSignal.timeout(10000),
+          });
+          if (ogRes.ok) {
+            const html = (await ogRes.text()).slice(0, 200_000);
+            const ogImg = (
+              /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i.exec(html) ??
+              /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i.exec(html)
+            )?.[1];
+            const ogTitle = (
+              /<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i.exec(html) ??
+              /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["']/i.exec(html)
+            )?.[1];
+            if (ogTitle) title = ogTitle.slice(0, 200);
+            if (ogImg) {
+              const imgRes = await safeFetch(ogImg, { signal: AbortSignal.timeout(15000) });
+              if (imgRes.ok) {
+                contentType = imgRes.headers.get("content-type") ?? "image/jpeg";
+                if (contentType.startsWith("image/")) {
+                  bytes = new Uint8Array(await imgRes.arrayBuffer());
+                }
+              }
+            }
+          }
+        } catch { /* fall through to link */ }
+        if (!bytes) degradeToLink = true;
+      } else if (body.kind === "url") {
+        // kind:"url" is an explicit bookmark; kind:"page" tries a screenshot first.
         degradeToLink = true;
       } else {
         try {
