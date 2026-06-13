@@ -37,6 +37,40 @@ export const FACET_VOCABULARY: Record<string, string[]> = {
   sector: ["architecture", "luxury", "tech", "fashion", "food", "manufacturing", "cultural"],
 };
 
+/** Nearest swatch name for a given LAB triple — used to render human-readable colour names
+ *  in search queries sent to Gemini when the corpus can't serve the colour filter. */
+export function labSwatchName(lab: [number, number, number]): string {
+  let best = LAB_SWATCHES[0];
+  let bestD = Infinity;
+  for (const s of LAB_SWATCHES) {
+    const d = Math.sqrt(
+      Math.pow(s.lab[0] - lab[0], 2) +
+      Math.pow(s.lab[1] - lab[1], 2) +
+      Math.pow(s.lab[2] - lab[2], 2)
+    );
+    if (d < bestD) { bestD = d; best = s; }
+  }
+  return best.name;
+}
+
+/** Serialise active brief filters into a natural-language addendum for Gemini web search.
+ *  e.g. "dark blue palette, crafted mood, editorial layout, contemporary era" */
+export function filtersToQueryAddendum(filters: {
+  colorLab?: [number, number, number] | null;
+  facets?: Record<string, string[]>;
+  color?: string;
+}): string {
+  const parts: string[] = [];
+  if (filters.colorLab) parts.push(`${labSwatchName(filters.colorLab)} palette`);
+  else if (filters.color) parts.push(`${filters.color} palette`);
+  if (filters.facets) {
+    for (const [axis, labels] of Object.entries(filters.facets)) {
+      if (labels.length) parts.push(`${labels.join(" or ")} ${axis}`);
+    }
+  }
+  return parts.join(", ");
+}
+
 /** Map existing tag strings to facet labels — enables stub facet population without AI.
  *  A tag may fire multiple facets. */
 const TAG_TO_FACETS: Array<{ pattern: RegExp; facet: string; label: string }> = [

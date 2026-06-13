@@ -1,6 +1,7 @@
 import { supabase, authToken } from "./supabase";
 import { makeThumb, processImage, uploadProcessed } from "./media";
 import type { Item, ItemType, Library, LibraryMode, LinkMeta, Space, Stack } from "./types";
+import { filtersToQueryAddendum } from "./facets";
 
 /** All item columns EXCEPT the 1024-dim embedding vector (too heavy to ship to the client). */
 const ITEM_COLS: string =
@@ -1324,11 +1325,18 @@ export async function discover(query: string | null, extraExclude: string[] = []
     // so live-web results fill gaps and the corpus is enriched with every search.
   }
 
+  // Augment the Gemini query with active colour/facet constraints so the live-web path
+  // respects them even when the corpus is empty or too thin to serve the colour filter.
+  const filterAddendum = filters ? filtersToQueryAddendum(filters) : "";
+  const augmentedQuery = filterAddendum
+    ? [query, filterAddendum].filter(Boolean).join(", ")
+    : query || undefined;
+
   const res = await apiFetch("/api/discover", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      q: query || undefined,
+      q: augmentedQuery,
       mode: filters?.kind === "type" ? "type" : mode,
       img: imageUrl || undefined,
       taste,
