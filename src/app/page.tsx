@@ -111,6 +111,7 @@ function App() {
   const [similarImage, setSimilarImage] = useState<string | null>(null);
   const [similarItemId, setSimilarItemId] = useState<string | null>(null);
   const [briefBusy, setBriefBusy] = useState(false);
+  const [enrichBusy, setEnrichBusy] = useState(false);
   const [stacks, setStacks] = useState<Stack[]>([]);
   const [stackThumbs, setStackThumbs] = useState<Map<string, string[]>>(new Map());
   const [columnItems, setColumnItems] = useState<Map<string, Item[]>>(new Map());
@@ -1161,14 +1162,47 @@ function App() {
                           : parseBookmarksHtml(text);
                       if (!entries.length) { toast("No bookmarks found in file", "error"); return; }
                       const n = await importBookmarks(entries, currentSpace.id);
-                      toast(n ? `Imported ${n} bookmark${n === 1 ? "" : "s"}` : "All bookmarks already imported");
+                      toast(n ? `Imported ${n} bookmark${n === 1 ? "" : "s"} — fetching images…` : "All bookmarks already imported");
                       invalidateViewCache(); loadItems(); loadStructure();
+                      if (n) {
+                        const { enrichLinkThumbs } = await import("@/lib/db");
+                        setEnrichBusy(true);
+                        enrichLinkThumbs(currentSpace.id, (done, total) => {
+                          toast(`Fetching images… ${done}/${total}`);
+                        }).then((enriched) => {
+                          toast(enriched ? `Got images for ${enriched} bookmark${enriched === 1 ? "" : "s"}` : "No images found — links saved");
+                          invalidateViewCache(); loadItems();
+                        }).catch(() => {}).finally(() => setEnrichBusy(false));
+                      }
                     } catch (err) {
                       toast(`Import failed: ${(err as Error).message}`, "error");
                     }
                   }}
                 />
               </label>
+              <button
+                disabled={enrichBusy}
+                className="rounded-lg border border-white/10 px-2.5 py-1 text-[11px] text-zinc-400 hover:border-white/30 hover:text-zinc-200 disabled:opacity-50"
+                title="Fetch preview images for bookmarks that don't have one yet"
+                onClick={async () => {
+                  if (!currentSpace || enrichBusy) return;
+                  setEnrichBusy(true);
+                  try {
+                    const { enrichLinkThumbs } = await import("@/lib/db");
+                    const enriched = await enrichLinkThumbs(currentSpace.id, (done, total) => {
+                      toast(`Fetching images… ${done}/${total}`);
+                    });
+                    toast(enriched ? `Got images for ${enriched} bookmark${enriched === 1 ? "" : "s"}` : "No new images found");
+                    invalidateViewCache(); loadItems();
+                  } catch (err) {
+                    toast(`Failed: ${(err as Error).message}`, "error");
+                  } finally {
+                    setEnrichBusy(false);
+                  }
+                }}
+              >
+                {enrichBusy ? "Fetching…" : "Fetch images"}
+              </button>
             </>
           )}
           {selected !== "home" && currentFeedMode === "type" && (

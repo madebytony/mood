@@ -591,6 +591,51 @@ export async function importBookmarks(entries: { url: string; title: string }[],
   return rows.length;
 }
 
+/** Enrich imported link items that have no thumbnail by fetching og:image.
+ *  Runs in batches of 4 in parallel. Calls onProgress(done, total) after each batch.
+ *  Returns the number of items successfully enriched. */
+export async function enrichLinkThumbs(
+  spaceId: string,
+  onProgress?: (done: number, total: number) => void
+): Promise<number> {
+  const { data } = await supabase
+    .from("items")
+    .select(ITEM_COLS)
+    .eq("space_id", spaceId)
+    .eq("type", "link")
+    .is("thumb_path", null)
+    .not("source_url", "is", null)
+    .limit(200);
+  const items = (data ?? []) as unknown as Item[];
+  if (!items.length) return 0;
+
+  let enriched = 0;
+  const BATCH = 4;
+  for (let i = 0; i < items.length; i += BATCH) {
+    const batch = items.slice(i, i + BATCH);
+    await Promise.all(batch.map(async (item) => {
+      try {
+        const meta = await fetchLinkMeta(item.source_url!);
+        if (!meta.image) return;
+        const blob = await fetchRemoteImage(meta.image);
+        const processed = await processImage(blob);
+        const up = await uploadProcessed(processed);
+        await updateItem(item.id, {
+          thumb_path: up.thumb_path,
+          storage_path: up.storage_path ?? item.storage_path,
+          width: up.width ?? item.width,
+          height: up.height ?? item.height,
+          title: item.title || meta.title || item.title,
+          colors: processed.colors.length ? processed.colors : item.colors,
+        });
+        enriched++;
+      } catch { /* skip items that fail */ }
+    }));
+    onProgress?.(Math.min(i + BATCH, items.length), items.length);
+  }
+  return enriched;
+}
+
 export async function createSpace(libraryId: string, name: string): Promise<Space> {
   const uid = await userId();
   const { data, error } = await supabase
