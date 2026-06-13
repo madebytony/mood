@@ -11,7 +11,7 @@
  * to measure whether ranking changes actually improved quality.
  */
 import { createClient } from "@supabase/supabase-js";
-import { isAuthed } from "../_lib/auth";
+import { isAuthed, bearer } from "../_lib/auth";
 
 export const maxDuration = 15;
 
@@ -40,9 +40,11 @@ export async function POST(req: Request) {
   if (!url) return Response.json({ error: "url required" }, { status: 400 });
 
   try {
+    const token = bearer(req);
     const { data: auth } = await createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      { global: { headers: { Authorization: `Bearer ${token}` } } },
     ).auth.getUser();
     if (!auth.user) return Response.json({ error: "unauthorized" }, { status: 401 });
 

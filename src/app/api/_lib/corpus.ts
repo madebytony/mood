@@ -903,7 +903,7 @@ export async function hygiene(batch = 12): Promise<{ checked: number; dead: numb
       // is rebuilt from that screenshot (poisoned logo embeddings shouldn't linger).
       await db.from("web_corpus").update({
         image: MSHOT(row.url),
-        embedding: null,
+        embedding_v2: null,
         colors: [],
         checked_at: new Date().toISOString(),
       }).eq("id", row.id);
