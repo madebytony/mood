@@ -568,9 +568,9 @@ async function visualRank(
   }
 
   let kept = judged.filter((j) => j.score >= 5);
-  // thin pool — admit near-misses, but never below 4: under the palette gate, ≤3 means
-  // wrong palette, and a wrong-palette "match" is exactly what users complain about
-  if (kept.length < 4) kept = judged.filter((j) => j.score >= 4).slice(0, 6);
+  // thin pool — admit near-misses rather than showing nothing
+  if (kept.length < 4) kept = judged.filter((j) => j.score >= 4).slice(0, 8);
+  if (kept.length < 3) kept = judged.filter((j) => j.score >= 3).slice(0, 6);
   if (!kept.length) return null; // nothing genuinely close — let the text path try instead
   return kept.map((j) => ({
     ...j.c,
@@ -935,9 +935,16 @@ async function run({ query, mode, img, taste, exclude, candidates, refKey, filte
   // Empty SEARCH -> return nothing: offering curation directories as "similar" results is
   // exactly the noise the user is searching to avoid.
   if (!cands.length) {
-    if (query) return Response.json({ items: [] });
-    cands = SEEDS;
+    if (query) {
+      // Last resort for search: try a broader web search before giving up
+      try {
+        const broad = hasGeminiKey() && !geminiDisabled() ? await webSearch(query, true) : [];
+        if (broad.length) cands = broad;
+      } catch {}
+    }
+    if (!cands.length) cands = query ? [] : SEEDS;
   }
+  if (!cands.length && query) return Response.json({ items: [] });
 
   // dedupe by domain+path, drop excluded/seen domains
   const norm = (u: string) => u.replace(/\/+$/, "");
