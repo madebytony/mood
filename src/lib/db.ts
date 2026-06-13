@@ -1426,11 +1426,14 @@ export async function corpusTick(): Promise<void> {
 }
 
 async function seenUrls(): Promise<string[]> {
+  // Disliked/saved: always exclude.  Seen (impressed): exclude for 7 days so the
+  // feed stays fresh across sessions without permanently burning through the corpus.
+  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
   const { data } = await supabase
     .from("seen_suggestions")
     .select("url, verdict")
-    .in("verdict", ["disliked", "saved"])
-    .limit(500);
+    .or(`verdict.in.(disliked,saved),and(verdict.eq.seen,created_at.gte.${weekAgo})`)
+    .limit(800);
   return (data ?? []).map((r) => r.url);
 }
 

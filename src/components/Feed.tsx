@@ -118,9 +118,12 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
         // belt-and-braces: never show a card twice this session, even if the server re-offers it
         const fresh = suggestions.filter((s) => !shown.current.has(s.url));
         for (const s of fresh) shown.current.add(s.url);
-        // Log impressions for the learning loop — fire-and-forget
+        // Log impressions for the learning loop + mark as seen so they don't repeat
         const model = `clip-v2/${discoveryMode}`;
-        for (const s of fresh) logDiscoveryEvent(s.url, "impression", { lane: discoveryMode, model }).catch(() => {});
+        for (const s of fresh) {
+          logDiscoveryEvent(s.url, "impression", { lane: discoveryMode, model }).catch(() => {});
+          markSeen(s.url, "seen").catch(() => {});
+        }
         const mixed: FeedCard[] = [];
         const sug = fresh.map((s): FeedCard => ({ kind: "suggestion", s }));
         const lib = gems.map((item): FeedCard => ({ kind: "library", item }));
