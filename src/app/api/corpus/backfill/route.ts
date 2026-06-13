@@ -36,7 +36,7 @@ function admin() {
 
 async function fetchImageData(url: string): Promise<{ base64: string; mimeType: string; buf: Buffer; voyagePart: VoyageContent } | null> {
   try {
-    const res = await fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(15000) });
+    const res = await fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(5000) });
     if (!res.ok) return null;
     const mimeType = (res.headers.get("content-type") ?? "").split(";")[0];
     if (!mimeType.startsWith("image/")) return null;
@@ -86,9 +86,18 @@ async function backfillCorpus(batch: number): Promise<{ embedded: number; remain
     .order("created_at", { ascending: true })
     .limit(batch);
 
+  const rows = data ?? [];
+
+  // Fetch all images in parallel — avoids sequential timeout accumulation.
+  // 50 × 5s sequential = 250s > Vercel 120s limit; parallel collapses to ~5s max.
+  const imgResults = await Promise.allSettled(
+    rows.map(row => row.image ? fetchImageData(row.image) : Promise.resolve(null))
+  );
+
   let embedded = 0;
-  for (const row of data ?? []) {
-    const img = row.image ? await fetchImageData(row.image) : null;
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const img = imgResults[i].status === "fulfilled" ? imgResults[i].value : null;
     const colors = img ? await extractColorsFromImage(img.buf) : [];
     const palette_lab = img ? await extractLabPalette(img.buf) : [];
     const text = corpusEmbedText(row, colors);
