@@ -1510,10 +1510,14 @@ async function discoverStreaming(
       }
       if (eventName === "items" && data) {
         try {
-          // Each "items" event is a SNAPSHOT (all current good matches), not a delta —
-          // replace the previous set so the UI shows the latest sorted results.
-          allItems = JSON.parse(data) as Suggestion[];
-          onPartial(allItems);
+          // Each "items" event is a snapshot of the current judge's best matches.
+          // Merge with existing items (dedup by URL) so cards never disappear mid-stream.
+          const batch = JSON.parse(data) as Suggestion[];
+          const seen = new Set(allItems.map((s) => s.url));
+          for (const s of batch) {
+            if (!seen.has(s.url)) { allItems.push(s); seen.add(s.url); }
+          }
+          onPartial([...allItems]);
         } catch { /* malformed event, skip */ }
       }
     }
@@ -1527,7 +1531,9 @@ export async function discover(query: string | null, extraExclude: string[] = []
     query ? Promise.resolve([] as string[]) : libraryDomains(),
     seenUrls(),
   ]);
-  const exclude = [...extraExclude, ...domains, ...seen].slice(0, 400);
+  // Prioritise session exclusions (extraExclude) over stale seen URLs —
+  // don't let a large seen history starve the pool of fresh results.
+  const exclude = [...extraExclude, ...domains, ...seen.slice(0, Math.max(0, 300 - extraExclude.length))];
   const graded = !!imageUrl && !!query;
 
   // --- Fresh lane: recency-sorted corpus, no taste signal ---
