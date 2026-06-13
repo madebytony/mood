@@ -1489,6 +1489,7 @@ function App() {
             <div className="no-scrollbar flex-1 overflow-y-auto p-4">
               <Feed
                 compact
+                briefControls
                 initialQuery={similarQuery}
                 initialImage={similarImage}
                 mode={currentFeedMode}
