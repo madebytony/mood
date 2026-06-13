@@ -1314,7 +1314,7 @@ function App() {
 
         <div ref={scrollRef} className={`flex-1 ${showBoard && selected !== "home" && selected !== "directory" ? "overflow-hidden" : "no-scrollbar overflow-y-auto"}`}>
           {selected === "directory" ? (
-            <Directory toast={toast} />
+            <Directory spaces={spaces} toast={toast} />
           ) : selected === "home" ? (
             <Feed
               spaces={spaces}

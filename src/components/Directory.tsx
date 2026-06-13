@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { authToken } from "@/lib/supabase";
+import { addFromUrl } from "@/lib/db";
+import type { Space } from "@/lib/types";
 import { useDialog } from "./useDialog";
-import { HeartIcon, ExternalLinkIcon, XIcon, SearchIcon } from "./icons";
+import { HeartIcon, ExternalLinkIcon, XIcon, SearchIcon, PlusIcon, CheckSquareIcon, InboxIcon, BookmarkIcon } from "./icons";
 
 /* ---------- types ---------- */
 
@@ -46,18 +48,174 @@ async function apiFetch(path: string, opts?: RequestInit) {
 
 const PLACEHOLDER = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 4 3'%3E%3Crect width='4' height='3' fill='%2318181b'/%3E%3C/svg%3E";
 
+/* ---------- WorkItemCard ---------- */
+
+function WorkItemCard({
+  item,
+  spaces,
+  toast,
+}: {
+  item: WorkItem;
+  spaces: Space[];
+  toast: (msg: string, kind?: "info" | "error") => void;
+}) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [saving, setSaving] = useState<string | null>(null); // spaceId being saved
+  const [savedSpaces, setSavedSpaces] = useState<Set<string>>(new Set());
+  const pickerRef = useRef<HTMLDivElement>(null);
+
+  const bookmarks = spaces.find((s) => s.kind === "bookmarks");
+  const otherSpaces = spaces.filter((s) => s.kind !== "bookmarks");
+
+  // Close picker on outside click
+  useEffect(() => {
+    if (!pickerOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (!pickerRef.current?.contains(e.target as Node)) setPickerOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [pickerOpen]);
+
+  async function saveToSpace(spaceId: string, spaceName: string) {
+    if (saving || savedSpaces.has(spaceId)) return;
+    setPickerOpen(false);
+    setSaving(spaceId);
+    try {
+      await addFromUrl(item.url, spaceId);
+      setSavedSpaces((prev) => new Set([...prev, spaceId]));
+      toast(`Saved to ${spaceName}`);
+    } catch (e) {
+      toast(`Couldn't save: ${(e as Error).message}`, "error");
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  const isSavingBookmark = saving === bookmarks?.id;
+  const bookmarkSaved = bookmarks ? savedSpaces.has(bookmarks.id) : false;
+
+  return (
+    <div className="group relative rounded-xl bg-zinc-900 ring-1 ring-white/8 transition-all hover:ring-white/20">
+      {/* image + title — click visits the source URL */}
+      <a href={item.url} target="_blank" rel="noopener noreferrer" className="block">
+        <div className="aspect-[4/3] overflow-hidden rounded-t-xl">
+          {item.image ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={item.image}
+              alt={item.title ?? ""}
+              className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+              onError={(e) => { (e.target as HTMLImageElement).src = PLACEHOLDER; }}
+            />
+          ) : (
+            <div className="flex h-full items-center justify-center bg-zinc-800 text-zinc-700 text-xs">
+              No image
+            </div>
+          )}
+        </div>
+        {item.title && (
+          <div className="p-2.5">
+            <p className="line-clamp-2 text-xs leading-snug text-zinc-300 group-hover:text-white">
+              {item.title}
+            </p>
+          </div>
+        )}
+      </a>
+
+      {/* action buttons — visible on hover */}
+      <div className="absolute right-2 top-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        {/* quick bookmark */}
+        {bookmarks && (
+          <button
+            onClick={(e) => { e.preventDefault(); saveToSpace(bookmarks.id, bookmarks.name); }}
+            disabled={!!saving || bookmarkSaved}
+            title={bookmarkSaved ? "Bookmarked" : "Save to Bookmarks"}
+            className={`grid h-7 w-7 place-items-center rounded-full backdrop-blur-sm transition-colors ${
+              bookmarkSaved
+                ? "bg-amber-500/30 text-amber-300"
+                : isSavingBookmark
+                ? "bg-black/60 text-zinc-400"
+                : "bg-black/60 text-zinc-300 hover:text-amber-300"
+            }`}
+          >
+            {isSavingBookmark ? (
+              <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" className="opacity-25" />
+                <path fill="currentColor" className="opacity-75" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+            ) : bookmarkSaved ? (
+              <CheckSquareIcon className="h-3.5 w-3.5" />
+            ) : (
+              <BookmarkIcon className="h-3.5 w-3.5" />
+            )}
+          </button>
+        )}
+
+        {/* save to any space */}
+        <div ref={pickerRef} className="relative">
+          <button
+            onClick={(e) => { e.preventDefault(); setPickerOpen((o) => !o); }}
+            disabled={!!saving}
+            title="Save to space…"
+            className="grid h-7 w-7 place-items-center rounded-full bg-black/60 backdrop-blur-sm text-zinc-300 hover:text-white transition-colors disabled:opacity-50"
+          >
+            <PlusIcon className="h-3.5 w-3.5" />
+          </button>
+
+          {pickerOpen && spaces.length > 0 && (
+            <div className="absolute right-0 top-8 z-50 w-48 overflow-hidden rounded-xl border border-white/10 bg-[#1c1c22]/98 shadow-2xl backdrop-blur-xl">
+              <p className="px-3 pt-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                Save to
+              </p>
+              {[...(bookmarks ? [bookmarks] : []), ...otherSpaces].map((space) => {
+                const isSaving = saving === space.id;
+                const isSaved = savedSpaces.has(space.id);
+                return (
+                  <button
+                    key={space.id}
+                    onClick={() => saveToSpace(space.id, space.name)}
+                    disabled={isSaving || isSaved}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-zinc-300 hover:bg-white/8 hover:text-white disabled:opacity-60 transition-colors"
+                  >
+                    {space.kind === "inbox" && <InboxIcon className="h-3.5 w-3.5 shrink-0 text-zinc-500" />}
+                    {space.kind === "bookmarks" && <BookmarkIcon className="h-3.5 w-3.5 shrink-0 text-zinc-500" />}
+                    {space.kind === "normal" && <div className="h-3.5 w-3.5 shrink-0 rounded-sm border border-zinc-700" />}
+                    <span className="flex-1 truncate">{space.name}</span>
+                    {isSaving && (
+                      <svg className="h-3.5 w-3.5 shrink-0 animate-spin text-zinc-400" viewBox="0 0 24 24" fill="none">
+                        <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" className="opacity-25" />
+                        <path fill="currentColor" className="opacity-75" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                    )}
+                    {isSaved && <CheckSquareIcon className="h-3.5 w-3.5 shrink-0 text-emerald-400" />}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ---------- StudioPanel ---------- */
 
 function StudioPanel({
   domain,
   studios,
+  spaces,
   onClose,
   onToggleHeart,
+  toast,
 }: {
   domain: string;
   studios: StudioEntry[];
+  spaces: Space[];
   onClose: () => void;
   onToggleHeart: (domain: string, next: boolean) => void;
+  toast: (msg: string, kind?: "info" | "error") => void;
 }) {
   const [detail, setDetail] = useState<StudioDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -195,36 +353,7 @@ function StudioPanel({
           {!loading && hasWork && (
             <div className="grid grid-cols-2 gap-3">
               {work.map((item) => (
-                <a
-                  key={item.url}
-                  href={item.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="group relative overflow-hidden rounded-xl bg-zinc-900 ring-1 ring-white/8 transition-all hover:ring-white/20"
-                >
-                  <div className="aspect-[4/3] overflow-hidden">
-                    {item.image ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={item.image}
-                        alt={item.title ?? ""}
-                        className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-                        onError={(e) => { (e.target as HTMLImageElement).src = PLACEHOLDER; }}
-                      />
-                    ) : (
-                      <div className="flex h-full items-center justify-center bg-zinc-800 text-zinc-700 text-xs">
-                        No image
-                      </div>
-                    )}
-                  </div>
-                  {item.title && (
-                    <div className="p-2.5">
-                      <p className="line-clamp-2 text-xs leading-snug text-zinc-300 group-hover:text-white">
-                        {item.title}
-                      </p>
-                    </div>
-                  )}
-                </a>
+                <WorkItemCard key={item.url} item={item} spaces={spaces} toast={toast} />
               ))}
             </div>
           )}
@@ -239,10 +368,11 @@ function StudioPanel({
 type Filter = "all" | "agencies" | "foundries";
 
 interface Props {
+  spaces: Space[];
   toast: (msg: string, kind?: "info" | "error") => void;
 }
 
-export default function Directory({ toast }: Props) {
+export default function Directory({ spaces, toast }: Props) {
   const [studios, setStudios] = useState<StudioEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<Filter>("all");
@@ -369,8 +499,10 @@ export default function Directory({ toast }: Props) {
         <StudioPanel
           domain={panelDomain}
           studios={studios}
+          spaces={spaces}
           onClose={() => setPanelDomain(null)}
           onToggleHeart={toggleHeart}
+          toast={toast}
         />
       )}
     </div>
