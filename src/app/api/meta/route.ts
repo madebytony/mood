@@ -47,8 +47,8 @@ async function instagramEmbedImage(postUrl: string): Promise<string | null> {
       ?? /<img[^>]+src="(https:\/\/[^"]*(?:cdninstagram|fbcdn)[^"]*)"[^>]+>/i.exec(html);
     if (imgTag?.[1]) return decodeEntities(imgTag[1]);
     // Fallback: image URL in the JSON blob Instagram embeds in script tags
-    const jsonBlob = /"display_url":"(https:\\/\\/[^"]+)"/i.exec(html);
-    if (jsonBlob?.[1]) return jsonBlob[1].replace(/\\u0026/g, "&").replace(/\\/g, "");
+    const jsonBlob = /"display_url":"(https:[^"]+)"/i.exec(html);
+    if (jsonBlob?.[1]) return jsonBlob[1].replace(/\\u0026/g, "&").replace(/\\\//g, "/");
   } catch { /* blocked or timeout */ }
   return null;
 }
