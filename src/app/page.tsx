@@ -188,6 +188,10 @@ function App() {
     setSpaces(sps);
   }, []);
 
+  // Sequence counter: incremented on every loadItems call so a slow "all items" fetch that
+  // started when selected="home" can't overwrite the result of a later fetch for a specific space.
+  const loadSeq = useRef(0);
+
   /** Stale-while-revalidate: cached views paint instantly, fresh data swaps in behind. */
   const viewCache = useRef(
     new Map<string, { items: Item[]; stacks: Stack[]; urls: Map<string, string>; stackThumbs: Map<string, string[]>; hasMore: boolean }>()
@@ -211,6 +215,7 @@ function App() {
   const reviewRef = useDialog<HTMLDivElement>(() => setFontReviewOpen(false), { active: !!fontReviewOpen });
 
   const loadItems = useCallback(async () => {
+    const seq = ++loadSeq.current;
     const spaceKey = selected === "home" ? "all" : selected;
     const cacheKey = `${spaceKey}|${search}`;
     const cached = viewCache.current.get(cacheKey);
@@ -248,6 +253,8 @@ function App() {
     const map = paths.length ? await signedUrls(paths) : new Map<string, string>();
     const fanUrls = new Map<string, string[]>();
     for (const [sid, ps] of fan) fanUrls.set(sid, ps.map((p) => map.get(p)).filter(Boolean) as string[]);
+    // Discard if a newer loadItems call has already started (e.g. selected changed mid-flight).
+    if (seq !== loadSeq.current) return;
     viewCache.current.set(cacheKey, { items: data, stacks: stks, urls: map, stackThumbs: fanUrls, hasMore: more });
     setItems(data);
     setStacks(stks);
