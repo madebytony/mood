@@ -102,7 +102,37 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
     setWorkExpanded(false);
     setGalleryIdx(null);
     setSavedWork(new Set());
+    setPreviewImages(null);
+    setPreviewLoading(false);
+    setImageIdx(0);
   }, [item]);
+
+  // Fetch project preview images for the current item's source_url
+  useEffect(() => {
+    if (!item.source_url) return;
+    const cached = previewCache.get(item.source_url);
+    if (cached) { setPreviewImages(cached); return; }
+    let alive = true;
+    setPreviewLoading(true);
+    (async () => {
+      const token = await authToken();
+      if (!token || !alive) return;
+      try {
+        const res = await fetch(`/api/project-preview?url=${encodeURIComponent(item.source_url!)}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok || !alive) return;
+        const data = await res.json();
+        const imgs: string[] = data.images ?? [];
+        if (imgs.length > 1 && alive) {
+          previewCache.set(item.source_url!, imgs);
+          setPreviewImages(imgs);
+        }
+      } catch {}
+      if (alive) setPreviewLoading(false);
+    })();
+    return () => { alive = false; };
+  }, [item.source_url]);
 
   // Fetch studio info when source_domain exists
   useEffect(() => {
@@ -402,18 +432,88 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
                 </div>
               );
             })() : fullUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={fullUrl}
-                alt=""
-                onClick={() => setZoomed((z) => !z)}
-                title={scrollMode ? "Click to fit" : "Click to view full width"}
-                className={
-                  scrollMode
-                    ? "w-full md:cursor-zoom-out"
-                    : "w-full md:max-h-[72dvh] md:cursor-zoom-in md:object-contain"
-                }
-              />
+              <div className="relative flex h-full flex-col">
+                <div className={`flex-1 ${scrollMode ? "overflow-y-auto" : "grid place-items-center overflow-hidden"}`}>
+                  {/* Show preview image at imageIdx if available, else the original capture */}
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={previewImages && previewImages[imageIdx] ? previewImages[imageIdx] : fullUrl}
+                    alt=""
+                    onClick={() => {
+                      if (previewImages) return; // no zoom in preview mode
+                      setZoomed((z) => !z);
+                    }}
+                    title={previewImages ? undefined : scrollMode ? "Click to fit" : "Click to view full width"}
+                    className={
+                      previewImages
+                        ? "max-h-[72dvh] w-full object-contain"
+                        : scrollMode
+                        ? "w-full md:cursor-zoom-out"
+                        : "w-full md:max-h-[72dvh] md:cursor-zoom-in md:object-contain"
+                    }
+                    onError={previewImages ? (e) => {
+                      const el = e.target as HTMLImageElement;
+                      if (!el.getAttribute("data-orig")) {
+                        el.setAttribute("data-orig", el.src);
+                        el.src = `/api/proxy-image?url=${encodeURIComponent(el.src)}`;
+                      }
+                    } : undefined}
+                  />
+                  {/* Navigation arrows for preview images */}
+                  {previewImages && imageIdx > 0 && (
+                    <button
+                      onClick={() => setImageIdx(imageIdx - 1)}
+                      className="absolute left-3 top-1/2 z-20 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full bg-black/50 text-white backdrop-blur hover:bg-black/70"
+                    >
+                      <ChevronLeftIcon className="h-5 w-5" />
+                    </button>
+                  )}
+                  {previewImages && imageIdx < previewImages.length - 1 && (
+                    <button
+                      onClick={() => setImageIdx(imageIdx + 1)}
+                      className="absolute right-3 top-1/2 z-20 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full bg-black/50 text-white backdrop-blur hover:bg-black/70"
+                    >
+                      <ChevronRightIcon className="h-5 w-5" />
+                    </button>
+                  )}
+                  {previewLoading && !previewImages && (
+                    <div className="absolute bottom-3 right-3 text-[11px] text-zinc-500 animate-pulse">Loading project...</div>
+                  )}
+                  {previewImages && (
+                    <div className="absolute top-3 left-3 text-[11px] text-zinc-400 bg-black/50 rounded-full px-2 py-0.5 backdrop-blur">
+                      {imageIdx + 1} / {previewImages.length}
+                    </div>
+                  )}
+                </div>
+                {/* Thumbnail strip for preview images */}
+                {previewImages && previewImages.length > 1 && (
+                  <div className="no-scrollbar flex gap-1.5 overflow-x-auto border-t border-white/5 p-2">
+                    {previewImages.map((src, i) => (
+                      <button
+                        key={src}
+                        onClick={() => setImageIdx(i)}
+                        className={`h-12 w-16 shrink-0 overflow-hidden rounded-md border transition-colors ${
+                          i === imageIdx ? "border-white/40" : "border-white/10 hover:border-white/25"
+                        }`}
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={src}
+                          alt=""
+                          className="h-full w-full object-cover"
+                          onError={(e) => {
+                            const el = e.target as HTMLImageElement;
+                            if (!el.getAttribute("data-orig")) {
+                              el.setAttribute("data-orig", el.src);
+                              el.src = `/api/proxy-image?url=${encodeURIComponent(el.src)}`;
+                            }
+                          }}
+                        />
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             ) : item.type === "note" ? (
               <div className="mx-auto h-[60dvh] w-full max-w-prose p-8">
                 <NoteEditor
