@@ -616,34 +616,41 @@ export async function enrichLinkThumbs(
     await Promise.all(batch.map(async (item) => {
       try {
         const url = item.source_url!;
-        const isInstagram = /^https?:\/\/(www\.)?(instagram\.com|threads\.net)\//i.test(url);
-        let meta: { image: string | null; title: string | null };
+        const igMatch = url.match(/instagram\.com\/(?:p|reel)\/([A-Za-z0-9_-]+)/i);
 
-        if (isInstagram) {
-          // Instagram blocks og:image from server-side fetches; use their public oEmbed API
-          const oRes = await fetch(`https://api.instagram.com/oembed/?url=${encodeURIComponent(url)}`, {
-            signal: AbortSignal.timeout(10000),
+        if (igMatch) {
+          // Instagram's oEmbed requires auth since 2020 and og:image is JS-rendered.
+          // Best option without auth: Puppeteer-capture the public embed page.
+          const embedUrl = `https://www.instagram.com/p/${igMatch[1]}/embed/captioned/`;
+          const res = await apiFetch(`/api/capture-site?url=${encodeURIComponent(embedUrl)}`);
+          if (!res.ok) return;
+          const blob = await res.blob();
+          const processed = await processImage(blob);
+          const up = await uploadProcessed(processed);
+          await updateItem(item.id, {
+            thumb_path: up.thumb_path,
+            storage_path: up.storage_path ?? up.thumb_path,
+            width: up.width ?? item.width,
+            height: up.height ?? item.height,
+            colors: processed.colors.length ? processed.colors : item.colors,
           });
-          if (!oRes.ok) return;
-          const oembed = await oRes.json();
-          meta = { image: oembed.thumbnail_url ?? null, title: oembed.title ?? oembed.author_name ?? null };
+          enriched++;
         } else {
-          meta = await fetchLinkMeta(url);
+          const meta = await fetchLinkMeta(url);
+          if (!meta.image) return;
+          const blob = await fetchRemoteImage(meta.image);
+          const processed = await processImage(blob);
+          const up = await uploadProcessed(processed);
+          await updateItem(item.id, {
+            thumb_path: up.thumb_path,
+            storage_path: up.storage_path ?? item.storage_path,
+            width: up.width ?? item.width,
+            height: up.height ?? item.height,
+            title: item.title || meta.title || item.title,
+            colors: processed.colors.length ? processed.colors : item.colors,
+          });
+          enriched++;
         }
-
-        if (!meta.image) return;
-        const blob = await fetchRemoteImage(meta.image);
-        const processed = await processImage(blob);
-        const up = await uploadProcessed(processed);
-        await updateItem(item.id, {
-          thumb_path: up.thumb_path,
-          storage_path: up.storage_path ?? item.storage_path,
-          width: up.width ?? item.width,
-          height: up.height ?? item.height,
-          title: item.title || meta.title || item.title,
-          colors: processed.colors.length ? processed.colors : item.colors,
-        });
-        enriched++;
       } catch { /* skip items that fail */ }
     }));
     onProgress?.(Math.min(i + BATCH, items.length), items.length);

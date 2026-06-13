@@ -30,28 +30,6 @@ function metaTag(prop: string): RegExp[] {
   ];
 }
 
-/** Extract image URL from Instagram's embed HTML (the only public endpoint that
- *  serves post images without auth). Tries /embed/captioned/ and /embed/ variants. */
-async function instagramEmbedImage(postUrl: string): Promise<string | null> {
-  const m = postUrl.match(/instagram\.com\/(?:p|reel)\/([A-Za-z0-9_-]+)/);
-  if (!m) return null;
-  const embedUrl = `https://www.instagram.com/p/${m[1]}/embed/captioned/`;
-  try {
-    const res = await safeFetch(embedUrl, {
-      headers: { "user-agent": UA, accept: "text/html,*/*", "Accept-Language": "en-US,en;q=0.9" },
-      signal: AbortSignal.timeout(12000),
-    });
-    const html = (await res.text()).slice(0, 600_000);
-    // Instagram embeds the image in <img class="EmbeddedMediaImage" src="...">
-    const imgTag = /<img[^>]+class="[^"]*EmbeddedMediaImage[^"]*"[^>]+src="([^"]+)"/i.exec(html)
-      ?? /<img[^>]+src="(https:\/\/[^"]*(?:cdninstagram|fbcdn)[^"]*)"[^>]+>/i.exec(html);
-    if (imgTag?.[1]) return decodeEntities(imgTag[1]);
-    // Fallback: image URL in the JSON blob Instagram embeds in script tags
-    const jsonBlob = /"display_url":"(https:[^"]+)"/i.exec(html);
-    if (jsonBlob?.[1]) return jsonBlob[1].replace(/\\u0026/g, "&").replace(/\\\//g, "/");
-  } catch { /* blocked or timeout */ }
-  return null;
-}
 
 export async function GET(req: Request) {
   if (!(await isAuthed(req))) {
@@ -81,11 +59,6 @@ export async function GET(req: Request) {
       } catch {
         image = null;
       }
-    }
-
-    // Instagram blocks server-side og:image — fall back to scraping the embed page
-    if (!image && /instagram\.com\/(p|reel)\//.test(url)) {
-      image = await instagramEmbedImage(url);
     }
 
     const title =
