@@ -1,5 +1,7 @@
 import fs from "fs";
-import { safeFetch } from "./ssrf";
+import sharp from "sharp";
+import { assertPublicUrl, safeFetch } from "./ssrf";
+import { gemini, geminiDisabled, geminiText, hasGeminiKey } from "./gemini";
 
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -13,7 +15,7 @@ const LOCAL_CHROME = [
   "/usr/bin/chromium-browser",
 ];
 
-async function launchBrowser() {
+export async function launchBrowser() {
   const puppeteer = await import("puppeteer-core");
   if (process.env.VERCEL) {
     // Vercel hides AWS's Lambda env vars, so @sparticuz/chromium doesn't realise it's on
@@ -106,6 +108,71 @@ const FLUSH_MOTION = `(() => {
     } catch {}
   }
 })()`;
+
+/** Is a preloader/splash overlay still blocking the viewport? Catches full-viewport
+ *  fixed/absolute elements that are opaque and either named like a loader or sat at a
+ *  high z-index with almost no content (heroes have headlines; preloaders don't). */
+const PRELOADER_CHECK = `(() => {
+  const vw = innerWidth, vh = innerHeight;
+  let i = 0;
+  for (const el of document.querySelectorAll("body *")) {
+    if (++i > 1500) break;
+    try {
+      const cs = getComputedStyle(el);
+      if (cs.display === "none" || cs.visibility === "hidden" || parseFloat(cs.opacity) < 0.4) continue;
+      if (cs.position !== "fixed" && cs.position !== "absolute") continue;
+      const r = el.getBoundingClientRect();
+      const ix = Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0));
+      const iy = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
+      if (ix * iy < vw * vh * 0.85) continue;
+      const name = (typeof el.className === "string" ? el.className : "") + " " + el.id;
+      const named = /(pre)?-?load(er|ing)|splash|curtain|page-transition|site-intro|spinner/i.test(name);
+      const bg = cs.backgroundColor || "";
+      const m = /rgba?\\(\\s*\\d+\\s*,\\s*\\d+\\s*,\\s*\\d+\\s*(?:,\\s*([\\d.]+))?\\s*\\)/.exec(bg);
+      const opaque = !!m && (m[1] === undefined || parseFloat(m[1]) >= 0.5);
+      const z = parseInt(cs.zIndex) || 0;
+      if (named && opaque) return true;
+      if (opaque && cs.position === "fixed" && z >= 50) {
+        const text = (el.innerText || "").trim();
+        if (text.length < 120 && el.querySelectorAll("img,picture,video").length <= 1) return true;
+      }
+    } catch {}
+  }
+  return false;
+})()`;
+
+/** Last resort before the retry shot: tear out anything loader-shaped that refused to leave.
+ *  Only runs after the viewport probed flat, so a visible hero can't be here to lose. */
+const NUKE_OVERLAY = `(() => {
+  const vw = innerWidth, vh = innerHeight;
+  for (const el of Array.from(document.querySelectorAll("body *"))) {
+    try {
+      const cs = getComputedStyle(el);
+      const r = el.getBoundingClientRect();
+      const ix = Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0));
+      const iy = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
+      if (ix * iy < vw * vh * 0.6) continue;
+      const name = (typeof el.className === "string" ? el.className : "") + " " + el.id;
+      const named = /(pre)?-?load(er|ing)|splash|curtain|page-transition|site-intro/i.test(name);
+      const positioned = (cs.position === "fixed" || cs.position === "absolute") && (parseInt(cs.zIndex) || 0) > 5;
+      if (!named && !positioned) continue;
+      // never tear out a wrapper that holds the actual page
+      if (el.querySelectorAll("img, picture, section, h1, h2").length > 3) continue;
+      el.remove();
+    } catch {}
+  }
+  document.documentElement.style.overflow = "visible";
+  if (document.body) document.body.style.overflow = "visible";
+})()`;
+
+async function waitForOverlayGone(page: { evaluate: (s: string) => Promise<unknown> }, budgetMs: number): Promise<void> {
+  const deadline = Date.now() + budgetMs;
+  for (;;) {
+    const blocking = await page.evaluate(PRELOADER_CHECK).catch(() => false);
+    if (!blocking || Date.now() >= deadline) return;
+    await new Promise((r) => setTimeout(r, 600));
+  }
+}
 
 const LAZY_SCROLL = `(async () => {
   const step = window.innerHeight;
@@ -286,18 +353,117 @@ export interface Shot {
   tech?: string[];
 }
 
+export interface FlatStats {
+  /** Share of pixels in the single most common quantised colour (0..1). */
+  top: number;
+  /** Distinct quantised colours in the 64x64 sample. */
+  distinct: number;
+}
+
+/** Histogram the top viewport-ish region of an image using the browser's own decoders
+ *  (JPEG/PNG/WebP all work) — downscale to 64x64 on a canvas in a blank page, then count
+ *  4-bit-per-channel colour buckets. Cheap, no native deps. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function imageFlatStats(browser: any, bytes: Uint8Array, type: string): Promise<FlatStats | null> {
+  let page;
+  try {
+    page = await browser.newPage();
+    const dataUrl = `data:${type};base64,${Buffer.from(bytes).toString("base64")}`;
+    const out = await page.evaluate(`(async () => {
+      const img = new Image();
+      await new Promise((res, rej) => { img.onload = res; img.onerror = () => rej(new Error("decode")); img.src = ${JSON.stringify(dataUrl)}; });
+      const w = 64, h = 64;
+      // analyse only the top ~viewport of tall captures — that's what becomes the thumbnail
+      const sh = Math.min(img.naturalHeight, Math.max(1, Math.round(img.naturalWidth * 0.67)));
+      const c = document.createElement("canvas"); c.width = w; c.height = h;
+      const ctx = c.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(img, 0, 0, img.naturalWidth, sh, 0, 0, w, h);
+      const d = ctx.getImageData(0, 0, w, h).data;
+      const hist = new Map();
+      for (let i = 0; i < d.length; i += 4) {
+        const k = ((d[i] >> 4) << 8) | ((d[i + 1] >> 4) << 4) | (d[i + 2] >> 4);
+        hist.set(k, (hist.get(k) || 0) + 1);
+      }
+      let max = 0; for (const v of hist.values()) if (v > max) max = v;
+      return { top: max / (w * h), distinct: hist.size };
+    })()`);
+    return out as FlatStats;
+  } catch {
+    return null;
+  } finally {
+    if (page) await page.close().catch(() => {});
+  }
+}
+
+/** A preloader/blank screen is one overwhelming colour with almost no detail. A minimal
+ *  real site also has a dominant colour, but its text/images spread across many buckets. */
+export function looksFlat(s: FlatStats | null): boolean {
+  if (!s) return false;
+  return s.top >= 0.92 || (s.top >= 0.8 && s.distinct <= 24);
+}
+
+/** Same histogram as imageFlatStats but via sharp (no browser) — for routes that have the
+ *  screenshot bytes but no Puppeteer instance to spare. Analyses only the top ~viewport of
+ *  tall captures, which is what becomes the thumbnail. */
+export async function flatStatsBytes(bytes: Uint8Array): Promise<FlatStats | null> {
+  try {
+    const buf = Buffer.from(bytes);
+    const meta = await sharp(buf).metadata();
+    const w = meta.width ?? 0;
+    const h = meta.height ?? 0;
+    if (!w || !h) return null;
+    const cropH = Math.min(h, Math.max(1, Math.round(w * 0.67)));
+    const { data } = await sharp(buf)
+      .extract({ left: 0, top: 0, width: w, height: cropH })
+      .resize(64, 64, { fit: "fill" })
+      .toColourspace("srgb")
+      .removeAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const hist = new Map<number, number>();
+    for (let i = 0; i + 2 < data.length; i += 3) {
+      const k = ((data[i] >> 4) << 8) | ((data[i + 1] >> 4) << 4) | (data[i + 2] >> 4);
+      hist.set(k, (hist.get(k) ?? 0) + 1);
+    }
+    let max = 0;
+    for (const v of hist.values()) if (v > max) max = v;
+    const total = data.length / 3 || 1;
+    return { top: max / total, distinct: hist.size };
+  } catch {
+    return null;
+  }
+}
+
+/** Vision gate: histograms catch flat preloaders, but a structured block page (Cloudflare
+ *  "you have been blocked", styled 404s, cookie walls) isn't flat. Ask Gemini whether the shot
+ *  shows real site content; returns the rejection kind (e.g. "block"/"error") or null when it's
+ *  real or the check can't run (fail open so a missing key never blocks a capture). */
+export async function screenshotRejected(bytes: Uint8Array, type: string): Promise<string | null> {
+  if (!hasGeminiKey() || geminiDisabled()) return null;
+  try {
+    const res = await gemini({
+      contents: [{
+        role: "user",
+        parts: [
+          { inlineData: { mimeType: type, data: Buffer.from(bytes).toString("base64") } },
+          { text: `This is an automated screenshot of a webpage. Reply with JSON only: {"ok": true|false, "kind": "site"|"block"|"error"|"loading"|"cookie"|"blank"}. ok is true only if it shows a real website's actual content. ok is false for: bot-check / access-denied / captcha / "verify you are human" pages, error pages (404, 500, "page not found"), loading or splash screens, a cookie-consent wall obscuring the page, or a mostly blank page.` },
+        ],
+      }],
+      generationConfig: { maxOutputTokens: 60, responseMimeType: "application/json" },
+    });
+    const out = JSON.parse(geminiText(res));
+    return out.ok === false ? String(out.kind ?? "rejected") : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function chromiumShot(url: string): Promise<Shot> {
   let browser;
   let fonts: string[] = [];
   let tech: string[] = [];
   try {
     browser = await launchBrowser();
-    let page = await browser.newPage();
-    await page.setViewport({ width: 1440, height: 960, deviceScaleFactor: 1 });
-    await page.setUserAgent(UA);
-    // prefers-reduced-motion: reduce — well-coded animation libraries (GSAP, Lottie) will
-    // skip their intro tweens and show final states, preventing blank gaps in the capture.
-    await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
 
     // Collect JS bundle contents off the wire (CORS-proof) for the tech sniffer.
     const jsBlobs: string[] = [];
@@ -312,7 +478,49 @@ export async function chromiumShot(url: string): Promise<Shot> {
         jsBlobs.push(text.slice(0, 600_000).toLowerCase());
       })().catch(() => {});
     };
-    page.on("response", collectJs);
+
+    // SSRF guard for the browser itself. The route's assertPublicUrl() is only a pre-flight: once
+    // Puppeteer navigates, *it* resolves DNS and follows redirects, so a public URL could 30x-bounce
+    // or DNS-rebind into a private address (localhost services, cloud metadata, LAN) — the exact
+    // thing safeFetch/pinnedLookup guard against on every other fetch path. Re-validate every
+    // request (initial navigation, each redirect hop, and subresources) and abort anything that
+    // doesn't resolve public. Per-host cache keeps the cost to one lookup per distinct hostname.
+    // Residual: a sub-millisecond TTL-0 rebind between this lookup and Chrome's own resolve; closing
+    // that fully needs a pinned-connect forward proxy, overkill for a single-owner app.
+    const hostOk = new Map<string, boolean>();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const guardRequest = (r: any) => {
+      (async () => {
+        const reqUrl = r.url();
+        if (/^(data|blob|about):/i.test(reqUrl)) return r.continue();
+        let ok = false;
+        try {
+          const u = new URL(reqUrl);
+          if (u.protocol === "http:" || u.protocol === "https:") {
+            const host = u.hostname.replace(/^\[|\]$/g, "");
+            const cached = hostOk.get(host);
+            ok = cached ?? (await assertPublicUrl(reqUrl).then(() => true).catch(() => false));
+            if (cached === undefined) hostOk.set(host, ok);
+          }
+        } catch { /* malformed → abort below */ }
+        await (ok ? r.continue() : r.abort()).catch(() => {});
+      })();
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const setupPage = async (p: any) => {
+      await p.setViewport({ width: 1440, height: 960, deviceScaleFactor: 1 });
+      await p.setUserAgent(UA);
+      // prefers-reduced-motion: reduce — well-coded animation libraries (GSAP, Lottie) will
+      // skip their intro tweens and show final states, preventing blank gaps in the capture.
+      await p.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
+      await p.setRequestInterception(true);
+      p.on("request", guardRequest);
+      p.on("response", collectJs);
+    };
+
+    let page = await browser.newPage();
+    await setupPage(page);
 
     let resp = await page.goto(url, { waitUntil: "networkidle2", timeout: 35000 }).catch(() => null);
 
@@ -322,10 +530,7 @@ export async function chromiumShot(url: string): Promise<Shot> {
     if (!alive) {
       await page.close().catch(() => {});
       page = await browser.newPage();
-      await page.setViewport({ width: 1440, height: 960, deviceScaleFactor: 1 });
-      await page.setUserAgent(UA);
-      await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
-      page.on("response", collectJs);
+      await setupPage(page);
       await page.evaluateOnNewDocument(`
         const orig = HTMLCanvasElement.prototype.getContext;
         HTMLCanvasElement.prototype.getContext = function (type, ...args) {
@@ -335,6 +540,20 @@ export async function chromiumShot(url: string): Promise<Shot> {
       resp = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => null);
       await new Promise((r) => setTimeout(r, 2500));
     }
+
+    // A 404/410/5xx main document means we'd immortalise an error page — and the thum.io
+    // fallback would faithfully screenshot the same thing, so fail loudly instead.
+    // 401/403 stay soft: bot walls often send those while still rendering real content.
+    const status = resp?.status() ?? 0;
+    if (status >= 400 && status !== 401 && status !== 403) {
+      const httpErr = new Error(`page returned HTTP ${status}`) as Error & { permanent?: boolean };
+      httpErr.permanent = true;
+      throw httpErr;
+    }
+
+    // Preloaders/splash screens regularly outlive networkidle2 (animation-gated, not
+    // network-gated) — give the overlay a few seconds to clear before reading the page.
+    await waitForOverlayGone(page, 6000);
 
     // Sniff fonts + tech FIRST — scrolling can crash heavy WebGL pages under software
     // rendering, and we want the metadata even if the screenshot later falls back.
@@ -349,6 +568,19 @@ export async function chromiumShot(url: string): Promise<Shot> {
     await page.evaluate(LAZY_SCROLL).catch(() => {});
     await page.evaluate(CLEAN_PAGE).catch(() => {});
     await new Promise((r) => setTimeout(r, 500));
+
+    // Probe the viewport with a cheap small shot — if it's one flat colour we're staring at
+    // a preloader (or content gated behind it). Wait once more, tear the overlay out, re-clean.
+    const probe = await page
+      .screenshot({ type: "jpeg", quality: 60, clip: { x: 0, y: 0, width: 1440, height: 960 } })
+      .catch(() => null);
+    if (probe && looksFlat(await imageFlatStats(browser, probe, "image/jpeg"))) {
+      await waitForOverlayGone(page, 5000);
+      await page.evaluate(NUKE_OVERLAY).catch(() => {});
+      await page.evaluate(CLEAN_PAGE).catch(() => {});
+      await new Promise((r) => setTimeout(r, 1200));
+    }
+
     const height = Math.min(
       await page.evaluate("Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)").then((h) => Number(h) || 960),
       8000
@@ -422,7 +654,7 @@ async function staticSniff(url: string): Promise<{ fonts: string[]; tech: string
 }
 
 /** Hosted fallback (no headless browser needed). `capped` keeps the response under proxy limits. */
-async function thumShot(url: string, capped: boolean): Promise<Shot> {
+export async function thumShot(url: string, capped: boolean): Promise<Shot> {
   const opts = capped ? "width/1100/crop/4500/fullpage" : "width/1440/fullpage";
   const res = await fetch(`https://image.thum.io/get/${opts}/${url}`, {
     headers: { "user-agent": UA },
@@ -433,11 +665,49 @@ async function thumShot(url: string, capped: boolean): Promise<Shot> {
   return { bytes: new Uint8Array(await res.arrayBuffer()), type, engine: "thum.io" };
 }
 
+/** Thrown by captureVetted when the only capture obtainable is junk (loading/blank/blocked/
+ *  error/cookie page). Callers turn this into a 422 so the user gets a clear message instead
+ *  of a poisoned card silently entering the library. */
+export class PoisonedCaptureError extends Error {
+  kind: string;
+  constructor(reason: string, kind: string) {
+    super(reason);
+    this.name = "PoisonedCaptureError";
+    this.kind = kind;
+  }
+}
+
+/** captureScreenshot + a quality gate: flat (loading/blank) shots try the thum.io renderer,
+ *  then a vision pass rejects structured block/error/cookie pages. Returns a clean Shot or
+ *  throws PoisonedCaptureError — so neither the in-app capture nor the extension clip can
+ *  persist poison at the source (the audit route remains the backstop for older rows). */
+export async function captureVetted(url: string, capped: boolean): Promise<Shot> {
+  let shot = await captureScreenshot(url, capped);
+  let stats = await flatStatsBytes(shot.bytes);
+  if (looksFlat(stats) && shot.engine === "chromium") {
+    // bot walls that block headless Chrome often wave thum.io's renderer through
+    const alt = await thumShot(url, capped).catch(() => null);
+    const altStats = alt ? await flatStatsBytes(alt.bytes) : null;
+    if (alt && !looksFlat(altStats)) {
+      alt.fonts = shot.fonts;
+      alt.tech = shot.tech;
+      shot = alt;
+      stats = altStats;
+    }
+  }
+  if (looksFlat(stats)) throw new PoisonedCaptureError("the page looks like a loading or blank screen", "loading");
+  const rejected = await screenshotRejected(shot.bytes, shot.type);
+  if (rejected) throw new PoisonedCaptureError(`looks like a ${rejected} page`, rejected);
+  return shot;
+}
+
 export async function captureScreenshot(url: string, capped = false): Promise<Shot> {
   try {
     return await chromiumShot(url);
   } catch (e) {
-    const carrier = e as { fonts?: string[]; tech?: string[] };
+    const carrier = e as { permanent?: boolean; fonts?: string[]; tech?: string[] };
+    // Hard HTTP error page — thum.io would screenshot the very same 404, so don't fall back.
+    if (carrier.permanent) throw e;
     const [shot, sniffed] = await Promise.all([
       thumShot(url, capped),
       carrier.fonts?.length && carrier.tech?.length

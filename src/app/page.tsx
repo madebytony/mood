@@ -34,6 +34,7 @@ import {
   embedItem,
   fetchColumnItems,
   fetchItems,
+  ITEMS_PAGE,
   fetchLibraries,
   fetchSpaces,
   fetchSpaceCounts,
@@ -119,6 +120,12 @@ function App() {
   const [dragging, setDragging] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
   const [ready, setReady] = useState(false);
+  // Grid pagination (Fix: was a hard 500-item cap that silently hid older saves).
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const itemsRef = useRef<Item[]>([]);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [pending, setPending] = useState<{ id: number; label: string }[]>([]);
   const [addTick, setAddTick] = useState(0);
@@ -182,8 +189,14 @@ function App() {
 
   /** Stale-while-revalidate: cached views paint instantly, fresh data swaps in behind. */
   const viewCache = useRef(
-    new Map<string, { items: Item[]; stacks: Stack[]; urls: Map<string, string>; stackThumbs: Map<string, string[]> }>()
+    new Map<string, { items: Item[]; stacks: Stack[]; urls: Map<string, string>; stackThumbs: Map<string, string[]>; hasMore: boolean }>()
   );
+
+  // Mirror items into a ref so loadMore can read the current tail (cursor) without
+  // re-subscribing the IntersectionObserver on every append.
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
 
   /** Drop every cached view snapshot. Call before a mutation so switching to another space can't
    *  paint a stale snapshot that still holds a deleted/moved item or expired signed URLs — the
@@ -205,9 +218,19 @@ function App() {
       setStacks(cached.stacks);
       setUrls(cached.urls);
       setStackThumbs(cached.stackThumbs);
+      setHasMore(cached.hasMore);
       setReady(true);
     }
-    const [data, stks] = await Promise.all([fetchItems(spaceKey, search), fetchStacks(spaceKey)]);
+    // Browse paginates (keyset, ITEMS_PAGE at a time); search stays single-shot at a higher ceiling.
+    // On revalidation, refetch the full depth already loaded so a background refresh can't shrink a
+    // deeply-scrolled view back to the first page.
+    const paginated = !search.trim();
+    const browseLimit = Math.max(ITEMS_PAGE, cached?.items.length ?? 0);
+    const [data, stks] = await Promise.all([
+      fetchItems(spaceKey, search, paginated ? { limit: browseLimit } : { limit: 1000 }),
+      fetchStacks(spaceKey),
+    ]);
+    const more = paginated && data.length === browseLimit;
     const colStackIds = stks.filter((s) => s.kind === "column").map((s) => s.id);
     const [fan, colMap] = await Promise.all([
       stackThumbPaths(stks.map((s) => s.id)),
@@ -224,16 +247,64 @@ function App() {
     const map = paths.length ? await signedUrls(paths) : new Map<string, string>();
     const fanUrls = new Map<string, string[]>();
     for (const [sid, ps] of fan) fanUrls.set(sid, ps.map((p) => map.get(p)).filter(Boolean) as string[]);
-    viewCache.current.set(cacheKey, { items: data, stacks: stks, urls: map, stackThumbs: fanUrls });
+    viewCache.current.set(cacheKey, { items: data, stacks: stks, urls: map, stackThumbs: fanUrls, hasMore: more });
     setItems(data);
     setStacks(stks);
     setUrls(map);
     setStackThumbs(fanUrls);
     setColumnItems(colMap);
+    setHasMore(more);
     setReady(true);
     // sidebar tallies are library-wide (not just this view) — refresh in the background
     fetchSpaceCounts().then(setSpaceCounts).catch(() => {});
   }, [selected, search]);
+
+  /** Fetch the next keyset page (browse only) and append. Reads the current tail from a ref
+   *  so the IntersectionObserver doesn't need to re-bind on every append. */
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !hasMore || search.trim()) return;
+    const tail = itemsRef.current[itemsRef.current.length - 1];
+    if (!tail) return;
+    const spaceKey = selected === "home" ? "all" : selected;
+    setLoadingMore(true);
+    try {
+      const next = await fetchItems(spaceKey, "", { before: tail.created_at, beforeId: tail.id, limit: ITEMS_PAGE });
+      const have = new Set(itemsRef.current.map((i) => i.id));
+      const fresh = next.filter((i) => !have.has(i.id));
+      const paths = [
+        ...(fresh.map((i) => i.thumb_path).filter(Boolean) as string[]),
+        ...(fresh.filter((i) => i.type === "image" || i.type === "site").map((i) => i.storage_path).filter(Boolean) as string[]),
+      ];
+      const m = paths.length ? await signedUrls(paths) : new Map<string, string>();
+      const merged = [...itemsRef.current, ...fresh];
+      const more = next.length === ITEMS_PAGE;
+      // keep the SWR cache in sync so leaving and returning to this view preserves loaded pages
+      const cached = viewCache.current.get(`${spaceKey}|`);
+      if (cached) viewCache.current.set(`${spaceKey}|`, { ...cached, items: merged, urls: new Map([...cached.urls, ...m]), hasMore: more });
+      setUrls((u) => new Map([...u, ...m]));
+      setItems(merged);
+      setHasMore(more);
+    } catch (e) {
+      toast(String((e as Error).message ?? e), "error");
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [loadingMore, hasMore, search, selected, toast]);
+
+  // Infinite scroll: trigger the next page when the sentinel nears the bottom of the grid.
+  // Re-binds when the grid (re)mounts or loadMore changes; no-op while the sentinel is absent
+  // (home/board views don't render it).
+  useEffect(() => {
+    const el = sentinelRef.current;
+    const root = scrollRef.current;
+    if (!el || !root || !hasMore) return;
+    const io = new IntersectionObserver(
+      (entries) => { if (entries[0]?.isIntersecting) loadMore(); },
+      { root, rootMargin: "800px" }
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [loadMore, hasMore, ready, selected, search]);
 
   useEffect(() => {
     loadStructure().catch((e) => toast(String(e.message ?? e), "error"));
@@ -1110,7 +1181,7 @@ function App() {
           </div>
         )}
 
-        <div className={`flex-1 ${showBoard && selected !== "home" ? "overflow-hidden" : "no-scrollbar overflow-y-auto"}`}>
+        <div ref={scrollRef} className={`flex-1 ${showBoard && selected !== "home" ? "overflow-hidden" : "no-scrollbar overflow-y-auto"}`}>
           {selected === "home" ? (
             <Feed
               spaces={spaces}
@@ -1184,6 +1255,11 @@ function App() {
                   >
                     <span className="flex items-center justify-center gap-2"><GlobeIcon className="h-4 w-4" /> Search the web for “{search.trim()}”</span>
                   </button>
+                </div>
+              )}
+              {!search.trim() && !aiItems && (
+                <div ref={sentinelRef} className="px-3 pb-24 pt-3 text-center text-[11px] text-zinc-600">
+                  {loadingMore ? "Loading more…" : !hasMore && items.length >= ITEMS_PAGE ? "That's everything" : ""}
                 </div>
               )}
             </>

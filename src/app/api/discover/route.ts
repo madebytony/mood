@@ -1,6 +1,6 @@
 import { isAuthed } from "../_lib/auth";
 import { gemini, geminiDisabled, geminiText, hasGeminiKey, parseJson } from "../_lib/gemini";
-import { badVerdictDomains, corpusEmbeddingsByDomain, ingestCandidates, saveVerdicts, upsertScreenshotEmbedding, MULTI_ENTRY_RE, type Verdict } from "../_lib/corpus";
+import { badVerdictDomains, corpusEmbeddingsByDomain, ingestCandidates, saveVerdicts, upsertScreenshotEmbedding, MULTI_ENTRY_RE, type CorpusCandidate, type Verdict } from "../_lib/corpus";
 import { hasVoyageKey, voyageEmbed, type VoyageContent } from "../_lib/voyage";
 import { extractColorsFromImage, hueOverlap, toneOf } from "../_lib/colors";
 
@@ -362,7 +362,7 @@ async function candidateImage(c: Suggestion): Promise<{ mimeType: string; data: 
 }
 
 interface AxisScores { palette: number; typography: number; layout: number; mood: number }
-interface JudgedCandidate { c: Suggestion; score: number; axes: AxisScores | null; why: string | null }
+interface JudgedCandidate { c: Suggestion; score: number; axes: AxisScores | null; why: string | null; ok: boolean }
 
 const clamp10 = (n: unknown): number => (typeof n === "number" && Number.isFinite(n) ? Math.max(0, Math.min(10, Math.round(n))) : 0);
 
@@ -387,7 +387,9 @@ async function judgeBatch(
   batch.forEach((x, i) => { parts.push({ text: `CANDIDATE ${i}:` }); parts.push({ inlineData: x.img }); });
   parts.push({ text: `You are judging VISUAL design similarity for a designer's moodboard.${brief ? ` The designer described the target as: "${brief.slice(0, 260)}". The REFERENCE image is ground truth; use the description only to resolve ambiguity (e.g. a partially-loaded screenshot).` : ""}
 
-For each CANDIDATE, FIRST write one short comparison sentence ("why"), THEN score four axes 0-10 against the REFERENCE:
+For each CANDIDATE, FIRST decide "ok": is this a real, rendered website's design, or is it junk — a 404/error page, a loading/splash screen, a cookie-consent wall, a bot/"verify you are human" block, a near-blank page, or just a bare logo on an empty background? Junk is NOT moodboard material however it scores, so set "ok": false and don't bother scoring it well.
+
+For ok candidates, write one short comparison sentence ("why"), THEN score four axes 0-10 against the REFERENCE:
 - palette: hue family, lightness (dark vs light), saturation. A light/white site vs a dark reference, or vivid multicolour vs monochrome, is 0-3 — opposite palettes can never score mid-range.
 - typography: style (serif/sans/grotesque/display), weight, scale, case.
 - layout: structure, density, whitespace, composition.
@@ -395,23 +397,25 @@ For each CANDIDATE, FIRST write one short comparison sentence ("why"), THEN scor
 
 IGNORE subject matter entirely; judge only how it looks. Be harsh — most candidates are NOT a match; 8-10 means near-identical on that axis.
 
-Reply JSON only: [{"i":<candidate index>,"why":"<max 10 words>","palette":n,"typography":n,"layout":n,"mood":n}]` });
+Reply JSON only: [{"i":<candidate index>,"ok":true|false,"why":"<max 10 words>","palette":n,"typography":n,"layout":n,"mood":n}]` });
   const res = await gemini({
     contents: [{ role: "user", parts }],
     generationConfig: { maxOutputTokens: 1600, responseMimeType: "application/json" },
   });
-  const scores = JSON.parse(geminiText(res)) as { i: number; why?: string; palette?: number; typography?: number; layout?: number; mood?: number }[];
+  const scores = JSON.parse(geminiText(res)) as { i: number; ok?: boolean; why?: string; palette?: number; typography?: number; layout?: number; mood?: number }[];
   if (!Array.isArray(scores)) return [];
   return scores
     .filter((s) => Number.isInteger(s.i) && batch[s.i])
     .map((s) => {
+      const ok = s.ok !== false;
       const axes: AxisScores = {
         palette: clamp10(s.palette),
         typography: clamp10(s.typography),
         layout: clamp10(s.layout),
         mood: clamp10(s.mood),
       };
-      return { c: batch[s.i].c, score: composite(axes), axes, why: s.why ?? null };
+      // a screenshot the judge flagged as junk can't be a match, whatever the axes say
+      return { c: batch[s.i].c, score: ok ? composite(axes) : 0, axes, why: s.why ?? null, ok };
     });
 }
 
@@ -471,6 +475,10 @@ async function visualRank(
   let withImg = fetched.filter((x): x is { c: Suggestion; img: { mimeType: string; data: string } } => !!x.img);
   if (withImg.length < 3) return null;
 
+  // Freshly-embedded screenshots to enrich the corpus with — but ONLY after the judge confirms
+  // each is real site content. Poisoned/blocked captures embed here, then get dropped below.
+  const freshPersist = new Map<string, { cand: CorpusCandidate; image: string | null; vec: number[]; colors: string[] }>();
+
   // Cosine + palette prerank: spend judge tokens on plausible candidates first. Stored
   // corpus vectors are reused; everything else is embedded from the screenshot we just
   // downloaded — and those embeddings (with extracted palettes) flow back into web_corpus,
@@ -495,10 +503,11 @@ async function visualRank(
         if (!vec) {
           vec = await embedShot(x.img, x.c.title);
           if (vec && !x.c.source.startsWith("index/")) {
-            await upsertScreenshotEmbedding(
-              { url: x.c.url, domain: x.c.domain, title: x.c.title, image: x.c.image, blurb: x.c.blurb ?? null, tags: [], source: x.c.source === "web" ? "websearch" : x.c.source },
-              x.c.image, vec, candColors
-            );
+            // hold the embedding; persist only if the judge later rules it ok (real content)
+            freshPersist.set(keyOf(x.c), {
+              cand: { url: x.c.url, domain: x.c.domain, title: x.c.title, image: x.c.image, blurb: x.c.blurb ?? null, tags: [], source: x.c.source === "web" ? "websearch" : x.c.source },
+              image: x.c.image, vec, colors: candColors,
+            });
           }
         }
         const candTone = toneOf(candColors);
@@ -521,6 +530,15 @@ async function visualRank(
   } catch { /* fall through with whatever was judged */ }
   if (!judged.length) return null;
   judged.sort((a, b) => b.score - a.score);
+
+  // Enrich the corpus with the screenshots we just embedded — but only the ones the judge
+  // confirmed are real site content. A candidate explicitly ruled junk (ok:false) is dropped,
+  // never indexed; anything not reached by the early-stopping judge keeps the prior behaviour.
+  const okByKey = new Map(judged.map((j) => [keyOf(j.c), j.ok] as const));
+  const persist = [...freshPersist.entries()].filter(([k]) => okByKey.get(k) !== false);
+  if (persist.length) {
+    await Promise.allSettled(persist.map(([, p]) => upsertScreenshotEmbedding(p.cand, p.image, p.vec, p.colors)));
+  }
 
   // Verdict memory: every ruling persists (skip-list for this reference + future calibration).
   if (opts.refKey) {

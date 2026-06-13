@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import type { Item, Stack } from "@/lib/types";
 import { THUMB_W, THUMB_MAX_H, dominantHex } from "@/lib/media";
 import { StackIcon, LinkIcon, WarningIcon, ExternalLinkIcon, DotsIcon } from "./icons";
+import { noteToSafeHtml } from "@/lib/noteHtml";
 
 /** Favicon for a bookmark card — Google's service, reliable and cached. */
 const favicon = (domain: string | null) =>
@@ -95,7 +96,10 @@ function Card({
           />
         </div>
       ) : item.type === "note" ? (
-        <div className="px-4 py-5 text-sm leading-relaxed text-zinc-300">{(item.content ?? "").slice(0, 280)}</div>
+        <div
+          className="note-preview line-clamp-6 px-4 py-5 text-sm leading-relaxed text-zinc-300 [&_p]:m-0"
+          dangerouslySetInnerHTML={{ __html: noteToSafeHtml(item.content) }}
+        />
       ) : isBookmark ? (
         // bookmark without an og:image — a clean favicon plaque rather than a bare link glyph
         <div className="flex aspect-[16/10] w-full flex-col items-center justify-center gap-2 bg-gradient-to-b from-white/[0.04] to-transparent text-zinc-500">

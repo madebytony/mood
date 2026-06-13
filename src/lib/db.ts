@@ -35,25 +35,51 @@ export async function fetchSpaces(): Promise<Space[]> {
   return data ?? [];
 }
 
-/** Unstacked-item count per space_id — drives the sidebar tallies (matches what each space's grid shows). */
+/** Unstacked-item count per space_id — drives the sidebar tallies (matches what each space's grid shows).
+ *  Uses a grouped-count RPC (counts in Postgres, one row per space). Falls back to the legacy row scan
+ *  if the space_item_counts migration hasn't been applied yet. */
 export async function fetchSpaceCounts(): Promise<Map<string, number>> {
+  const m = new Map<string, number>();
+  const { data: rpc, error: rpcErr } = await supabase.rpc("space_item_counts");
+  if (!rpcErr && rpc) {
+    for (const row of rpc as { space_id: string; n: number }[]) m.set(row.space_id, Number(row.n));
+    return m;
+  }
+  // Fallback (pre-migration): pull space_id rows and tally client-side.
   const { data, error } = await supabase.from("items").select("space_id").is("stack_id", null).limit(10000);
   if (error) throw error;
-  const m = new Map<string, number>();
   for (const row of (data ?? []) as { space_id: string | null }[]) {
     if (row.space_id) m.set(row.space_id, (m.get(row.space_id) ?? 0) + 1);
   }
   return m;
 }
 
-export async function fetchItems(spaceId: string | "all", search: string): Promise<Item[]> {
+/** Page size for the keyset-paginated grid (Fix: was a hard 500-item cap with no way to
+ *  reach older saves). `before` is a `created_at` cursor — pass the oldest loaded item's
+ *  timestamp to fetch the next page. Search stays single-shot at a higher ceiling. */
+export const ITEMS_PAGE = 200;
+
+export async function fetchItems(
+  spaceId: string | "all",
+  search: string,
+  opts: { before?: string; beforeId?: string; limit?: number } = {}
+): Promise<Item[]> {
+  const limit = opts.limit ?? 500;
   let q = supabase
     .from("items")
     .select(ITEM_COLS)
     .is("stack_id", null)
+    // (created_at, id) is the keyset order: id breaks ties so a page boundary that lands on a
+    // shared timestamp can't skip its siblings (created_at alone would .lt() right past them).
     .order("created_at", { ascending: false })
-    .limit(500);
+    .order("id", { ascending: false })
+    .limit(limit);
   if (spaceId !== "all") q = q.eq("space_id", spaceId);
+  if (opts.before) {
+    q = opts.beforeId
+      ? q.or(`created_at.lt.${opts.before},and(created_at.eq.${opts.before},id.lt.${opts.beforeId})`)
+      : q.lt("created_at", opts.before);
+  }
   const s = search.trim().replace(/[,{}()]/g, " ").trim();
   const sLower = s.toLowerCase();
   if (s) {
@@ -84,7 +110,7 @@ export async function fetchItems(spaceId: string | "all", search: string): Promi
     .select(ITEM_COLS)
     .is("stack_id", null)
     .order("created_at", { ascending: false })
-    .limit(500);
+    .limit(limit);
   if (spaceId !== "all") q2 = q2.eq("space_id", spaceId);
   const { data: allRows, error: e2 } = await q2;
   if (e2) throw e2;
@@ -115,6 +141,31 @@ export async function tasteTags(spaceId?: string): Promise<string[]> {
     for (const t of row.tags ?? []) counts.set(t, (counts.get(t) ?? 0) + 1);
   }
   return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([t]) => t);
+}
+
+/** Taste profile for the LLM curator + web search: top tags PLUS the dominant palette buckets.
+ *  Tags alone throw away colour — the one axis the visual judge weights highest — so the most
+ *  common named colours ride along as "<colour> tones" phrases. Scoped per board like tasteTags. */
+export async function tasteProfile(spaceId?: string): Promise<string[]> {
+  let q = supabase
+    .from("items")
+    .select("tags,colors")
+    .order("created_at", { ascending: false })
+    .limit(200);
+  if (spaceId) q = q.eq("space_id", spaceId);
+  const { data } = await q;
+  const tagCounts = new Map<string, number>();
+  const colorCounts = new Map<string, number>();
+  for (const row of data ?? []) {
+    for (const t of row.tags ?? []) tagCounts.set(t, (tagCounts.get(t) ?? 0) + 1);
+    for (const c of row.colors ?? []) colorCounts.set(c, (colorCounts.get(c) ?? 0) + 1);
+  }
+  const tags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([t]) => t);
+  const palette = [...colorCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([c]) => `${c} tones`);
+  return [...palette, ...tags];
 }
 
 /** Domains already in the library (Discover should not re-offer these). */
@@ -223,6 +274,9 @@ export function hostOf(url: string): string | null {
 
 async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const token = await authToken();
+  // No session → fail loudly instead of sending the literal string "Bearer null", which every
+  // API route would just 401. Background callers swallow this; foreground callers surface it.
+  if (!token) throw new Error("Not authenticated");
   return fetch(path, {
     ...init,
     headers: { ...(init.headers ?? {}), Authorization: `Bearer ${token}` },
@@ -939,7 +993,7 @@ export async function discover(query: string | null, extraExclude: string[] = []
   // aesthetic matches even if they've already saved work from those domains.
   // For Discover (no query), exclude library domains so we don't re-surface known work.
   const [taste, domains, seen] = await Promise.all([
-    tasteTags(tasteSpaceId),
+    tasteProfile(tasteSpaceId),
     query ? Promise.resolve([] as string[]) : libraryDomains(),
     seenUrls(),
   ]);

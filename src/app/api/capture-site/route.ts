@@ -1,5 +1,5 @@
 import { isAuthed } from "../_lib/auth";
-import { captureScreenshot } from "../_lib/capture";
+import { captureVetted, PoisonedCaptureError } from "../_lib/capture";
 import { assertPublicUrl } from "../_lib/ssrf";
 import { clientIp, rateLimit, tooManyRequests } from "../_lib/ratelimit";
 
@@ -17,8 +17,9 @@ export async function GET(req: Request) {
   }
   try {
     await assertPublicUrl(url);
-    // capped: this response travels back through Vercel's proxy (~4.5MB limit)
-    const shot = await captureScreenshot(url, true);
+    // capped: this response travels back through Vercel's proxy (~4.5MB limit). captureVetted
+    // gates out poisoned shots (flat/blocked/error) so the client never saves a dud card.
+    const shot = await captureVetted(url, true);
     return new Response(shot.bytes, {
       headers: {
         "content-type": shot.type,
@@ -29,6 +30,9 @@ export async function GET(req: Request) {
       },
     });
   } catch (e) {
+    if (e instanceof PoisonedCaptureError) {
+      return Response.json({ error: `couldn't capture clean content — ${e.message}` }, { status: 422 });
+    }
     return Response.json({ error: (e as Error).message }, { status: 502 });
   }
 }

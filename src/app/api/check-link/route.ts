@@ -11,7 +11,8 @@ async function reachable(url: string): Promise<boolean> {
   const attempt = async (method: "HEAD" | "GET") => {
     const res = await safeFetch(url, {
       method,
-      redirect: "manual", // safeFetch re-validates each hop itself
+      // safeFetch always follows redirects itself, re-validating each hop against the SSRF guard —
+      // which is what a reachability check wants. (A `redirect` option here would be ignored.)
       signal: AbortSignal.timeout(12000),
       headers: { "user-agent": "Mozilla/5.0 (compatible; MoodLinkCheck/1)" },
     });
