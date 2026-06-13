@@ -3,6 +3,7 @@ import { bearer, isClipToken } from "../_lib/auth";
 import { extFor, imageDims, sha1hex } from "../_lib/image";
 import { assertPublicUrl, safeFetch } from "../_lib/ssrf";
 import { clientIp, rateLimit, tooManyRequests } from "../_lib/ratelimit";
+import { gemini, geminiDisabled, geminiText, hasGeminiKey } from "../_lib/gemini";
 
 export const maxDuration = 120;
 
@@ -15,6 +16,49 @@ function admin() {
   return createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, key, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
+}
+
+const CAPTION_VERSION = 2;
+
+/** Fire-and-forget AI enrichment: caption + tags via Gemini, then update the DB row. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function enrichItem(db: any, itemId: string, storagePath: string, title: string | null) {
+  if (!hasGeminiKey() || geminiDisabled()) return;
+  try {
+    const { data: urlData } = await db.storage.from("media").createSignedUrl(storagePath, 120);
+    if (!urlData?.signedUrl) return;
+    const img = await fetch(urlData.signedUrl, { signal: AbortSignal.timeout(15000) });
+    if (!img.ok) return;
+    const type = img.headers.get("content-type") ?? "image/webp";
+    const b64 = Buffer.from(await img.arrayBuffer()).toString("base64");
+
+    const prompt = `You are analysing a design reference for a designer's moodboard${title ? ` titled "${title}"` : ""}. Describe what you SEE in precise design vocabulary — this text powers visual-similarity matching and search, so favour how it looks over what it is for.
+
+Reply with JSON only:
+{"caption": "<2-3 sentences covering, in this order: layout structure, typography treatment, colour theme, then overall mood and subject>",
+"tags": ["<10-14 lowercase tags drawn ONLY from what is visible>"]}
+
+Prefer these canonical terms in tags whenever they apply (consistency matters more than variety; add other specific tags freely after them):
+- layout: large hero, bento grid, split screen, floating cards, full-bleed imagery, centered composition, asymmetric layout, dense grid, generous whitespace
+- typography: oversized display, grotesque sans, editorial serif, condensed caps, mono labels, script accent, mixed type scale
+- palette: soft pastels, monochrome dark, monochrome light, warm neutrals, earthy tones, acid accents, high contrast, muted palette, jewel tones
+- mood: minimal, brutalist, playful, elegant, technical, retro, organic, luxurious, editorial, experimental`;
+
+    const res = await gemini({
+      contents: [{ role: "user", parts: [
+        { inlineData: { mimeType: type, data: b64 } },
+        { text: prompt },
+      ]}],
+      generationConfig: { maxOutputTokens: 800, responseMimeType: "application/json" },
+    });
+    const out = JSON.parse(geminiText(res));
+    const caption = out.caption ?? null;
+    const tags = Array.isArray(out.tags) ? out.tags.slice(0, 14) : [];
+    if (!caption && !tags.length) return;
+    await db.from("items").update({ ai_caption: caption, tags, caption_v: CAPTION_VERSION }).eq("id", itemId);
+  } catch {
+    // enrichment is best-effort — item is already saved, client backfill will retry
+  }
 }
 
 let cachedUserId: string | null = null;
@@ -195,6 +239,9 @@ export async function POST(req: Request) {
       .select()
       .single();
     if (error) throw error;
+    // Enrich with AI caption + tags before responding — adds ~5-10s but the extension
+    // doesn't need an instant reply, and this guarantees the item is searchable immediately.
+    await enrichItem(db, item.id, path, title);
     return Response.json({ ok: true, id: item.id }, { headers: cors });
   } catch (e) {
     const err = e as Error;
