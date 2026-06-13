@@ -290,9 +290,10 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
       {!compact && (
         <div className="mx-auto mb-3 flex max-w-xl gap-1 rounded-xl border border-white/10 bg-white/[0.03] p-1">
           {([
-            { id: "foryou", label: "For You" },
-            { id: "fresh",  label: "Fresh" },
-            { id: "explore",label: "Explore" },
+            { id: "foryou",   label: "For You" },
+            { id: "fresh",    label: "Fresh" },
+            { id: "trending", label: "Rising" },
+            { id: "explore",  label: "Explore" },
           ] as const).map((m) => (
             <button
               key={m.id}

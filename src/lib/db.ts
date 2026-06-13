@@ -948,7 +948,7 @@ export interface DiscoverFilters {
 }
 
 /** Discovery policy: controls *how* candidates are retrieved, independent of content type. */
-export type DiscoveryMode = "foryou" | "fresh" | "explore";
+export type DiscoveryMode = "foryou" | "fresh" | "explore" | "trending";
 
 export async function corpusSimilar(
   query: string | null,
@@ -958,11 +958,12 @@ export async function corpusSimilar(
   itemId?: string | null,
   minSimOverride?: number,
   filters?: DiscoverFilters,
-  excludeUrls: string[] = []
+  excludeUrls: string[] = [],
+  preVec?: number[] | null,
 ): Promise<Suggestion[]> {
   try {
     // --- v2 path: CLIP 512-dim (preferred when available) ---
-    const v2Result = await corpusSimilarV2(query, spaceId, count, excludeDomains, itemId, minSimOverride, filters, excludeUrls);
+    const v2Result = await corpusSimilarV2(query, spaceId, count, excludeDomains, itemId, minSimOverride, filters, excludeUrls, preVec);
     if (v2Result !== null) return v2Result;
 
     // --- v1 fallback: Voyage 1024-dim ---
@@ -1003,7 +1004,9 @@ export async function corpusSimilar(
 }
 
 /** v2 corpus similarity using CLIP 512-dim index. Returns null when no v2 query
- *  vector can be obtained (not yet embedded), so the caller falls back to v1. */
+ *  vector can be obtained (not yet embedded), so the caller falls back to v1.
+ *  `preVec`: optional pre-computed query vector (e.g. preference-blended centroid)
+ *  that skips the centroid RPC when provided. */
 async function corpusSimilarV2(
   query: string | null,
   spaceId: string | null,
@@ -1013,6 +1016,7 @@ async function corpusSimilarV2(
   minSimOverride: number | undefined,
   filters: DiscoverFilters | undefined,
   excludeUrls: string[],
+  preVec?: number[] | null,
 ): Promise<Suggestion[] | null> {
   try {
     let queryVec: unknown = null;
@@ -1020,6 +1024,10 @@ async function corpusSimilarV2(
     if (itemId) {
       const { data } = await supabase.from("items").select("embedding_v2").eq("id", itemId).single();
       queryVec = data?.embedding_v2 ?? null;
+    }
+    // Use pre-computed preference vector when supplied (skips centroid RPC)
+    if (!queryVec && preVec) {
+      queryVec = preVec;
     }
     if (!queryVec && (spaceId || !query)) {
       const { data } = await supabase.rpc("space_centroid_v2", { p_space_id: spaceId });
@@ -1198,6 +1206,53 @@ async function exploreCorpus(spaceId: string | null, exclude: string[], filters?
   } catch { return []; }
 }
 
+/** L2-normalise a vector so cosine queries stay calibrated after vector arithmetic. */
+function normalizeVec(v: number[]): number[] {
+  const norm = Math.sqrt(v.reduce((s, x) => s + x * x, 0));
+  return norm > 0 ? v.map((x) => x / norm) : v;
+}
+
+/**
+ * Preference vector: liked_centroid − 0.3 × disliked_centroid, L2-normalised.
+ * When there are no dislikes, returns the pure liked centroid (space_centroid_v2).
+ * Returns null when the board has no embedded items.
+ */
+async function preferenceVector(spaceId: string | null, userId: string | null): Promise<number[] | null> {
+  const [{ data: liked }, { data: disliked }] = await Promise.all([
+    supabase.rpc("space_centroid_v2", { p_space_id: spaceId }),
+    userId
+      ? supabase.rpc("dislike_centroid_v2", { p_user_id: userId })
+      : Promise.resolve({ data: null }),
+  ]);
+  if (!liked) return null;
+  const likedArr = liked as number[];
+  if (!disliked) return likedArr;
+  const dislikedArr = disliked as number[];
+  if (likedArr.length !== dislikedArr.length) return likedArr;
+  const blended = likedArr.map((v, i) => v - 0.3 * (dislikedArr[i] ?? 0));
+  return normalizeVec(blended);
+}
+
+/** Trending lane: corpus rows with positive engagement velocity (14-day window). */
+async function trendingCorpus(exclude: string[], filters?: DiscoverFilters): Promise<Suggestion[]> {
+  try {
+    const excludeDomains = [...new Set(exclude.map(toDomain))].filter(Boolean);
+    const excludeUrls = exclude.filter((e) => /^https?:\/\//i.test(e));
+    const { data, error } = await supabase.rpc("trending_corpus_v2", {
+      p_count: 30,
+      p_exclude: excludeDomains.slice(0, 400),
+      p_kind: filters?.kind ?? null,
+      p_exclude_urls: excludeUrls.slice(0, 400),
+    });
+    if (error || !data?.length) return [];
+    return (data as FreshRow[]).map((r) => ({
+      url: r.url, title: r.title, image: r.image, domain: r.domain,
+      source: `index/${r.source}`,
+      blurb: r.tags?.length ? r.tags.slice(0, 3).join(", ") : null,
+    }));
+  } catch { return []; }
+}
+
 /** Log a discovery interaction — fire-and-forget, never throws. */
 export async function logDiscoveryEvent(
   url: string,
@@ -1242,12 +1297,27 @@ export async function discover(query: string | null, extraExclude: string[] = []
     // thin explore pool → fall through to For You
   }
 
+  // --- Trending lane: engagement-velocity ranked corpus ---
+  if (discoveryMode === "trending" && !query && mode !== "type") {
+    const trending = await trendingCorpus(exclude, filters);
+    if (trending.length >= 6) return mmrDiversify(trending);
+    // no trending data yet → fall through to For You
+  }
+
   // --- For You lane (default) + graded visual-similar path ---
+  // Preference vector: liked centroid − 0.3 × disliked centroid (negative taste signal).
+  // Only used on the pure For You path with no specific item/query reference.
+  let prefVec: number[] | null = null;
+  if (discoveryMode === "foryou" && !query && !similarToItemId && !graded && mode !== "type") {
+    const { data: auth } = await supabase.auth.getUser();
+    prefVec = await preferenceVector(tasteSpaceId ?? null, auth?.user?.id ?? null);
+  }
+
   let corpus: Suggestion[] = [];
   if (mode !== "type") {
     const excludeDomains = [...new Set([...exclude.map(toDomain), ...domains])].filter(Boolean);
     const excludeUrls = exclude.filter((e) => /^https?:\/\//i.test(e));
-    corpus = await corpusSimilar(query, tasteSpaceId ?? null, 24, excludeDomains, similarToItemId, graded ? 0.25 : undefined, filters, excludeUrls);
+    corpus = await corpusSimilar(query, tasteSpaceId ?? null, 24, excludeDomains, similarToItemId, graded ? 0.25 : undefined, filters, excludeUrls, prefVec);
     // palette filtering only the index can honour — return directly, live-web has unknown colours
     if (filters?.color) return corpus;
     // Phase 1: the corpus≥10 early-return bypass is removed — always run the full pipeline
@@ -1282,7 +1352,7 @@ export async function discover(query: string | null, extraExclude: string[] = []
  *  pixels from the board. Returns null ONLY when the board has no described items at all;
  *  if just the brief generation fails (Gemini down), brief is null but the caller can still
  *  proceed — corpus-centroid retrieval doesn't need a brief. */
-export async function boardBrief(spaceId: string, name?: string): Promise<{ brief: string | null; image: string | null } | null> {
+export async function boardBrief(spaceId: string, name?: string): Promise<{ brief: string | null; image: string | null; images: string[] } | null> {
   const { data } = await supabase
     .from("items")
     .select(ITEM_COLS)
@@ -1308,20 +1378,23 @@ export async function boardBrief(spaceId: string, name?: string): Promise<{ brie
     });
     if (res.ok) brief = (await res.json()).brief ?? null;
   } catch { /* brief is a nice-to-have; centroid retrieval works without it */ }
-  // Reference for the visual judge: the item NEAREST the board's centroid, not the most
-  // recent one — recency picks outliers (a stark-white capture on an otherwise dark board)
-  // and the judge then grades against the wrong aesthetic.
-  let repThumb: string | null = null;
+  // Rep thumbs: items NEAREST the board's centroid (top 3), not most-recent.
+  // Returns multiple references for multi-reference board search.
+  let repThumbs: string[] = [];
   try {
-    const { data: reps } = await supabase.rpc("space_rep_thumbs", { p_space_id: spaceId, p_count: 1 });
-    repThumb = (reps as { thumb_path: string }[] | null)?.[0]?.thumb_path ?? null;
+    const { data: reps } = await supabase.rpc("space_rep_thumbs", { p_space_id: spaceId, p_count: 3 });
+    repThumbs = ((reps as { thumb_path: string }[] | null) ?? [])
+      .map((r) => r.thumb_path)
+      .filter(Boolean);
   } catch { /* fall through to recency */ }
-  if (!repThumb) {
+  if (!repThumbs.length) {
     const rep = items.find((i) => i.thumb_path && i.type === "image") ?? items.find((i) => i.thumb_path);
-    repThumb = rep?.thumb_path ?? null;
+    if (rep?.thumb_path) repThumbs = [rep.thumb_path];
   }
-  const image = repThumb ? (await signedUrls([repThumb])).get(repThumb) ?? null : null;
-  return { brief, image };
+  const urlMap = repThumbs.length ? await signedUrls(repThumbs) : new Map<string, string>();
+  const images = repThumbs.map((p) => urlMap.get(p)).filter((u): u is string => !!u);
+  // Keep backward-compat: primary `image` = first rep thumb
+  return { brief, image: images[0] ?? null, images };
 }
 
 /** Idle corpus maintenance, called once per app load: drain a few pending embeds; full
