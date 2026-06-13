@@ -9,7 +9,7 @@
  * CF's public catalog. HuggingFace hosts the same model with a compatible API.
  *
  * Env vars:
- *   HF_API_TOKEN    — HuggingFace API token (read access is sufficient)
+ *   HF_API_TOKEN    — HuggingFace fine-grained token with "Make calls to Inference Providers" permission
  */
 import { voyageEmbed, type VoyageContent } from "./voyage";
 
@@ -26,8 +26,9 @@ export interface Embedder {
 
 // ---------- HuggingFace Inference API CLIP ViT-B/32 ----------
 
+// New HF Inference Providers URL (api-inference.huggingface.co is deprecated/unreachable)
 const HF_CLIP_URL =
-  "https://api-inference.huggingface.co/models/openai/clip-vit-base-patch32";
+  "https://router.huggingface.co/hf-inference/models/openai/clip-vit-base-patch32";
 
 export function hasHfKey(): boolean {
   return !!process.env.HF_API_TOKEN;
