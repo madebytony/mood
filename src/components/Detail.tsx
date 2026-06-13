@@ -11,6 +11,9 @@ import { notice } from "./ui";
 import { useDialog } from "./useDialog";
 import { SparklesIcon, XIcon, ChevronLeftIcon, ChevronRightIcon, WarningIcon, ExternalLinkIcon, BookmarkIcon, CheckSquareIcon } from "./icons";
 
+// Module-level cache so re-opening the same project doesn't re-fetch
+const previewCache = new Map<string, string[]>();
+
 interface StudioWork {
   url: string;
   title: string | null;
@@ -76,6 +79,9 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
   const [galleryIdx, setGalleryIdx] = useState<number | null>(null); // null = gallery closed
   const [savingWork, setSavingWork] = useState<string | null>(null);
   const [savedWork, setSavedWork] = useState<Set<string>>(new Set());
+  const [previewImages, setPreviewImages] = useState<string[] | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [imageIdx, setImageIdx] = useState(0);
   const palette = paletteMode ? paletteSimilar(item, allItems) : [];
   const shown = paletteMode ? palette : rel;
 
@@ -116,6 +122,38 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
     })();
     return () => { alive = false; };
   }, [item.source_domain]);
+
+  // Fetch project preview images when gallery opens on a work item
+  useEffect(() => {
+    if (galleryIdx === null || !studioData) return;
+    const w = studioData.work[galleryIdx];
+    if (!w?.url) return;
+    setImageIdx(0);
+    const cached = previewCache.get(w.url);
+    if (cached) { setPreviewImages(cached); setPreviewLoading(false); return; }
+    setPreviewImages(null);
+    setPreviewLoading(true);
+    let alive = true;
+    (async () => {
+      const token = await authToken();
+      if (!token || !alive) return;
+      try {
+        const res = await fetch(`/api/project-preview?url=${encodeURIComponent(w.url)}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok || !alive) return;
+        const data = await res.json();
+        const imgs: string[] = data.images ?? [];
+        if (imgs.length > 0 && alive) {
+          previewCache.set(w.url, imgs);
+          setPreviewImages(imgs);
+        }
+      } catch {}
+      if (alive) setPreviewLoading(false);
+    })();
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [galleryIdx, studioData]);
 
   // Sign any palette-neighbour thumbnails not already covered by the grid's signed URLs.
   useEffect(() => {
@@ -270,29 +308,35 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
           <div className={`md:flex-1 ${scrollMode ? "md:overflow-y-auto" : "md:grid md:place-items-center md:overflow-hidden"}`}>
             {galleryIdx !== null && studioData && studioData.work[galleryIdx] ? (() => {
               const w = studioData.work[galleryIdx];
-              const hasPrev = galleryIdx > 0;
-              const hasNext = galleryIdx < studioData.work.length - 1;
+              // Use preview images if loaded, otherwise fall back to single corpus image
+              const imgs = previewImages ?? (w.image ? [w.image] : []);
+              const currentImg = imgs[imageIdx] ?? imgs[0] ?? null;
+              const hasPrev = imageIdx > 0;
+              const hasNext = imageIdx < imgs.length - 1;
               return (
                 <div className="relative flex h-full flex-col">
                   <div className="flex items-center justify-between gap-2 border-b border-white/5 px-4 py-2">
                     <div className="flex items-center gap-2 min-w-0">
-                      <button onClick={() => setGalleryIdx(null)} className="text-[11px] text-zinc-400 hover:text-zinc-200">
+                      <button onClick={() => { setGalleryIdx(null); setPreviewImages(null); setImageIdx(0); }} className="text-[11px] text-zinc-400 hover:text-zinc-200">
                         ← Back
                       </button>
-                      <span className="text-[11px] text-zinc-600">
-                        {galleryIdx + 1} / {studioData.work.length}
-                      </span>
+                      {imgs.length > 1 && (
+                        <span className="text-[11px] text-zinc-600">
+                          {imageIdx + 1} / {imgs.length}
+                        </span>
+                      )}
+                      {previewLoading && (
+                        <span className="text-[11px] text-zinc-500 animate-pulse">Loading project...</span>
+                      )}
                     </div>
-                    {w.title && (
-                      <a href={w.url} target="_blank" rel="noreferrer" className="flex items-center gap-1 truncate text-[11px] text-zinc-300 hover:text-white hover:underline">
-                        {w.title} <ExternalLinkIcon className="h-3 w-3 shrink-0" />
-                      </a>
-                    )}
+                    <a href={w.url} target="_blank" rel="noreferrer" className="flex items-center gap-1 truncate text-[11px] text-zinc-300 hover:text-white hover:underline">
+                      {w.title ?? "Visit site"} <ExternalLinkIcon className="h-3 w-3 shrink-0" />
+                    </a>
                   </div>
                   <div className="relative flex-1 grid place-items-center overflow-hidden">
                     {hasPrev && (
                       <button
-                        onClick={() => setGalleryIdx(galleryIdx - 1)}
+                        onClick={() => setImageIdx(imageIdx - 1)}
                         className="absolute left-3 top-1/2 z-20 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full bg-black/50 text-white backdrop-blur hover:bg-black/70"
                       >
                         <ChevronLeftIcon className="h-5 w-5" />
@@ -300,38 +344,61 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
                     )}
                     {hasNext && (
                       <button
-                        onClick={() => setGalleryIdx(galleryIdx + 1)}
+                        onClick={() => setImageIdx(imageIdx + 1)}
                         className="absolute right-3 top-1/2 z-20 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full bg-black/50 text-white backdrop-blur hover:bg-black/70"
                       >
                         <ChevronRightIcon className="h-5 w-5" />
                       </button>
                     )}
-                    {w.image ? (
+                    {currentImg ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={w.image} alt={w.title ?? ""} className="max-h-[72dvh] w-full object-contain" />
+                      <img
+                        src={currentImg}
+                        alt={w.title ?? ""}
+                        className="max-h-[72dvh] w-full object-contain"
+                        onError={(e) => {
+                          const el = e.target as HTMLImageElement;
+                          const orig = el.getAttribute("data-orig");
+                          if (!orig) {
+                            el.setAttribute("data-orig", el.src);
+                            el.src = `/api/proxy-image?url=${encodeURIComponent(el.src)}`;
+                          } else {
+                            el.style.display = "none";
+                          }
+                        }}
+                      />
                     ) : (
                       <div className="text-zinc-700">No image</div>
                     )}
                   </div>
-                  {/* thumbnail strip */}
-                  <div className="no-scrollbar flex gap-1.5 overflow-x-auto border-t border-white/5 p-2">
-                    {studioData.work.map((wi, i) => (
-                      <button
-                        key={wi.url}
-                        onClick={() => setGalleryIdx(i)}
-                        className={`h-12 w-16 shrink-0 overflow-hidden rounded-md border transition-colors ${
-                          i === galleryIdx ? "border-white/40" : "border-white/10 hover:border-white/25"
-                        }`}
-                      >
-                        {wi.image ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img src={wi.image} alt="" className="h-full w-full object-cover" />
-                        ) : (
-                          <div className="grid h-full w-full place-items-center bg-white/5 text-[8px] text-zinc-600">?</div>
-                        )}
-                      </button>
-                    ))}
-                  </div>
+                  {/* thumbnail strip — project images when available, otherwise work items */}
+                  {imgs.length > 1 && (
+                    <div className="no-scrollbar flex gap-1.5 overflow-x-auto border-t border-white/5 p-2">
+                      {imgs.map((src, i) => (
+                        <button
+                          key={src}
+                          onClick={() => setImageIdx(i)}
+                          className={`h-12 w-16 shrink-0 overflow-hidden rounded-md border transition-colors ${
+                            i === imageIdx ? "border-white/40" : "border-white/10 hover:border-white/25"
+                          }`}
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={src}
+                            alt=""
+                            className="h-full w-full object-cover"
+                            onError={(e) => {
+                              const el = e.target as HTMLImageElement;
+                              if (!el.getAttribute("data-orig")) {
+                                el.setAttribute("data-orig", el.src);
+                                el.src = `/api/proxy-image?url=${encodeURIComponent(el.src)}`;
+                              }
+                            }}
+                          />
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               );
             })() : fullUrl ? (
