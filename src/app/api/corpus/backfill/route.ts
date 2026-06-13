@@ -97,7 +97,8 @@ async function backfillCorpus(batch: number): Promise<{ embedded: number; remain
   let embedded = 0;
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
-    const img = imgResults[i].status === "fulfilled" ? imgResults[i].value : null;
+    const imgResult = imgResults[i];
+    const img = imgResult.status === "fulfilled" ? imgResult.value : null;
     const colors = img ? await extractColorsFromImage(img.buf) : [];
     const palette_lab = img ? await extractLabPalette(img.buf) : [];
     const text = corpusEmbedText(row, colors);
