@@ -7,11 +7,13 @@ import { LAB_SWATCHES, FACET_VOCABULARY } from "@/lib/facets";
 import { signedUrls } from "@/lib/db";
 import { COLOR_HEX, COLOR_NAMES } from "@/lib/media";
 import { SkeletonGrid } from "./ui";
-import { ThumbUpIcon, ThumbDownIcon, RefreshIcon, ArrowDownIcon, InboxIcon } from "./icons";
+import { ThumbUpIcon, ThumbDownIcon, RefreshIcon, ArrowDownIcon, InboxIcon, BookmarkIcon } from "./icons";
 
 interface Props {
   spaces: Space[];
   inboxId: string | undefined;
+  /** Bookmark a URL (auto-creates Bookmarks space on first use). */
+  onBookmark?: (url: string) => Promise<void>;
   onOpenItem: (item: Item) => void;
   onSaved: () => void;
   toast: (msg: string, kind?: "info" | "error") => void;
@@ -38,7 +40,7 @@ type TypeTab = "foundries" | "fonts" | "inuse";
  *  grey placeholder while it generates the capture, so we retry once to pull the finished shot. */
 const shot = (u: string) => `https://s.wordpress.com/mshots/v1/${encodeURIComponent(u)}?w=600&h=750`;
 
-export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, compact = false, initialQuery, initialImage, defaultSpaceId, mode, tasteSpaceId, similarToItemId, briefControls = false }: Props) {
+export default function Feed({ spaces, inboxId, onBookmark, onOpenItem, onSaved, toast, compact = false, initialQuery, initialImage, defaultSpaceId, mode, tasteSpaceId, similarToItemId, briefControls = false }: Props) {
   const [cards, setCards] = useState<FeedCard[]>([]);
   const [urls, setUrls] = useState<Map<string, string>>(new Map());
   const [query, setQuery] = useState("");
@@ -53,6 +55,7 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
   const [loading, setLoading] = useState(false);
   const [picking, setPicking] = useState<Suggestion | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
+  const [bookmarking, setBookmarking] = useState<string | null>(null);
   // Suggestion URLs whose image (og + screenshot fallback) both failed — hide rather than
   // show a broken tile. (Valid-but-poor images, e.g. logos/loading screens, need the server-side
   // quality gate — see DISCOVERY-V3-PLAN §8.)
@@ -111,7 +114,17 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
               }
             : undefined;
         const [suggestions, gems] = await Promise.all([
-          discover(q, [...shown.current], mode, initialImage, tasteSpaceId, similarToItemId, filters, discoveryMode),
+          discover(q, [...shown.current], mode, initialImage, tasteSpaceId, similarToItemId, filters, discoveryMode,
+            // Progressive display: show corpus/streamed results immediately while the full
+            // pipeline runs. Each call replaces previous partial results for this load sequence.
+            (partial) => {
+              if (seq !== loadSeq.current) return; // superseded
+              const fresh = partial.filter((s) => !shown.current.has(s.url));
+              if (!fresh.length) return;
+              const mixed = fresh.map((s): FeedCard => ({ kind: "suggestion", s }));
+              setCards((prev) => (append ? [...prev, ...mixed] : mixed));
+            },
+          ),
           q || compact || append ? Promise.resolve([] as Item[]) : resurface(6),
         ]);
         if (seq !== loadSeq.current) return; // superseded by a newer load
@@ -200,6 +213,19 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
       logDiscoveryEvent(s.url, "like", { lane: discoveryMode, model }).catch(() => {}),
     ]);
     toast("Noted — Find More will lean this way");
+  }
+
+  async function bookmark(s: Suggestion) {
+    if (!onBookmark || bookmarking) return;
+    setBookmarking(s.url);
+    try {
+      await onBookmark(s.url);
+      toast("Bookmarked");
+    } catch {
+      toast("Couldn't bookmark", "error");
+    } finally {
+      setBookmarking(null);
+    }
   }
 
   /** Pinterest loop: next batch blends your base query with what you've engaged with.
@@ -378,6 +404,9 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
           <SkeletonGrid count={10} />
         </div>
       )}
+      {loading && filteredCards.length > 0 && (
+        <div className="pb-2 text-center text-xs text-zinc-600">Refining matches…</div>
+      )}
 
       {!loading && !cards.length && (compact || query.trim() || lane !== "all" || paletteFilter) && (
         <div className="py-10 text-center text-xs text-zinc-600">
@@ -456,6 +485,16 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
                 <button className={chip} title="Not for me" onClick={() => dismiss(card.s)}>
                   <ThumbDownIcon className="h-3.5 w-3.5" />
                 </button>
+                {onBookmark && (
+                  <button
+                    className={chip}
+                    title="Save to Bookmarks"
+                    onClick={() => bookmark(card.s)}
+                    disabled={bookmarking === card.s.url}
+                  >
+                    <BookmarkIcon className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
             </div>
           ) : (
