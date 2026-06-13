@@ -1,5 +1,20 @@
+import { createClient } from "@supabase/supabase-js";
 import { isAuthed } from "../../_lib/auth";
 import { harvest, embedPending, recolorPending, hygiene } from "../../_lib/corpus";
+
+async function updateTrendScores(): Promise<{ trendRowsUpdated: number }> {
+  try {
+    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!key) return { trendRowsUpdated: 0 };
+    const db = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, key, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    const { data } = await db.rpc("update_trend_scores");
+    return { trendRowsUpdated: Number(data ?? 0) };
+  } catch {
+    return { trendRowsUpdated: 0 };
+  }
+}
 
 export const maxDuration = 120;
 
@@ -22,7 +37,9 @@ export async function GET(req: Request) {
     const h = await harvest();
     const hyg = await hygiene(12);
     const e = await embedPending(40);
-    return Response.json({ ...h, hygiene: hyg, ...e });
+    // Daily: recompute trend_score (14-day engagement velocity) and persist
+    const { trendRowsUpdated } = await updateTrendScores();
+    return Response.json({ ...h, hygiene: hyg, ...e, trendRowsUpdated });
   } catch (e) {
     return Response.json({ error: (e as Error).message }, { status: 502 });
   }

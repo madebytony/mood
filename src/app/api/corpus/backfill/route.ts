@@ -238,6 +238,47 @@ async function backfillPaletteLab(batch: number): Promise<{ filled: number; rema
 }
 
 /**
+ * Fill quality_score for corpus rows that have embedding_v2 but no score yet.
+ * Uses the SQL heuristic function — no API calls, runs on a large batch quickly.
+ */
+async function backfillQualityScores(batch: number): Promise<{ scored: number; remaining: number }> {
+  const db = admin();
+  const { data } = await db
+    .from("web_corpus")
+    .select("id,title,image,tags,source,blurb")
+    .not("embedding_v2", "is", null)
+    .is("quality_score", null)
+    .order("created_at", { ascending: true })
+    .limit(batch);
+
+  let scored = 0;
+  for (const row of data ?? []) {
+    const hasImage = !!row.image && row.image.length > 10;
+    const hasTitle = !!row.title && row.title.length > 5;
+    const tagCount = (row.tags ?? []).length;
+    const hasBlurb = !!row.blurb && row.blurb.length > 10;
+    const trustedSources = new Set(["typewolf", "fontsInUse", "itsnicetat", "eyeondesign", "are.na", "arena", "brandnew", "identitydesigned"]);
+    let score = 0;
+    if (hasImage) score += 2;
+    if (hasTitle) score += 2;
+    if (tagCount >= 2) score += 2;
+    if (hasBlurb) score += 1;
+    if (trustedSources.has(row.source)) score += 2;
+    else if ((row.source ?? "").startsWith("websearch")) score += 1;
+    const quality_score = Math.min(10, score) as number;
+    const { error } = await db.from("web_corpus").update({ quality_score }).eq("id", row.id);
+    if (!error) scored++;
+  }
+
+  const { count } = await db
+    .from("web_corpus")
+    .select("*", { count: "exact", head: true })
+    .not("embedding_v2", "is", null)
+    .is("quality_score", null);
+  return { scored, remaining: count ?? 0 };
+}
+
+/**
  * Fill facets for corpus rows that have tags/blurb but no facets yet.
  * Pure JS inference — no API calls. Runs cheaply on a large batch.
  */
@@ -289,13 +330,14 @@ export async function GET(req: Request) {
   }
   try {
     const corpusBatch = hasCfKey() ? CF_CORPUS_BATCH : VOYAGE_CORPUS_BATCH;
-    const [corpus, items, paletteLab, facets] = await Promise.all([
+    const [corpus, items, paletteLab, facets, quality] = await Promise.all([
       backfillCorpus(corpusBatch),
       backfillItems(hasCfKey() ? CF_ITEMS_BATCH : 4),
       backfillPaletteLab(30),
       backfillFacets(200),
+      backfillQualityScores(300),
     ]);
-    return Response.json({ corpus, items, paletteLab, facets });
+    return Response.json({ corpus, items, paletteLab, facets, quality });
   } catch (e) {
     return Response.json({ error: (e as Error).message }, { status: 502 });
   }
@@ -315,12 +357,14 @@ export async function POST(req: Request) {
   const itemsBatch = Math.min(Math.max(Number(body.items ?? 0), 0), 100);
   const paletteBatch = Math.min(Math.max(Number(body.paletteLab ?? 30), 0), 200);
   const facetBatch = Math.min(Math.max(Number(body.facets ?? 200), 0), 500);
+  const qualityBatch = Math.min(Math.max(Number(body.quality ?? 300), 0), 1000);
   try {
     const out: Record<string, unknown> = {};
     if (corpusBatch > 0) out.corpus = await backfillCorpus(corpusBatch);
     if (itemsBatch > 0) out.items = await backfillItems(itemsBatch);
     if (paletteBatch > 0) out.paletteLab = await backfillPaletteLab(paletteBatch);
     if (facetBatch > 0) out.facets = await backfillFacets(facetBatch);
+    if (qualityBatch > 0) out.quality = await backfillQualityScores(qualityBatch);
     return Response.json(out);
   } catch (e) {
     return Response.json({ error: (e as Error).message }, { status: 502 });

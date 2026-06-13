@@ -119,7 +119,8 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
         const fresh = suggestions.filter((s) => !shown.current.has(s.url));
         for (const s of fresh) shown.current.add(s.url);
         // Log impressions for the learning loop — fire-and-forget
-        for (const s of fresh) logDiscoveryEvent(s.url, "impression", { lane: discoveryMode }).catch(() => {});
+        const model = `clip-v2/${discoveryMode}`;
+        for (const s of fresh) logDiscoveryEvent(s.url, "impression", { lane: discoveryMode, model }).catch(() => {});
         const mixed: FeedCard[] = [];
         const sug = fresh.map((s): FeedCard => ({ kind: "suggestion", s }));
         const lib = gems.map((item): FeedCard => ({ kind: "library", item }));
@@ -181,17 +182,19 @@ export default function Feed({ spaces, inboxId, onOpenItem, onSaved, toast, comp
 
   async function dismiss(s: Suggestion) {
     setCards((c) => c.filter((x) => x.kind !== "suggestion" || x.s.url !== s.url));
+    const model = `clip-v2/${discoveryMode}`;
     await Promise.all([
       markSeen(s.url, "disliked").catch(() => {}),
-      logDiscoveryEvent(s.url, "dislike", { lane: discoveryMode }).catch(() => {}),
+      logDiscoveryEvent(s.url, "dislike", { lane: discoveryMode, model }).catch(() => {}),
     ]);
   }
 
   async function like(s: Suggestion) {
     engage(s);
+    const model = `clip-v2/${discoveryMode}`;
     await Promise.all([
       markSeen(s.url, "liked").catch(() => {}),
-      logDiscoveryEvent(s.url, "like", { lane: discoveryMode }).catch(() => {}),
+      logDiscoveryEvent(s.url, "like", { lane: discoveryMode, model }).catch(() => {}),
     ]);
     toast("Noted — Find More will lean this way");
   }
