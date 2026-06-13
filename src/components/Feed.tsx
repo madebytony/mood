@@ -247,7 +247,7 @@ export default function Feed({ spaces, inboxId, onBookmark, onOpenItem, onSaved,
           e.preventDefault();
           load(query.trim() || null);
         }}
-        className="mx-auto mb-4 flex max-w-xl gap-2 pt-1"
+        className="mx-auto mb-2 flex max-w-xl gap-2 pt-1"
       >
         <input
           value={query}
@@ -320,30 +320,28 @@ export default function Feed({ spaces, inboxId, onBookmark, onOpenItem, onSaved,
       )}
 
       {!compact && (
-        <div className="mx-auto mb-3 flex max-w-xl gap-1 rounded-xl border border-white/10 bg-white/[0.03] p-1">
-          {([
-            { id: "foryou",   label: "For You" },
-            { id: "fresh",    label: "Fresh" },
-            { id: "trending", label: "Rising" },
-            { id: "explore",  label: "Explore" },
-          ] as const).map((m) => (
-            <button
-              key={m.id}
-              onClick={() => setDiscoveryMode(m.id)}
-              className={`flex-1 rounded-lg px-3 py-1.5 text-xs transition-colors ${
-                discoveryMode === m.id
-                  ? "bg-white text-black"
-                  : "text-zinc-400 hover:bg-white/10 hover:text-white"
-              }`}
-            >
-              {m.label}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {!compact && (
-        <div className="mx-auto mb-4 flex max-w-xl flex-wrap items-center justify-center gap-1.5">
+        <div className="mx-auto mb-3 flex max-w-xl items-center gap-2">
+          <div className="flex gap-1 rounded-xl border border-white/10 bg-white/[0.03] p-1">
+            {([
+              { id: "foryou",   label: "For You" },
+              { id: "fresh",    label: "Fresh" },
+              { id: "trending", label: "Rising" },
+              { id: "explore",  label: "Explore" },
+            ] as const).map((m) => (
+              <button
+                key={m.id}
+                onClick={() => setDiscoveryMode(m.id)}
+                className={`rounded-lg px-2.5 py-1 text-[11px] transition-colors ${
+                  discoveryMode === m.id
+                    ? "bg-white text-black"
+                    : "text-zinc-400 hover:bg-white/10 hover:text-white"
+                }`}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+          <span className="h-4 w-px bg-white/10" />
           {([
             { id: "all", label: "Everything" },
             { id: "site", label: "Site design" },
@@ -352,7 +350,7 @@ export default function Feed({ spaces, inboxId, onBookmark, onOpenItem, onSaved,
             <button
               key={l.id}
               onClick={() => setLane(l.id)}
-              className={`rounded-full border px-3 py-1 text-[11px] ${
+              className={`rounded-full border px-2.5 py-1 text-[11px] ${
                 lane === l.id
                   ? "border-white bg-white text-black"
                   : "border-white/10 text-zinc-400 hover:border-white/30 hover:text-zinc-200"
@@ -361,18 +359,20 @@ export default function Feed({ spaces, inboxId, onBookmark, onOpenItem, onSaved,
               {l.label}
             </button>
           ))}
-          <span className="mx-1 h-4 w-px bg-white/10" />
-          {COLOR_NAMES.map((c) => (
-            <button
-              key={c}
-              onClick={() => setPaletteFilter(paletteFilter === c ? null : c)}
-              title={`${c} palette`}
-              className={`h-[18px] w-[18px] shrink-0 rounded-full border transition-transform ${
-                paletteFilter === c ? "scale-125 border-white" : "border-white/20 hover:scale-110"
-              }`}
-              style={{ background: COLOR_HEX[c] }}
-            />
-          ))}
+          <span className="h-4 w-px bg-white/10" />
+          <div className="flex items-center gap-1">
+            {COLOR_NAMES.map((c) => (
+              <button
+                key={c}
+                onClick={() => setPaletteFilter(paletteFilter === c ? null : c)}
+                title={`${c} palette`}
+                className={`h-4 w-4 shrink-0 rounded-full border transition-transform ${
+                  paletteFilter === c ? "scale-125 border-white" : "border-white/20 hover:scale-110"
+                }`}
+                style={{ background: COLOR_HEX[c] }}
+              />
+            ))}
+          </div>
         </div>
       )}
 

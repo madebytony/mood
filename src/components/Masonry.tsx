@@ -20,6 +20,7 @@ interface Props {
   onOpenStack?: (s: Stack) => void;
   selected?: Set<string>;
   onToggleSelect?: (id: string) => void;
+  columns?: number; // override responsive column count (2-6)
   /** Rubber-band selection (desktop): replaces selection, or merges when shift is held. */
   onMarquee?: (ids: string[], additive: boolean) => void;
   ghosts?: { id: number; label: string }[];
@@ -209,6 +210,7 @@ export default function Masonry({
   onToggleSelect,
   onMarquee,
   ghosts = [],
+  columns,
 }: Props) {
   const gridRef = useRef<HTMLDivElement>(null);
   const [band, setBand] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
@@ -270,7 +272,8 @@ export default function Masonry({
       onPointerMove={onBandMove}
       onPointerUp={onBandUp}
       onPointerCancel={onBandUp}
-      className={`columns-2 gap-3 px-3 pb-24 sm:columns-3 lg:columns-4 xl:columns-5 2xl:columns-6 ${band ? "select-none" : ""}`}
+      style={columns ? { columnCount: columns } : undefined}
+      className={`gap-3 px-3 pb-24 ${columns ? "" : "columns-2 sm:columns-3 lg:columns-4 xl:columns-5 2xl:columns-6"} ${band ? "select-none" : ""}`}
     >
       {band && (
         <div

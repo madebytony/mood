@@ -135,6 +135,7 @@ function App() {
   const [aiItems, setAiItems] = useState<Item[] | null>(null); // AI search results overlay
   const [stackView, setStackView] = useState<{ stack: Stack; items: Item[] } | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [gridCols, setGridCols] = useState<number | null>(null); // null = responsive default
   const [aiBusy, setAiBusy] = useState(false);
   const [ready, setReady] = useState(false);
   // Grid pagination (Fix: was a hard 500-item cap that silently hid older saves).
@@ -1119,22 +1120,40 @@ function App() {
       )}
 
       <main className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center gap-3 px-4 pb-2 pt-[max(1rem,env(safe-area-inset-top))]">
+        <header className="flex items-center gap-2 px-4 pb-2 pt-[max(1rem,env(safe-area-inset-top))]">
           <h1 className="truncate text-sm font-medium text-zinc-300">{currentName}</h1>
           {currentSpace && (
             <button
               onClick={toggleView}
-              className="rounded-lg border border-white/10 px-2.5 py-1 text-[11px] text-zinc-400 hover:border-white/30 hover:text-zinc-200"
+              className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:border-white/30 hover:text-zinc-200"
               title="Toggle grid / board"
             >
               <span className="flex items-center gap-1.5">{showBoard ? <GridIcon className="h-3.5 w-3.5" /> : <BoardIcon className="h-3.5 w-3.5" />}{showBoard ? "Grid" : "Board"}</span>
             </button>
           )}
+          {currentSpace && !showBoard && (
+            <div className="flex items-center rounded-lg border border-white/10">
+              {[2, 3, 4, 5, 6].map((n) => (
+                <button
+                  key={n}
+                  onClick={() => setGridCols(gridCols === n ? null : n)}
+                  className={`px-1.5 py-1 text-[10px] ${
+                    gridCols === n
+                      ? "bg-white/15 text-zinc-200"
+                      : "text-zinc-500 hover:text-zinc-300"
+                  } ${n === 2 ? "rounded-l-[7px]" : ""} ${n === 6 ? "rounded-r-[7px]" : ""}`}
+                  title={`${n} columns${gridCols === n ? " (click to reset)" : ""}`}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+          )}
           {currentSpace && (
             <button
               onClick={exploreBoardStyle}
               disabled={briefBusy}
-              className="rounded-lg border border-white/10 px-2.5 py-1 text-[11px] text-zinc-400 hover:border-white/30 hover:text-zinc-200 disabled:opacity-50"
+              className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:border-white/30 hover:text-zinc-200 disabled:opacity-50"
               title="Distil this board's aesthetic and find more like it on the web"
             >
               <span className="flex items-center gap-1.5"><SparklesIcon className="h-3.5 w-3.5" />{briefBusy ? "Reading the board…" : "Explore style"}</span>
@@ -1218,6 +1237,24 @@ function App() {
               Review fonts {reviewCount ? `(${reviewCount})` : ""}
             </button>
           )}
+          {selected !== "home" && !showBoard && (
+            <div className="no-scrollbar flex items-center gap-1 overflow-x-auto">
+              {COLOR_NAMES.map((c) => (
+                <button
+                  key={c}
+                  onClick={() => setColorFilter(colorFilter === c ? null : c)}
+                  title={c}
+                  className={`h-4 w-4 shrink-0 rounded-full border transition-transform ${
+                    colorFilter === c ? "scale-125 border-white" : "border-white/20 hover:scale-110"
+                  }`}
+                  style={{ background: COLOR_HEX[c] }}
+                />
+              ))}
+              {colorFilter && (
+                <button onClick={() => setColorFilter(null)} className="ml-0.5 text-[10px] text-zinc-500 hover:text-zinc-200">✕</button>
+              )}
+            </div>
+          )}
           {selected !== "home" && (
             <div className="ml-auto flex w-full max-w-md items-center gap-1.5">
               <input
@@ -1238,27 +1275,6 @@ function App() {
             </div>
           )}
         </header>
-
-        {selected !== "home" && !showBoard && (
-          <div className="no-scrollbar flex items-center gap-1.5 overflow-x-auto px-4 pb-2">
-            {COLOR_NAMES.map((c) => (
-              <button
-                key={c}
-                onClick={() => setColorFilter(colorFilter === c ? null : c)}
-                title={c}
-                className={`h-5 w-5 shrink-0 rounded-full border transition-transform ${
-                  colorFilter === c ? "scale-125 border-white" : "border-white/20 hover:scale-110"
-                }`}
-                style={{ background: COLOR_HEX[c] }}
-              />
-            ))}
-            {colorFilter && (
-              <button onClick={() => setColorFilter(null)} className="ml-1 text-[11px] text-zinc-500 hover:text-zinc-200">
-                clear
-              </button>
-            )}
-          </div>
-        )}
 
         {selected !== "home" && !showBoard && currentFeedMode === "type" && (
           <div className="no-scrollbar flex items-center gap-1.5 overflow-x-auto px-4 pb-2">
@@ -1347,6 +1363,7 @@ function App() {
                     setSelIds((prev) => new Set(additive ? [...prev, ...ids] : ids))
                   }
                   ghosts={pending}
+                  columns={gridCols ?? undefined}
                 />
               )}
               {search.trim() && (
