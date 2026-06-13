@@ -52,6 +52,8 @@ export default function Feed({ spaces, inboxId, onBookmark, onOpenItem, onSaved,
   const [labFilter, setLabFilter] = useState<[number, number, number] | null>(null);
   const [facetFilters, setFacetFilters] = useState<Record<string, string[]>>({});
   const [discoveryMode, setDiscoveryMode] = useState<DiscoveryMode>("foryou");
+  const [steer, setSteer] = useState("");
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [picking, setPicking] = useState<Suggestion | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
@@ -234,7 +236,7 @@ export default function Feed({ spaces, inboxId, onBookmark, onOpenItem, onSaved,
    *  `initialQuery` as the persistent base so "Find more" keeps the original reference intent. */
   function findMore() {
     const base = compact ? (initialQuery?.trim() ?? "") : query.trim();
-    const q = [base, ...seeds.current].filter(Boolean).join(" ").trim() || null;
+    const q = [base, steer.trim(), ...seeds.current].filter(Boolean).join(" ").trim() || null;
     load(q, true);
   }
 
@@ -263,60 +265,92 @@ export default function Feed({ spaces, inboxId, onBookmark, onOpenItem, onSaved,
       )}
 
       {briefControls && (
-        <div className="mx-auto mb-2 max-w-xl space-y-1.5">
-          {/* LAB colour swatch picker */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-[10px] uppercase tracking-wider text-zinc-600">Colour</span>
-            {LAB_SWATCHES.map((s) => (
-              <button
-                key={s.name}
-                title={s.name}
-                onClick={() => setLabFilter(labFilter && labFilter.every((v, i) => v === s.lab[i]) ? null : s.lab as [number, number, number])}
-                className={`h-5 w-5 shrink-0 rounded-full border transition-transform ${
-                  labFilter && labFilter.every((v, i) => v === s.lab[i])
-                    ? "scale-125 border-white"
-                    : "border-white/20 hover:scale-110"
-                }`}
-                style={{ background: s.hex }}
-              />
-            ))}
-            {labFilter && (
-              <button onClick={() => setLabFilter(null)} className="text-[10px] text-zinc-500 hover:text-zinc-300">✕ clear</button>
+        <div className="mx-auto mb-2 flex max-w-xl items-center gap-2">
+          <form
+            className="flex flex-1 gap-1.5"
+            onSubmit={(e) => { e.preventDefault(); findMore(); }}
+          >
+            <input
+              value={steer}
+              onChange={(e) => setSteer(e.target.value)}
+              placeholder="Steer… e.g. more ui app layouts"
+              className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] outline-none placeholder:text-zinc-600 focus:border-white/30"
+            />
+            {steer.trim() && (
+              <button type="submit" className="shrink-0 rounded-lg bg-white px-2.5 py-1.5 text-[10px] font-medium text-black hover:bg-zinc-200">
+                Go
+              </button>
+            )}
+          </form>
+          <div className="relative">
+            <button
+              onClick={() => setFiltersOpen(!filtersOpen)}
+              className={`rounded-lg border px-2.5 py-1.5 text-[10px] transition-colors ${
+                filtersOpen || labFilter || Object.keys(facetFilters).length
+                  ? "border-white/30 text-zinc-200"
+                  : "border-white/10 text-zinc-500 hover:border-white/20 hover:text-zinc-300"
+              }`}
+            >
+              Filters{(labFilter || Object.keys(facetFilters).length) ? ` (${(labFilter ? 1 : 0) + Object.values(facetFilters).flat().length})` : ""}
+            </button>
+            {filtersOpen && (
+              <div className="absolute right-0 top-full z-20 mt-1.5 w-80 rounded-xl border border-white/10 bg-[#1a1a22]/95 p-3 shadow-2xl backdrop-blur-xl">
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-[9px] uppercase tracking-wider text-zinc-600">Colour</span>
+                    {LAB_SWATCHES.map((s) => (
+                      <button
+                        key={s.name}
+                        title={s.name}
+                        onClick={() => setLabFilter(labFilter && labFilter.every((v, i) => v === s.lab[i]) ? null : s.lab as [number, number, number])}
+                        className={`h-4 w-4 shrink-0 rounded-full border transition-transform ${
+                          labFilter && labFilter.every((v, i) => v === s.lab[i])
+                            ? "scale-125 border-white"
+                            : "border-white/20 hover:scale-110"
+                        }`}
+                        style={{ background: s.hex }}
+                      />
+                    ))}
+                    {labFilter && (
+                      <button onClick={() => setLabFilter(null)} className="text-[9px] text-zinc-500 hover:text-zinc-300">✕</button>
+                    )}
+                  </div>
+                  {Object.entries(FACET_VOCABULARY).map(([facetKey, labels]) => (
+                    <div key={facetKey} className="flex flex-wrap items-center gap-1">
+                      <span className="text-[9px] uppercase tracking-wider text-zinc-600 capitalize">{facetKey}</span>
+                      {labels.map((label) => {
+                        const active = (facetFilters[facetKey] ?? []).includes(label);
+                        return (
+                          <button
+                            key={label}
+                            onClick={() => {
+                              setFacetFilters((prev) => {
+                                const cur = prev[facetKey] ?? [];
+                                const next = active ? cur.filter((x) => x !== label) : [...cur, label];
+                                if (!next.length) {
+                                  const { [facetKey]: _, ...rest } = prev;
+                                  void _;
+                                  return rest;
+                                }
+                                return { ...prev, [facetKey]: next };
+                              });
+                            }}
+                            className={`rounded-full border px-1.5 py-px text-[9px] transition-colors ${
+                              active
+                                ? "border-white bg-white text-black"
+                                : "border-white/10 text-zinc-500 hover:border-white/30 hover:text-zinc-300"
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              </div>
             )}
           </div>
-          {/* Facet chips */}
-          {Object.entries(FACET_VOCABULARY).map(([facetKey, labels]) => (
-            <div key={facetKey} className="flex flex-wrap items-center gap-1">
-              <span className="text-[10px] uppercase tracking-wider text-zinc-600 capitalize">{facetKey}</span>
-              {labels.map((label) => {
-                const active = (facetFilters[facetKey] ?? []).includes(label);
-                return (
-                  <button
-                    key={label}
-                    onClick={() => {
-                      setFacetFilters((prev) => {
-                        const cur = prev[facetKey] ?? [];
-                        const next = active ? cur.filter((x) => x !== label) : [...cur, label];
-                        if (!next.length) {
-                          const { [facetKey]: _, ...rest } = prev;
-                          void _;
-                          return rest;
-                        }
-                        return { ...prev, [facetKey]: next };
-                      });
-                    }}
-                    className={`rounded-full border px-2 py-0.5 text-[10px] transition-colors ${
-                      active
-                        ? "border-white bg-white text-black"
-                        : "border-white/10 text-zinc-500 hover:border-white/30 hover:text-zinc-300"
-                    }`}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
-            </div>
-          ))}
         </div>
       )}
 
