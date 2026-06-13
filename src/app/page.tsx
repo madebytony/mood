@@ -1237,24 +1237,6 @@ function App() {
               Review fonts {reviewCount ? `(${reviewCount})` : ""}
             </button>
           )}
-          {selected !== "home" && !showBoard && (
-            <div className="no-scrollbar flex items-center gap-1 overflow-x-auto">
-              {COLOR_NAMES.map((c) => (
-                <button
-                  key={c}
-                  onClick={() => setColorFilter(colorFilter === c ? null : c)}
-                  title={c}
-                  className={`h-4 w-4 shrink-0 rounded-full border transition-transform ${
-                    colorFilter === c ? "scale-125 border-white" : "border-white/20 hover:scale-110"
-                  }`}
-                  style={{ background: COLOR_HEX[c] }}
-                />
-              ))}
-              {colorFilter && (
-                <button onClick={() => setColorFilter(null)} className="ml-0.5 text-[10px] text-zinc-500 hover:text-zinc-200">✕</button>
-              )}
-            </div>
-          )}
           {selected !== "home" && (
             <div className="ml-auto flex w-full max-w-md items-center gap-1.5">
               <input
@@ -1275,6 +1257,25 @@ function App() {
             </div>
           )}
         </header>
+
+        {selected !== "home" && !showBoard && (
+          <div className="no-scrollbar flex items-center gap-1 overflow-x-auto px-4 pb-1.5">
+            {COLOR_NAMES.map((c) => (
+              <button
+                key={c}
+                onClick={() => setColorFilter(colorFilter === c ? null : c)}
+                title={c}
+                className={`h-4 w-4 shrink-0 rounded-full border transition-transform ${
+                  colorFilter === c ? "scale-125 border-white" : "border-white/20 hover:scale-110"
+                }`}
+                style={{ background: COLOR_HEX[c] }}
+              />
+            ))}
+            {colorFilter && (
+              <button onClick={() => setColorFilter(null)} className="ml-0.5 text-[10px] text-zinc-500 hover:text-zinc-200">✕</button>
+            )}
+          </div>
+        )}
 
         {selected !== "home" && !showBoard && currentFeedMode === "type" && (
           <div className="no-scrollbar flex items-center gap-1.5 overflow-x-auto px-4 pb-2">
