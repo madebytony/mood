@@ -42,7 +42,7 @@ export interface CorpusCandidate {
 
 /** Sources where each URL is a distinct piece on a shared domain. Detected from the source
  *  string so it survives the `index/<source>` prefix retrieval adds. */
-export const MULTI_ENTRY_RE = /fontsinuse|itsnicethat/;
+export const MULTI_ENTRY_RE = /fontsinuse|itsnicethat|^studio\//;
 
 function admin() {
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -346,87 +346,227 @@ async function fontsinuse(cap = 24): Promise<CorpusCandidate[]> {
   return resolved.flatMap((r) => (r.status === "fulfilled" && r.value ? [r.value] : []));
 }
 
-/* ---------------- direct dataset: top-quality foundries + agencies ---------------- */
+/* ---------------- watched studios: dynamic foundry + agency list ---------------- */
 
-/** Hand-curated quality seed — harvested DIRECT from the source sites (they publish their
- *  own work and case studies), no API-hostile middleman. Grow freely; each entry costs one
- *  homepage fetch per harvest. */
-const FOUNDRIES: { url: string; name: string }[] = [
-  { url: "https://sharptype.co", name: "Sharp Type" },
-  { url: "https://pangrampangram.com", name: "Pangram Pangram" },
-  { url: "https://www.grillitype.com", name: "Grilli Type" },
-  { url: "https://blazetype.eu", name: "Blaze Type" },
-  { url: "https://www.futurefonts.xyz", name: "Future Fonts" },
-  { url: "https://ohnotype.co", name: "OH no Type Co" },
-  { url: "https://commercialtype.com", name: "Commercial Type" },
-  { url: "https://optimo.ch", name: "Optimo" },
-  { url: "https://www.typotheque.com", name: "Typotheque" },
-  { url: "https://abcdinamo.com", name: "ABC Dinamo" },
-  { url: "https://klim.co.nz", name: "Klim Type Foundry" },
-  { url: "https://lineto.com", name: "Lineto" },
-  { url: "https://www.dstype.com", name: "DSType" },
-  { url: "https://www.swisstypefaces.com", name: "Swiss Typefaces" },
-  { url: "https://displaay.net", name: "Displaay" },
-  { url: "https://www.colophon-foundry.org", name: "Colophon Foundry" },
-  { url: "https://mass-driver.com", name: "Mass-Driver" },
-  { url: "https://vj-type.com", name: "VJ Type" },
-  { url: "https://www.205.tf", name: "205TF" },
-  { url: "https://www.atipofoundry.com", name: "Atipo Foundry" },
-  { url: "https://www.typemates.com", name: "TypeMates" },
-  { url: "https://fontwerk.com", name: "Fontwerk" },
-];
-
-const AGENCIES: { url: string; name: string }[] = [
-  { url: "https://www.instrument.com", name: "Instrument" },
-  { url: "https://basicagency.com", name: "BASIC/DEPT" },
-  { url: "https://work.co", name: "Work & Co" },
-  { url: "https://www.pentagram.com", name: "Pentagram" },
-  { url: "https://koto.studio", name: "Koto" },
-  { url: "https://www.dixonbaxi.com", name: "DixonBaxi" },
-  { url: "https://www.metalab.com", name: "MetaLab" },
-  { url: "https://area17.com", name: "AREA 17" },
-  { url: "https://locomotive.ca", name: "Locomotive" },
-  { url: "https://dogstudio.co", name: "Dogstudio" },
-  { url: "https://activetheory.net", name: "Active Theory" },
-  { url: "https://resn.co.nz", name: "Resn" },
-  { url: "https://14islands.com", name: "14islands" },
-  { url: "https://humaan.com", name: "Humaan" },
-  { url: "https://buildinamsterdam.com", name: "Build in Amsterdam" },
-  { url: "https://basement.studio", name: "basement.studio" },
-  { url: "https://phantom.land", name: "PHANTOM" },
-  { url: "https://unseen.co", name: "Unseen Studio" },
-  { url: "https://makemepulse.com", name: "makemepulse" },
-  { url: "https://hellomonday.com", name: "Hello Monday" },
-];
+/** Shape of a row from the watched_studios table (only the fields we need here). */
+interface WatchedStudio {
+  id: string;
+  url: string;
+  domain: string;
+  name: string | null;
+  kind: string;            // "foundry" | "agency"
+  content_paths: string[] | null;
+}
 
 const OG_IMG_RE = /<meta[^>]+(?:property|name)=["'](?:og:image|og:image:url|twitter:image)["'][^>]+content=["']([^"']+)["']/i;
 const OG_IMG_RE_REV = /<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["'](?:og:image|og:image:url|twitter:image)["']/i;
 
-/** Fetch each seed site directly: og:image + title straight from the horse's mouth. */
+/** Fetch each watched studio's homepage for the directory card + corpus row.
+ *  Reads from the watched_studios table so new entries (seed or discovered) are
+ *  picked up automatically without touching this file. */
 async function directSites(): Promise<CorpusCandidate[]> {
-  const seeds: (typeof FOUNDRIES[number] & { kind: "site" | "type"; tags: string[]; source: string })[] = [
-    ...FOUNDRIES.map((f) => ({ ...f, kind: "type" as const, tags: ["type foundry", "typography"], source: "foundry-direct" })),
-    ...AGENCIES.map((a) => ({ ...a, kind: "site" as const, tags: ["agency", "studio", "portfolio"], source: "agency-direct" })),
-  ];
+  const db = admin();
+  const { data: studios } = await db
+    .from("watched_studios")
+    .select("url, domain, name, kind")
+    .order("created_at", { ascending: true });
+  if (!studios?.length) return [];
+
   const out: CorpusCandidate[] = [];
-  await Promise.allSettled(seeds.map(async (s) => {
-    const domain = hostOf(s.url);
-    if (!domain) return;
-    try {
-      const res = await fetch(s.url, {
-        headers: { "user-agent": UA, accept: "text/html" },
-        redirect: "follow",
-        signal: AbortSignal.timeout(9000),
-      });
-      if (!res.ok) return;
-      const html = (await res.text()).slice(0, 300_000);
-      const og = OG_IMG_RE.exec(html)?.[1] ?? OG_IMG_RE_REV.exec(html)?.[1] ?? null;
-      let image: string | null = null;
-      if (og) { try { image = new URL(og, res.url || s.url).href; } catch {} }
-      out.push({ url: s.url, domain, title: s.name, image, tags: s.tags, source: s.source, kind: s.kind });
-    } catch { /* one seed down shouldn't sink the batch */ }
-  }));
+  await Promise.allSettled(
+    (studios as { url: string; domain: string; name: string | null; kind: string }[]).map(async (s) => {
+      const domain = hostOf(s.url);
+      if (!domain) return;
+      const isFoundry = s.kind === "foundry";
+      try {
+        const res = await fetch(s.url, {
+          headers: { "user-agent": UA, accept: "text/html" },
+          redirect: "follow",
+          signal: AbortSignal.timeout(9000),
+        });
+        if (!res.ok) return;
+        const html = (await res.text()).slice(0, 300_000);
+        const og = OG_IMG_RE.exec(html)?.[1] ?? OG_IMG_RE_REV.exec(html)?.[1] ?? null;
+        let image: string | null = null;
+        if (og) { try { image = new URL(og, res.url || s.url).href; } catch {} }
+        out.push({
+          url: s.url,
+          domain,
+          title: s.name,
+          image,
+          tags: isFoundry ? ["type foundry", "typography"] : ["agency", "studio", "portfolio"],
+          source: isFoundry ? "foundry-direct" : "agency-direct",
+          kind: isFoundry ? "type" : "site",
+        });
+      } catch { /* one studio down shouldn't sink the batch */ }
+    })
+  );
   return out;
+}
+
+/** Scrape fresh articles / work entries from watched studios' content paths.
+ *  Only active studios (seed tier or gallery_appearances >= 2) with known
+ *  content_paths are checked; at most `cap` studios per harvest to stay within
+ *  the 120-s Vercel budget. Returns multi-entry CorpusCandidate[] — one row per
+ *  article/work page found. Source is "studio/<domain>" for feed-lane filtering. */
+async function studioContent(cap = 30): Promise<CorpusCandidate[]> {
+  const db = admin();
+  const { data: studios } = await db
+    .from("watched_studios")
+    .select("id, url, domain, name, kind, content_paths")
+    .or("tier.eq.seed,gallery_appearances.gte.2")
+    .not("content_paths", "is", null)
+    .order("last_checked_at", { ascending: true, nullsFirst: true })
+    .limit(cap);
+  if (!studios?.length) return [];
+
+  const out: CorpusCandidate[] = [];
+  const checkedIds: string[] = [];
+
+  await Promise.allSettled(
+    (studios as WatchedStudio[]).map(async (studio) => {
+      checkedIds.push(studio.id);
+      for (const path of studio.content_paths!) {
+        try {
+          const listUrl = `https://${studio.domain}${path}`;
+          const res = await fetch(listUrl, {
+            headers: { "user-agent": UA, accept: "text/html" },
+            redirect: "follow",
+            signal: AbortSignal.timeout(10000),
+          });
+          if (!res.ok) continue;
+          const html = (await res.text()).slice(0, 400_000);
+
+          // Collect internal links that are sub-pages of this content section
+          const pathPrefix = path.endsWith("/") ? path : path + "/";
+          const seen = new Set<string>();
+          for (const m of html.matchAll(/href=["']([^"'#?]+)["']/g)) {
+            const raw = m[1].trim();
+            let fullPath: string;
+            try {
+              const abs = new URL(raw, listUrl);
+              if (abs.hostname.replace(/^www\./, "") !== studio.domain.replace(/^www\./, "")) continue;
+              fullPath = abs.pathname;
+            } catch { continue; }
+            if (!fullPath.startsWith(pathPrefix)) continue;
+            const remainder = fullPath.slice(pathPrefix.length);
+            if (!remainder) continue;
+            if (/\.(css|js|png|jpg|webp|svg|ico|pdf|woff|json)$/.test(fullPath)) continue;
+            if (/^(page\/\d|tag\/|category\/|author\/|feed\/?$|rss)/.test(remainder)) continue;
+            seen.add(fullPath);
+          }
+
+          // Fetch og:image from up to 8 article pages per path
+          let fetched = 0;
+          for (const href of [...seen].slice(0, 8)) {
+            if (fetched >= 8) break;
+            const articleUrl = `https://${studio.domain}${href}`;
+            try {
+              const r = await fetch(articleUrl, {
+                headers: { "user-agent": UA, accept: "text/html" },
+                redirect: "follow",
+                signal: AbortSignal.timeout(8000),
+              });
+              if (!r.ok) continue;
+              const aHtml = (await r.text()).slice(0, 200_000);
+              const og = OG_IMG_RE.exec(aHtml)?.[1] ?? OG_IMG_RE_REV.exec(aHtml)?.[1] ?? null;
+              if (!og) continue; // no image = weak embedding, skip
+              let image: string | null = null;
+              try { image = new URL(og, articleUrl).href; } catch {}
+              if (!image) continue;
+              const titleMatch =
+                /<meta[^>]+property="og:title"[^>]+content="([^"]+)"/.exec(aHtml)?.[1] ??
+                /<meta[^>]+content="([^"]+)"[^>]+property="og:title"/.exec(aHtml)?.[1] ??
+                /<title>([^<]+)<\/title>/.exec(aHtml)?.[1] ??
+                null;
+              const kind: "site" | "type" = studio.kind === "foundry" ? "type" : "site";
+              out.push({
+                url: articleUrl,
+                domain: studio.domain,
+                title: titleMatch?.replace(/\s*[|–\-]\s*[^|–\-]*$/, "").trim() ?? null,
+                image,
+                tags: studio.kind === "foundry"
+                  ? ["type foundry", "typography"]
+                  : ["agency", "studio", "portfolio"],
+                source: `studio/${studio.domain}`,
+                kind,
+                multiEntry: true,
+              });
+              fetched++;
+            } catch { /* one article failing is fine */ }
+          }
+        } catch { /* one path failing is fine */ }
+      }
+    })
+  );
+
+  // Stamp last_checked_at for everything we attempted, regardless of results
+  if (checkedIds.length) {
+    try {
+      await db
+        .from("watched_studios")
+        .update({ last_checked_at: new Date().toISOString() })
+        .in("id", checkedIds);
+    } catch { /* best-effort */ }
+  }
+  return out;
+}
+
+/** Grow watched_studios automatically from gallery co-appearances in web_corpus.
+ *  Any domain that has been indexed from 2+ distinct gallery sources but isn't yet
+ *  in watched_studios is upserted as tier='discovered' with gallery_appearances set
+ *  to its source count. Capped at 20 new entries per harvest run. */
+async function discoverStudios(): Promise<void> {
+  const db = admin();
+
+  // Sample the last 30 days of corpus rows (all gallery sources, not studio scrapes)
+  const { data: rows } = await db
+    .from("web_corpus")
+    .select("domain, source, kind")
+    .gte("last_seen_at", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
+    .not("source", "like", "studio/%")
+    .limit(10000);
+  if (!rows?.length) return;
+
+  // Tally distinct gallery sources per domain + detect kind signal
+  const domainMeta = new Map<string, { sources: Set<string>; isType: boolean }>();
+  for (const row of rows) {
+    const domain = row.domain as string;
+    if (!domain) continue;
+    if (!domainMeta.has(domain)) domainMeta.set(domain, { sources: new Set(), isType: false });
+    const m = domainMeta.get(domain)!;
+    m.sources.add(row.source as string);
+    if ((row.kind as string) === "type") m.isType = true;
+  }
+
+  // Skip already-watched domains
+  const { data: existing } = await db.from("watched_studios").select("domain");
+  const watchedSet = new Set((existing ?? []).map((r) => r.domain as string));
+
+  const candidates: {
+    url: string; domain: string; kind: string; tier: string; gallery_appearances: number;
+  }[] = [];
+
+  for (const [domain, { sources, isType }] of domainMeta) {
+    if (sources.size < 2) continue;
+    if (watchedSet.has(domain)) continue;
+    if (!okDomain(domain)) continue;
+    candidates.push({
+      url: `https://${domain}`,
+      domain,
+      kind: isType ? "foundry" : "agency",
+      tier: "discovered",
+      gallery_appearances: sources.size,
+    });
+    if (candidates.length >= 20) break;
+  }
+
+  if (!candidates.length) return;
+  try {
+    await db
+      .from("watched_studios")
+      .upsert(candidates, { onConflict: "domain", ignoreDuplicates: true });
+  } catch { /* discovery is best-effort */ }
 }
 
 /** brutalistwebsites.com: ~1,600 site + screenshot pairs in plain HTML — the corpus's
@@ -536,7 +676,15 @@ async function homepages(): Promise<CorpusCandidate[]> {
 
 /** Run all adapters and upsert candidates. Returns how many rows were new. */
 export async function harvest(): Promise<{ found: number; added: number }> {
-  const results = await Promise.allSettled([minimalGallery(), arena(), homepages(), brutalist(), httpsterArchives(), directSites(), typewolf(), itsnicethat(), fontsinuse()]);
+  // Grow watched_studios from corpus co-appearances before the main harvest so
+  // any newly discovered studios get a homepage row in this same run.
+  await discoverStudios().catch(() => {});
+
+  const results = await Promise.allSettled([
+    minimalGallery(), arena(), homepages(), brutalist(), httpsterArchives(),
+    directSites(), typewolf(), itsnicethat(), fontsinuse(),
+    studioContent(), // multi-entry: blog posts / work pages from watched studios
+  ]);
   const cands = results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
   // Single-entry sources: one row per domain (a studio featured by 3 galleries = 1 row).
   // Multi-entry sources (blogs, Fonts In Use): one row per URL — each piece is distinct.

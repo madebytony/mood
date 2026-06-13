@@ -7,6 +7,7 @@ import Masonry from "@/components/Masonry";
 import Board from "@/components/Board";
 import Feed from "@/components/Feed";
 import Detail from "@/components/Detail";
+import Directory from "@/components/Directory";
 import AddMenu from "@/components/AddMenu";
 import { DialogHost, SkeletonGrid, ask, confirmDialog } from "@/components/ui";
 import { useDialog } from "@/components/useDialog";
@@ -100,13 +101,13 @@ function App() {
   const [autoEditId, setAutoEditId] = useState<string | null>(null);
   const [spaceCounts, setSpaceCounts] = useState<Map<string, number>>(new Map());
   const [urls, setUrls] = useState<Map<string, string>>(new Map());
-  const [selected, setSelected] = useState<string | "all" | "home">(() => {
+  const [selected, setSelected] = useState<string | "all" | "home" | "directory">(() => {
     if (typeof window === "undefined") return "home";
     const p = new URLSearchParams(window.location.search);
     const s = p.get("s");
     if (s) return s;
     const h = decodeURIComponent(window.location.hash.slice(1));
-    if (h === "all" || h === "home") return h;
+    if (h === "all" || h === "home" || h === "directory") return h;
     if (h.startsWith("s/")) return h.slice(2);
     return "home";
   });
@@ -223,6 +224,8 @@ function App() {
   const reviewRef = useDialog<HTMLDivElement>(() => setFontReviewOpen(false), { active: !!fontReviewOpen });
 
   const loadItems = useCallback(async () => {
+    // Directory is a standalone view with its own data loading — no item fetch needed.
+    if (selected === "directory") return;
     const seq = ++loadSeq.current;
     const spaceKey = selected === "home" ? "all" : selected;
     const cacheKey = `${spaceKey}|${search}`;
@@ -1072,7 +1075,7 @@ function App() {
   }
 
   const currentName =
-    selected === "home" ? "Home" : selected === "all" ? "Everything" : currentSpace?.name ?? "";
+    selected === "home" ? "Home" : selected === "all" ? "Everything" : selected === "directory" ? "Directory" : currentSpace?.name ?? "";
   const showBoard = currentSpace?.view === "board";
   const masonryItems = currentFeedMode === "type" && selected !== "home" && !showBoard ? typedVisibleItems : visibleItems;
 
@@ -1268,7 +1271,7 @@ function App() {
           )}
         </header>
 
-        {selected !== "home" && !showBoard && (
+        {selected !== "home" && selected !== "directory" && !showBoard && (
           <div className="no-scrollbar flex items-center gap-1 overflow-x-auto px-4 pb-1.5">
             {COLOR_NAMES.map((c) => (
               <button
@@ -1287,7 +1290,7 @@ function App() {
           </div>
         )}
 
-        {selected !== "home" && !showBoard && currentFeedMode === "type" && (
+        {selected !== "home" && selected !== "directory" && !showBoard && currentFeedMode === "type" && (
           <div className="no-scrollbar flex items-center gap-1.5 overflow-x-auto px-4 pb-2">
             {([
               { id: "foundries", label: "Foundries" },
@@ -1309,8 +1312,10 @@ function App() {
           </div>
         )}
 
-        <div ref={scrollRef} className={`flex-1 ${showBoard && selected !== "home" ? "overflow-hidden" : "no-scrollbar overflow-y-auto"}`}>
-          {selected === "home" ? (
+        <div ref={scrollRef} className={`flex-1 ${showBoard && selected !== "home" && selected !== "directory" ? "overflow-hidden" : "no-scrollbar overflow-y-auto"}`}>
+          {selected === "directory" ? (
+            <Directory toast={toast} />
+          ) : selected === "home" ? (
             <Feed
               spaces={spaces}
               inboxId={inbox?.id}

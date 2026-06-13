@@ -74,6 +74,20 @@ body::before {
   animation: cardIn 0.25s ease both;
 }
 
+@keyframes panelIn {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.panel-in {
+  animation: panelIn 0.22s cubic-bezier(0.21, 1.02, 0.73, 1) both;
+}
+
 @keyframes riseIn {
   from {
     opacity: 0;

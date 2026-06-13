@@ -7,15 +7,15 @@ import { createLibrary, createSpace, renameSpace, deleteSpace } from "@/lib/db";
 import { supabase, authToken } from "@/lib/supabase";
 import { ask, confirmDialog, notice } from "./ui";
 import { useDialog } from "./useDialog";
-import { SparklesIcon, InboxIcon, BookmarkIcon, PhoneIcon } from "./icons";
+import { SparklesIcon, InboxIcon, BookmarkIcon, PhoneIcon, CompassIcon } from "./icons";
 
 interface Props {
   libraries: Library[];
   libraryModes: Record<string, "default" | "type">;
   spaces: Space[];
-  selected: string | "all" | "home";
+  selected: string | "all" | "home" | "directory";
   counts: Map<string, number>;
-  onSelect: (id: string | "all" | "home") => void;
+  onSelect: (id: string | "all" | "home" | "directory") => void;
   onSetLibraryMode: (libraryId: string, mode: "default" | "type") => void;
   onChanged: () => void;
   onClose?: () => void;
@@ -119,6 +119,12 @@ export default function Sidebar({ libraries, libraryModes, spaces, selected, cou
             <SparklesIcon className="h-4 w-4" /> Home
           </span>
           <span className="text-[10px] text-zinc-700">feed</span>
+        </button>
+        <button className={row(selected === "directory")} onClick={() => onSelect("directory")}>
+          <span className="flex items-center gap-2">
+            <CompassIcon className="h-4 w-4" /> Directory
+          </span>
+          <span className="text-[10px] text-zinc-700">studios</span>
         </button>
         <button className={row(selected === "all")} onClick={() => onSelect("all")}>
           <span>Everything</span>
