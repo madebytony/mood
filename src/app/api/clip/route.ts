@@ -111,29 +111,16 @@ export async function POST(req: Request) {
       sourceUrl = body.url;
       title = title ?? body.url.replace(/^https?:\/\/(www\.)?/, "").split("/")[0];
 
-      // Instagram/Threads: use the public oEmbed API to get the post image.
-      // These platforms block og:image from server-side fetches and screenshots,
-      // but the oEmbed endpoint returns thumbnail_url without auth for public posts.
-      const isInstagram = /^https?:\/\/(www\.)?(instagram\.com|threads\.net)\//i.test(body.url);
-      if (isInstagram) {
+      // Instagram/Threads: oEmbed requires auth since 2020 and og:image is JS-rendered.
+      // Puppeteer-capture the public embed page which renders the actual post image.
+      const igMatch = body.url.match(/instagram\.com\/(?:p|reel)\/([A-Za-z0-9_-]+)/i);
+      if (igMatch) {
         try {
-          const oembedUrl = `https://api.instagram.com/oembed/?url=${encodeURIComponent(body.url)}`;
-          const oRes = await fetch(oembedUrl, { signal: AbortSignal.timeout(10000) });
-          if (oRes.ok) {
-            const oembed = await oRes.json();
-            if (oembed.title) title = String(oembed.title).slice(0, 200);
-            else if (oembed.author_name) title = oembed.author_name;
-            const thumbUrl = oembed.thumbnail_url;
-            if (thumbUrl) {
-              const imgRes = await fetch(thumbUrl, { signal: AbortSignal.timeout(15000) });
-              if (imgRes.ok) {
-                contentType = imgRes.headers.get("content-type") ?? "image/jpeg";
-                if (contentType.startsWith("image/")) {
-                  bytes = new Uint8Array(await imgRes.arrayBuffer());
-                }
-              }
-            }
-          }
+          const embedUrl = `https://www.instagram.com/p/${igMatch[1]}/embed/captioned/`;
+          const { captureVetted } = await import("../_lib/capture");
+          const shot = await captureVetted(embedUrl, false);
+          contentType = shot.type;
+          bytes = shot.bytes;
         } catch { /* fall through to link */ }
         if (!bytes) degradeToLink = true;
       } else if (body.kind === "url") {
