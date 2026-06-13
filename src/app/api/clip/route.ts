@@ -75,8 +75,13 @@ export async function POST(req: Request) {
     const uid = await ownerId(db);
     let spaceId = body.space_id ?? null;
     if (!spaceId) {
-      const { data: inbox } = await db.from("spaces").select("id").eq("kind", "inbox").limit(1).single();
-      spaceId = inbox?.id ?? null;
+      // Default to Bookmarks if it exists, otherwise Inbox
+      const { data: bm } = await db.from("spaces").select("id").eq("kind", "bookmarks").limit(1).single();
+      if (bm) { spaceId = bm.id; }
+      else {
+        const { data: inbox } = await db.from("spaces").select("id").eq("kind", "inbox").limit(1).single();
+        spaceId = inbox?.id ?? null;
+      }
     }
     if (!spaceId) throw new ClientError("No space found");
 
