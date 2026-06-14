@@ -131,7 +131,7 @@ export default function Feed({ spaces, inboxId, onBookmark, onOpenItem, onSaved,
               setCards((prev) => (append || !isFirst ? [...prev, ...mixed] : mixed));
             },
           ),
-          q || compact || append ? Promise.resolve([] as Item[]) : resurface(6),
+          Promise.resolve([] as Item[]),
         ]);
         if (seq !== loadSeq.current) return; // superseded by a newer load
         // belt-and-braces: never show a card twice this session, even if the server re-offers it
@@ -143,23 +143,12 @@ export default function Feed({ spaces, inboxId, onBookmark, onOpenItem, onSaved,
           logDiscoveryEvent(s.url, "impression", { lane: discoveryMode, model }).catch(() => {});
           markSeen(s.url, "seen").catch(() => {});
         }
-        const mixed: FeedCard[] = [];
-        const sug = fresh.map((s): FeedCard => ({ kind: "suggestion", s }));
-        const lib = gems.map((item): FeedCard => ({ kind: "library", item }));
-        // interleave: roughly one library gem every 5 suggestions
-        let li = 0;
-        sug.forEach((c, i) => {
-          mixed.push(c);
-          if ((i + 1) % 5 === 0 && li < lib.length) mixed.push(lib[li++]);
-        });
-        while (li < lib.length) mixed.push(lib[li++]);
+        const mixed = fresh.map((s): FeedCard => ({ kind: "suggestion", s }));
         // If progressive display already rendered results and nothing new remains,
         // don't wipe the cards that are already showing.
         if (mixed.length || !didPartial) {
           setCards((prev) => (append || didPartial ? [...prev, ...mixed] : mixed));
         }
-        const paths = gems.map((g) => g.thumb_path).filter(Boolean) as string[];
-        if (paths.length) setUrls(await signedUrls(paths));
       } catch (e) {
         if (seq === loadSeq.current) toast((e as Error).message, "error");
       } finally {
