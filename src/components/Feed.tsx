@@ -63,10 +63,11 @@ export default function Feed({ spaces, inboxId, onBookmark, onOpenItem, onSaved,
   // show a broken tile. (Valid-but-poor images, e.g. logos/loading screens, need the server-side
   // quality gate — see DISCOVERY-V3-PLAN §8.)
   const [deadImg, setDeadImg] = useState<Set<string>>(new Set());
-  const shown = useRef(new Set<string>());      // everything already offered this session
-  const seeds = useRef<string[]>([]);            // descriptors of what you engaged with
-  const inflightQ = useRef<string | null>(null); // dedupe double-fired identical loads (StrictMode)
-  const loadSeq = useRef(0);                     // drop responses superseded by a newer load
+  const shown = useRef(new Set<string>());         // everything already offered this session
+  const seeds = useRef<string[]>([]);              // descriptors of what you engaged with
+  const inflightQ = useRef<string | null>(null);   // dedupe double-fired identical loads (StrictMode)
+  const loadSeq = useRef(0);                       // drop responses superseded by a newer load
+  const backfillFired = useRef(false);             // fire corpus backfill once per session
 
   const isFoundryItem = (item: Item) => (item.type === "site" || item.type === "link") && !!item.source_domain;
   const isFontItem = (item: Item) => (item.fonts?.length ?? 0) > 0;
@@ -167,6 +168,14 @@ export default function Feed({ spaces, inboxId, onBookmark, onOpenItem, onSaved,
   useEffect(() => {
     if (compact) load(initialQuery?.trim() || null);
   }, [compact, initialQuery, load]);
+
+  // Background corpus backfill: once the feed first shows cards, silently embed a batch
+  // of unembedded corpus rows. Fire-and-forget — never blocks the UI. Runs once per session.
+  useEffect(() => {
+    if (compact || backfillFired.current || cards.length === 0) return;
+    backfillFired.current = true;
+    fetch("/api/corpus/backfill", { method: "POST" }).catch(() => {/* best-effort */});
+  }, [compact, cards.length]);
 
   useEffect(() => {
     if (compact) return; // only the Home instance listens

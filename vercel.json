@@ -2,6 +2,6 @@
   "crons": [
     { "path": "/api/ping", "schedule": "0 9 * * *" },
     { "path": "/api/corpus/harvest", "schedule": "0 3 * * *" },
-    { "path": "/api/corpus/backfill", "schedule": "0 4 * * *" }
+    { "path": "/api/corpus/backfill", "schedule": "0 */6 * * *" }
   ]
 }
