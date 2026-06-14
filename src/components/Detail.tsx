@@ -356,10 +356,9 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
                       <button onClick={() => {
                         setGalleryIdx(null);
                         setImageIdx(0);
-                        // Restore item's own preview from cache (don't lose it)
                         const cached = item.source_url ? previewCache.get(item.source_url) : null;
                         setPreviewImages(cached ?? null);
-                      }} className="text-[11px] text-zinc-400 hover:text-zinc-200">
+                      }} className="min-h-[44px] px-2 text-xs text-zinc-400 hover:text-zinc-200 md:min-h-0 md:text-[11px]">
                         ← Back
                       </button>
                       {imgs.length > 1 && (
@@ -827,12 +826,12 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
                                 }}
                                 disabled={isSaving || isSaved}
                                 title={isSaved ? "Saved" : "Save to Bookmarks"}
-                                className={`shrink-0 grid h-6 w-6 place-items-center rounded-full opacity-0 group-hover/work:opacity-100 transition-opacity ${
+                                className={`shrink-0 grid h-8 w-8 place-items-center rounded-full transition-opacity md:h-6 md:w-6 ${
                                   isSaved
                                     ? "text-amber-300 opacity-100"
                                     : isSaving
-                                    ? "text-zinc-500"
-                                    : "text-zinc-500 hover:text-amber-300"
+                                    ? "text-zinc-500 opacity-100"
+                                    : "text-zinc-500 opacity-100 md:opacity-0 md:group-hover/work:opacity-100 hover:text-amber-300"
                                 }`}
                               >
                                 {isSaved ? (

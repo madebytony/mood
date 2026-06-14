@@ -20,7 +20,23 @@ export async function isAuthed(req: Request): Promise<boolean> {
 }
 
 export function bearer(req: Request): string | null {
-  return req.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? null;
+  // 1. Prefer Authorization header (API calls, fetch with headers)
+  const hdr = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+  if (hdr) return hdr;
+  // 2. Fall back to Supabase session cookie (same-origin <img> tags, etc.)
+  const cookies = req.headers.get("cookie") ?? "";
+  const sbMatch = /sb-[^=]+-auth-token(?:\.0)?=([^;]+)/.exec(cookies);
+  if (!sbMatch) return null;
+  try {
+    // Supabase stores the token as a JSON-encoded base64 string in the cookie
+    const decoded = decodeURIComponent(sbMatch[1]);
+    const parsed = JSON.parse(decoded);
+    // Could be the full [access_token, refresh_token] array or just the token
+    return Array.isArray(parsed) ? parsed[0] : typeof parsed === "string" ? parsed : null;
+  } catch {
+    // Not JSON — try the raw value
+    return decodeURIComponent(sbMatch[1]);
+  }
 }
 
 /** The personal token used by the browser extension and iOS Shortcut.

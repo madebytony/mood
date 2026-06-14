@@ -393,7 +393,7 @@ function StudioPanel({
             {/* header */}
             <div className="flex items-center justify-between gap-2 border-b border-white/5 px-4 py-3 shrink-0">
               <div className="flex items-center gap-3 min-w-0">
-                <button onClick={() => setPreviewItem(null)} className="text-[11px] text-zinc-400 hover:text-zinc-200">
+                <button onClick={() => setPreviewItem(null)} className="min-h-[44px] px-2 text-xs text-zinc-400 hover:text-zinc-200 md:min-h-0 md:text-[11px]">
                   ← Back
                 </button>
                 {previewImages && previewImages.length > 1 && (
@@ -476,14 +476,14 @@ function StudioPanel({
             )}
 
             {/* actions */}
-            <div className="flex items-center gap-3 border-t border-white/5 px-4 py-3 shrink-0">
+            <div className="flex items-center gap-3 border-t border-white/5 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shrink-0">
               <a
                 href={previewItem.url}
                 target="_blank"
                 rel="noreferrer"
-                className="flex items-center gap-1.5 rounded-lg bg-white px-3 py-2 text-xs font-medium text-black hover:bg-zinc-200"
+                className="flex items-center gap-1.5 rounded-lg bg-white px-4 py-2.5 text-sm font-medium text-black hover:bg-zinc-200 md:px-3 md:py-2 md:text-xs"
               >
-                <ExternalLinkIcon className="h-3.5 w-3.5" /> Visit site
+                <ExternalLinkIcon className="h-4 w-4 md:h-3.5 md:w-3.5" /> Visit site
               </a>
               {(() => {
                 const bm = spaces.find((s) => s.kind === "bookmarks");
@@ -504,7 +504,7 @@ function StudioPanel({
                       }
                     }}
                     disabled={previewSaving || previewSaved}
-                    className={`flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs transition-colors ${
+                    className={`flex items-center gap-1.5 rounded-lg border px-4 py-2.5 text-sm transition-colors md:px-3 md:py-2 md:text-xs ${
                       previewSaved
                         ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
                         : "border-white/10 bg-white/5 text-zinc-300 hover:border-white/25"
