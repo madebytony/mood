@@ -1533,11 +1533,9 @@ export async function discover(query: string | null, extraExclude: string[] = []
     query ? Promise.resolve([] as string[]) : libraryDomains(),
     seenUrls(),
   ]);
-  // Prioritise session exclusions (extraExclude) over stale seen URLs —
-  // don't let a large seen history starve the pool of fresh results.
-  // Seen URLs should exclude by exact URL, not domain — otherwise the small corpus
-  // gets exhausted after a few sessions. Domain exclusion is only for library items.
-  const seenUrlsOnly = seen.slice(0, Math.max(0, 300 - extraExclude.length));
+  // seenUrls() is already bounded (40 recent "seen" + permanent disliked/saved),
+  // so no further slicing is needed. Domain exclusion prevents re-offering library items.
+  const seenUrlsOnly = seen;
   const exclude = [...extraExclude, ...domains, ...seenUrlsOnly];
   const graded = !!imageUrl && !!query;
 
@@ -1712,15 +1710,19 @@ export async function corpusTick(): Promise<void> {
 }
 
 async function seenUrls(): Promise<string[]> {
-  // Disliked/saved: always exclude.  Seen (impressed): exclude for 7 days so the
-  // feed stays fresh across sessions without permanently burning through the corpus.
-  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-  const { data } = await supabase
-    .from("seen_suggestions")
-    .select("url, verdict")
-    .or(`verdict.in.(disliked,saved),and(verdict.eq.seen,created_at.gte.${weekAgo})`)
-    .limit(800);
-  return (data ?? []).map((r) => r.url);
+  // Disliked/saved: always exclude permanently.
+  // Seen (impressed): only exclude the 40 most recent so the gallery pool doesn't run dry.
+  // With a bounded gallery (~40–60 unique items), excluding all 400+ historical "seen" URLs
+  // starves the feed — items seen weeks ago should be allowed to recycle.
+  const [perm, recent] = await Promise.all([
+    supabase.from("seen_suggestions").select("url").in("verdict", ["disliked", "saved"]).limit(500),
+    supabase.from("seen_suggestions").select("url").eq("verdict", "seen")
+      .order("created_at", { ascending: false }).limit(40),
+  ]);
+  return [
+    ...(perm.data ?? []).map((r) => r.url),
+    ...(recent.data ?? []).map((r) => r.url),
+  ];
 }
 
 export async function markSeen(url: string, verdict: "seen" | "liked" | "disliked" | "saved"): Promise<void> {
