@@ -52,6 +52,7 @@ export default function Feed({ spaces, inboxId, onBookmark, onOpenItem, onSaved,
   const [labFilter, setLabFilter] = useState<[number, number, number] | null>(null);
   const [facetFilters, setFacetFilters] = useState<Record<string, string[]>>({});
   const [discoveryMode, setDiscoveryMode] = useState<DiscoveryMode>("foryou");
+  const [gridCols, setGridCols] = useState<number | null>(null);
   const [steer, setSteer] = useState("");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -418,6 +419,23 @@ export default function Feed({ spaces, inboxId, onBookmark, onOpenItem, onSaved,
               />
             ))}
           </div>
+          <span className="h-4 w-px bg-white/10" />
+          <div className="flex items-center rounded-lg border border-white/10">
+            {[2, 3, 4, 5, 6].map((n) => (
+              <button
+                key={n}
+                onClick={() => setGridCols(gridCols === n ? null : n)}
+                className={`px-1.5 py-1 text-[10px] ${
+                  gridCols === n
+                    ? "bg-white/15 text-zinc-200"
+                    : "text-zinc-500 hover:text-zinc-300"
+                } ${n === 2 ? "rounded-l-[7px]" : ""} ${n === 6 ? "rounded-r-[7px]" : ""}`}
+                title={`${n} columns${gridCols === n ? " (click to reset)" : ""}`}
+              >
+                {n}
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
@@ -480,7 +498,10 @@ export default function Feed({ spaces, inboxId, onBookmark, onOpenItem, onSaved,
         </div>
       )}
 
-      <div className="columns-2 gap-3 sm:columns-3 lg:columns-4 xl:columns-5 2xl:columns-6">
+      <div
+        style={gridCols ? { columnCount: gridCols } : undefined}
+        className={`gap-3 ${gridCols ? "" : "columns-2 sm:columns-3 lg:columns-4 xl:columns-5 2xl:columns-6"}`}
+      >
         {filteredCards
           .filter((card) => card.kind !== "suggestion" || !deadImg.has(card.s.url))
           .map((card) =>
