@@ -5,7 +5,7 @@ import { authToken } from "@/lib/supabase";
 import { addFromUrl } from "@/lib/db";
 import type { Space } from "@/lib/types";
 import { useDialog } from "./useDialog";
-import { HeartIcon, ExternalLinkIcon, XIcon, SearchIcon, PlusIcon, CheckSquareIcon, InboxIcon, BookmarkIcon } from "./icons";
+import { HeartIcon, ExternalLinkIcon, XIcon, SearchIcon, PlusIcon, CheckSquareIcon, InboxIcon, BookmarkIcon, ChevronLeftIcon, ChevronRightIcon } from "./icons";
 
 /* ---------- types ---------- */
 
@@ -54,10 +54,12 @@ function WorkItemCard({
   item,
   spaces,
   toast,
+  onPreview,
 }: {
   item: WorkItem;
   spaces: Space[];
   toast: (msg: string, kind?: "info" | "error") => void;
+  onPreview: (item: WorkItem) => void;
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [saving, setSaving] = useState<string | null>(null); // spaceId being saved
@@ -97,8 +99,8 @@ function WorkItemCard({
 
   return (
     <div className="group relative rounded-xl bg-zinc-900 ring-1 ring-white/8 transition-all hover:ring-white/20">
-      {/* image + title — click visits the source URL */}
-      <a href={item.url} target="_blank" rel="noopener noreferrer" className="block">
+      {/* image + title — click opens project preview */}
+      <button onClick={() => onPreview(item)} className="block w-full text-left">
         <div className="aspect-[4/3] overflow-hidden rounded-t-xl">
           {item.image ? (
             // eslint-disable-next-line @next/next/no-img-element
@@ -121,7 +123,7 @@ function WorkItemCard({
             </p>
           </div>
         )}
-      </a>
+      </button>
 
       {/* action buttons — visible on hover */}
       <div className="absolute right-2 top-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -220,6 +222,10 @@ function StudioPanel({
   const [detail, setDetail] = useState<StudioDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const panelRef = useDialog<HTMLDivElement>(onClose, { escape: true });
+  const [previewItem, setPreviewItem] = useState<WorkItem | null>(null);
+  const [previewImages, setPreviewImages] = useState<string[] | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewIdx, setPreviewIdx] = useState(0);
 
   const studio = studios.find((s) => s.domain === domain);
 
@@ -233,6 +239,25 @@ function StudioPanel({
       .catch(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, [domain]);
+
+  // Fetch project preview images when a work item is selected
+  useEffect(() => {
+    if (!previewItem) return;
+    setPreviewIdx(0);
+    setPreviewImages(null);
+    setPreviewLoading(true);
+    let alive = true;
+    apiFetch(`/api/project-preview?url=${encodeURIComponent(previewItem.url)}`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (!alive || !data) return;
+        const imgs: string[] = data.images ?? [];
+        if (imgs.length > 0) setPreviewImages(imgs);
+      })
+      .catch(() => {})
+      .finally(() => { if (alive) setPreviewLoading(false); });
+    return () => { alive = false; };
+  }, [previewItem]);
 
   if (!studio) return null;
 
@@ -353,11 +378,127 @@ function StudioPanel({
           {!loading && hasWork && (
             <div className="grid grid-cols-2 gap-3">
               {work.map((item) => (
-                <WorkItemCard key={item.url} item={item} spaces={spaces} toast={toast} />
+                <WorkItemCard key={item.url} item={item} spaces={spaces} toast={toast} onPreview={setPreviewItem} />
               ))}
             </div>
           )}
         </div>
+
+        {/* Project preview overlay */}
+        {previewItem && (
+          <div className="absolute inset-0 z-30 flex flex-col bg-[#141418]/95 backdrop-blur-sm">
+            {/* header */}
+            <div className="flex items-center justify-between gap-2 border-b border-white/5 px-4 py-3 shrink-0">
+              <div className="flex items-center gap-3 min-w-0">
+                <button onClick={() => setPreviewItem(null)} className="text-[11px] text-zinc-400 hover:text-zinc-200">
+                  ← Back
+                </button>
+                {previewImages && previewImages.length > 1 && (
+                  <span className="text-[11px] text-zinc-600">
+                    {previewIdx + 1} / {previewImages.length}
+                  </span>
+                )}
+                {previewLoading && (
+                  <span className="text-[11px] text-zinc-500 animate-pulse">Loading...</span>
+                )}
+              </div>
+              <span className="text-xs text-zinc-400 truncate">{previewItem.title}</span>
+            </div>
+
+            {/* image */}
+            <div className="relative flex-1 grid place-items-center overflow-hidden">
+              {previewImages && previewIdx > 0 && (
+                <button
+                  onClick={() => setPreviewIdx(previewIdx - 1)}
+                  className="absolute left-3 top-1/2 z-20 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full bg-black/50 text-white backdrop-blur hover:bg-black/70"
+                >
+                  <ChevronLeftIcon className="h-5 w-5" />
+                </button>
+              )}
+              {previewImages && previewIdx < previewImages.length - 1 && (
+                <button
+                  onClick={() => setPreviewIdx(previewIdx + 1)}
+                  className="absolute right-3 top-1/2 z-20 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full bg-black/50 text-white backdrop-blur hover:bg-black/70"
+                >
+                  <ChevronRightIcon className="h-5 w-5" />
+                </button>
+              )}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={previewImages?.[previewIdx] ?? previewItem.image ?? PLACEHOLDER}
+                alt={previewItem.title ?? ""}
+                className="max-h-full w-full object-contain"
+                onError={(e) => {
+                  const el = e.target as HTMLImageElement;
+                  if (!el.getAttribute("data-orig")) {
+                    el.setAttribute("data-orig", el.src);
+                    el.src = `/api/proxy-image?url=${encodeURIComponent(el.src)}`;
+                  }
+                }}
+              />
+            </div>
+
+            {/* thumbnail strip */}
+            {previewImages && previewImages.length > 1 && (
+              <div className="no-scrollbar flex gap-1.5 overflow-x-auto border-t border-white/5 p-2 shrink-0">
+                {previewImages.map((src, i) => (
+                  <button
+                    key={src}
+                    onClick={() => setPreviewIdx(i)}
+                    className={`h-12 w-16 shrink-0 overflow-hidden rounded-md border transition-colors ${
+                      i === previewIdx ? "border-white/40" : "border-white/10 hover:border-white/25"
+                    }`}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={src}
+                      alt=""
+                      className="h-full w-full object-cover"
+                      onError={(e) => {
+                        const el = e.target as HTMLImageElement;
+                        if (!el.getAttribute("data-orig")) {
+                          el.setAttribute("data-orig", el.src);
+                          el.src = `/api/proxy-image?url=${encodeURIComponent(el.src)}`;
+                        }
+                      }}
+                    />
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* actions */}
+            <div className="flex items-center gap-3 border-t border-white/5 px-4 py-3 shrink-0">
+              <a
+                href={previewItem.url}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-1.5 rounded-lg bg-white px-3 py-2 text-xs font-medium text-black hover:bg-zinc-200"
+              >
+                <ExternalLinkIcon className="h-3.5 w-3.5" /> Visit site
+              </a>
+              {(() => {
+                const bm = spaces.find((s) => s.kind === "bookmarks");
+                if (!bm) return null;
+                return (
+                  <button
+                    onClick={async () => {
+                      try {
+                        await addFromUrl(previewItem.url, bm.id);
+                        toast(`Saved to ${bm.name}`);
+                      } catch (err) {
+                        toast(`Couldn't save: ${(err as Error).message}`, "error");
+                      }
+                    }}
+                    className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-zinc-300 hover:border-white/25"
+                  >
+                    <BookmarkIcon className="h-3.5 w-3.5" /> Save to Bookmarks
+                  </button>
+                );
+              })()}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

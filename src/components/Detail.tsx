@@ -449,7 +449,9 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
                   {/* Show preview image at imageIdx if available, else the original capture */}
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
-                    src={previewImages && previewImages[imageIdx] ? previewImages[imageIdx] : fullUrl}
+                    src={previewImages && previewImages[imageIdx]
+                      ? `/api/proxy-image?url=${encodeURIComponent(previewImages[imageIdx])}`
+                      : fullUrl}
                     alt=""
                     onClick={() => {
                       if (previewImages) return; // no zoom in preview mode
@@ -510,7 +512,7 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
                       >
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
-                          src={src}
+                          src={`/api/proxy-image?url=${encodeURIComponent(src)}`}
                           alt=""
                           className="h-full w-full object-cover"
                           onError={(e) => {
