@@ -19,17 +19,21 @@ export async function GET(
   const { domain } = await params;
   const db = admin();
 
-  const [{ data: studio }, { data: work }] = await Promise.all([
-    db.from("watched_studios").select("*").eq("domain", domain).single(),
-    db
-      .from("web_corpus")
-      .select("url, title, image, blurb, tags, last_seen_at")
-      .eq("source", `studio/${domain}`)
-      .order("last_seen_at", { ascending: false })
-      .limit(24),
-  ]);
-
+  const { data: studio } = await db.from("watched_studios").select("*").eq("domain", domain).single();
   if (!studio) return Response.json({ error: "not found" }, { status: 404 });
+
+  // Pull recent work from both the studio's crawled content pages AND
+  // its Instagram posts (stored separately as source = 'instagram/<handle>').
+  const sources = [`studio/${domain}`];
+  if (studio.instagram_handle) sources.push(`instagram/${studio.instagram_handle}`);
+
+  const { data: work } = await db
+    .from("web_corpus")
+    .select("url, title, image, blurb, tags, last_seen_at, source")
+    .in("source", sources)
+    .not("image", "is", null)   // only show items with images — text-only entries aren't useful here
+    .order("last_seen_at", { ascending: false })
+    .limit(24);
 
   return Response.json({ studio, work: work ?? [] });
 }
