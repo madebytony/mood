@@ -1362,10 +1362,10 @@ function mmrDiversify(items: Suggestion[]): Suggestion[] {
 type FreshRow = { url: string; domain: string; title: string | null; image: string | null; blurb: string | null; tags: string[]; source: string };
 
 /** Fresh lane: recency-ordered corpus, no taste signal. */
-async function freshCorpus(exclude: string[], filters?: DiscoverFilters): Promise<Suggestion[]> {
+async function freshCorpus(domainExclude: string[], urlExclude: string[], filters?: DiscoverFilters): Promise<Suggestion[]> {
   try {
-    const excludeDomains = [...new Set(exclude.map(toDomain))].filter(Boolean);
-    const excludeUrls = exclude.filter((e) => /^https?:\/\//i.test(e));
+    const excludeDomains = [...new Set(domainExclude.map(toDomain))].filter(Boolean);
+    const excludeUrls = urlExclude.filter((e) => /^https?:\/\//i.test(e));
     const { data, error } = await supabase.rpc("fresh_corpus_v2", {
       p_count: 30,
       p_exclude: excludeDomains.slice(0, 400),
@@ -1383,10 +1383,10 @@ async function freshCorpus(exclude: string[], filters?: DiscoverFilters): Promis
 }
 
 /** Explore lane: random corpus sample, excluding near-taste duplicates. */
-async function exploreCorpus(spaceId: string | null, exclude: string[], filters?: DiscoverFilters): Promise<Suggestion[]> {
+async function exploreCorpus(spaceId: string | null, domainExclude: string[], urlExclude: string[], filters?: DiscoverFilters): Promise<Suggestion[]> {
   try {
-    const excludeDomains = [...new Set(exclude.map(toDomain))].filter(Boolean);
-    const excludeUrls = exclude.filter((e) => /^https?:\/\//i.test(e));
+    const excludeDomains = [...new Set(domainExclude.map(toDomain))].filter(Boolean);
+    const excludeUrls = urlExclude.filter((e) => /^https?:\/\//i.test(e));
     const { data: centroid } = await supabase.rpc("space_centroid_v2", { p_space_id: spaceId });
     const { data, error } = await supabase.rpc("explore_corpus_v2", {
       p_query: centroid ?? null,
@@ -1433,10 +1433,10 @@ async function preferenceVector(spaceId: string | null, userId: string | null): 
 }
 
 /** Trending lane: corpus rows with positive engagement velocity (14-day window). */
-async function trendingCorpus(exclude: string[], filters?: DiscoverFilters): Promise<Suggestion[]> {
+async function trendingCorpus(domainExclude: string[], urlExclude: string[], filters?: DiscoverFilters): Promise<Suggestion[]> {
   try {
-    const excludeDomains = [...new Set(exclude.map(toDomain))].filter(Boolean);
-    const excludeUrls = exclude.filter((e) => /^https?:\/\//i.test(e));
+    const excludeDomains = [...new Set(domainExclude.map(toDomain))].filter(Boolean);
+    const excludeUrls = urlExclude.filter((e) => /^https?:\/\//i.test(e));
     const { data, error } = await supabase.rpc("trending_corpus_v2", {
       p_count: 30,
       p_exclude: excludeDomains.slice(0, 400),
@@ -1535,19 +1535,22 @@ export async function discover(query: string | null, extraExclude: string[] = []
   ]);
   // Prioritise session exclusions (extraExclude) over stale seen URLs —
   // don't let a large seen history starve the pool of fresh results.
-  const exclude = [...extraExclude, ...domains, ...seen.slice(0, Math.max(0, 300 - extraExclude.length))];
+  // Seen URLs should exclude by exact URL, not domain — otherwise the small corpus
+  // gets exhausted after a few sessions. Domain exclusion is only for library items.
+  const seenUrlsOnly = seen.slice(0, Math.max(0, 300 - extraExclude.length));
+  const exclude = [...extraExclude, ...domains, ...seenUrlsOnly];
   const graded = !!imageUrl && !!query;
 
   // --- Fresh lane: recency-sorted corpus, no taste signal ---
   if (discoveryMode === "fresh" && !query && mode !== "type") {
-    const fresh = await freshCorpus(exclude, filters);
+    const fresh = await freshCorpus([...extraExclude, ...domains], seenUrlsOnly, filters);
     if (fresh.length >= 6) return mmrDiversify(fresh);
     // thin fresh corpus → fall through to For You
   }
 
   // --- Explore lane: random far-from-centroid corpus ---
   if (discoveryMode === "explore" && !query && mode !== "type") {
-    const explored = await exploreCorpus(tasteSpaceId ?? null, exclude, filters);
+    const explored = await exploreCorpus(tasteSpaceId ?? null, [...extraExclude, ...domains], seenUrlsOnly, filters);
     if (explored.length >= 6) return mmrDiversify(explored);
     // thin explore pool → fall through to For You
   }
@@ -1558,7 +1561,7 @@ export async function discover(query: string | null, extraExclude: string[] = []
   // You — a "Rising" tab that silently serves taste-ranked results is misleading.
   // The Feed renders an honest "warming up" empty state instead (see Feed.tsx).
   if (discoveryMode === "trending" && !query && mode !== "type") {
-    const trending = await trendingCorpus(exclude, filters);
+    const trending = await trendingCorpus([...extraExclude, ...domains], seenUrlsOnly, filters);
     return trending.length ? mmrDiversify(trending) : [];
   }
 
