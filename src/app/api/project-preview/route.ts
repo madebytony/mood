@@ -91,7 +91,12 @@ function isMeaningful(url: string, attrs: string): boolean {
 
 function resolve(raw: string, base: URL): string | null {
   try {
-    return new URL(raw.trim(), base).href;
+    const abs = new URL(raw.trim(), base);
+    // Unwrap Next.js image optimizer URLs — extract the real image source
+    if (abs.pathname === "/_next/image" && abs.searchParams.has("url")) {
+      return abs.searchParams.get("url")!;
+    }
+    return abs.href;
   } catch {
     return null;
   }
