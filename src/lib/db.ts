@@ -1573,8 +1573,8 @@ export async function discover(query: string | null, extraExclude: string[] = []
 
   let corpus: Suggestion[] = [];
   if (mode !== "type") {
-    const excludeDomains = [...new Set([...exclude.map(toDomain), ...domains])].filter(Boolean);
-    const excludeUrls = exclude.filter((e) => /^https?:\/\//i.test(e));
+    const excludeDomains = [...new Set([...extraExclude.map(toDomain), ...domains])].filter(Boolean);
+    const excludeUrls = [...extraExclude, ...seen].filter((e) => /^https?:\/\//i.test(e));
     corpus = await corpusSimilar(query, tasteSpaceId ?? null, 24, excludeDomains, similarToItemId, graded ? 0.25 : undefined, filters, excludeUrls, prefVec);
     // palette filtering only the index can honour — return directly, live-web has unknown colours
     if (filters?.color) return corpus;
