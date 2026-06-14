@@ -44,7 +44,7 @@ const IMG_TAG_RE = /<img\b([^>]{5,})>/gi;
 const SRCSET_RE = /srcset=["']([^"']+)["']/i;
 const WIDTH_RE = /width=["']?(\d+)/i;
 const HEIGHT_RE = /height=["']?(\d+)/i;
-const BG_RE = /background(?:-image)?:\s*url\(["']?([^"')]+)["']?\)/gi;
+const BG_RE = /background(?:-image)?:\s*url\(["']?([^"')\s]+)["']?\)/gi;
 
 /** From a srcset string, return the URL of the largest candidate. */
 function bestFromSrcset(srcset: string): string | null {
@@ -76,6 +76,7 @@ function extractSrc(attrs: string): string | null {
 
 function isMeaningful(url: string, attrs: string): boolean {
   if (/^data:/i.test(url)) return false;
+  if (/^javascript:/i.test(url)) return false;
   if (/\.svg(\?|$)/i.test(url)) return false;
   if (/\.ico(\?|$)/i.test(url)) return false;
   if (JUNK_PATH_RE.test(url)) return false;

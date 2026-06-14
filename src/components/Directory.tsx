@@ -226,6 +226,8 @@ function StudioPanel({
   const [previewImages, setPreviewImages] = useState<string[] | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewIdx, setPreviewIdx] = useState(0);
+  const [previewSaving, setPreviewSaving] = useState(false);
+  const [previewSaved, setPreviewSaved] = useState(false);
 
   const studio = studios.find((s) => s.domain === domain);
 
@@ -245,6 +247,7 @@ function StudioPanel({
     if (!previewItem) return;
     setPreviewIdx(0);
     setPreviewImages(null);
+    setPreviewSaved(false);
     setPreviewLoading(true);
     let alive = true;
     apiFetch(`/api/project-preview?url=${encodeURIComponent(previewItem.url)}`)
@@ -425,14 +428,18 @@ function StudioPanel({
               )}
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
+                key={previewImages?.[previewIdx] ?? previewItem.image ?? "ph"}
                 src={previewImages?.[previewIdx] ?? previewItem.image ?? PLACEHOLDER}
+                data-url={previewImages?.[previewIdx] ?? previewItem.image ?? ""}
                 alt={previewItem.title ?? ""}
                 className="max-h-full w-full object-contain"
                 onError={(e) => {
                   const el = e.target as HTMLImageElement;
-                  if (!el.getAttribute("data-orig")) {
-                    el.setAttribute("data-orig", el.src);
-                    el.src = `/api/proxy-image?url=${encodeURIComponent(el.src)}`;
+                  const origUrl = el.getAttribute("data-url");
+                  if (origUrl && !el.src.includes("/api/proxy-image")) {
+                    el.src = `/api/proxy-image?url=${encodeURIComponent(origUrl)}`;
+                  } else {
+                    el.style.display = "none";
                   }
                 }}
               />
@@ -452,13 +459,14 @@ function StudioPanel({
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={src}
+                      data-url={src}
                       alt=""
                       className="h-full w-full object-cover"
                       onError={(e) => {
                         const el = e.target as HTMLImageElement;
-                        if (!el.getAttribute("data-orig")) {
-                          el.setAttribute("data-orig", el.src);
-                          el.src = `/api/proxy-image?url=${encodeURIComponent(el.src)}`;
+                        const origUrl = el.getAttribute("data-url");
+                        if (origUrl && !el.src.includes("/api/proxy-image")) {
+                          el.src = `/api/proxy-image?url=${encodeURIComponent(origUrl)}`;
                         }
                       }}
                     />
@@ -483,16 +491,38 @@ function StudioPanel({
                 return (
                   <button
                     onClick={async () => {
+                      if (previewSaving || previewSaved) return;
+                      setPreviewSaving(true);
                       try {
                         await addFromUrl(previewItem.url, bm.id);
+                        setPreviewSaved(true);
                         toast(`Saved to ${bm.name}`);
                       } catch (err) {
                         toast(`Couldn't save: ${(err as Error).message}`, "error");
+                      } finally {
+                        setPreviewSaving(false);
                       }
                     }}
-                    className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-zinc-300 hover:border-white/25"
+                    disabled={previewSaving || previewSaved}
+                    className={`flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs transition-colors ${
+                      previewSaved
+                        ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
+                        : "border-white/10 bg-white/5 text-zinc-300 hover:border-white/25"
+                    }`}
                   >
-                    <BookmarkIcon className="h-3.5 w-3.5" /> Save to Bookmarks
+                    {previewSaved ? (
+                      <><CheckSquareIcon className="h-3.5 w-3.5" /> Saved</>
+                    ) : previewSaving ? (
+                      <>
+                        <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                          <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" className="opacity-25" />
+                          <path fill="currentColor" className="opacity-75" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        Saving...
+                      </>
+                    ) : (
+                      <><BookmarkIcon className="h-3.5 w-3.5" /> Save to Bookmarks</>
+                    )}
                   </button>
                 );
               })()}

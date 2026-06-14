@@ -395,15 +395,16 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
                     {currentImg ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
+                        key={currentImg}
                         src={currentImg}
+                        data-url={currentImg}
                         alt={w.title ?? ""}
                         className="max-h-[72dvh] w-full object-contain"
                         onError={(e) => {
                           const el = e.target as HTMLImageElement;
-                          const orig = el.getAttribute("data-orig");
-                          if (!orig) {
-                            el.setAttribute("data-orig", el.src);
-                            el.src = `/api/proxy-image?url=${encodeURIComponent(el.src)}`;
+                          const origUrl = el.getAttribute("data-url");
+                          if (origUrl && !el.src.includes("/api/proxy-image")) {
+                            el.src = `/api/proxy-image?url=${encodeURIComponent(origUrl)}`;
                           } else {
                             el.style.display = "none";
                           }
@@ -427,13 +428,14 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img
                             src={src}
+                            data-url={src}
                             alt=""
                             className="h-full w-full object-cover"
                             onError={(e) => {
                               const el = e.target as HTMLImageElement;
-                              if (!el.getAttribute("data-orig")) {
-                                el.setAttribute("data-orig", el.src);
-                                el.src = `/api/proxy-image?url=${encodeURIComponent(el.src)}`;
+                              const origUrl = el.getAttribute("data-url");
+                              if (origUrl && !el.src.includes("/api/proxy-image")) {
+                                el.src = `/api/proxy-image?url=${encodeURIComponent(origUrl)}`;
                               }
                             }}
                           />
@@ -449,9 +451,8 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
                   {/* Show preview image at imageIdx if available, else the original capture */}
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
-                    src={previewImages && previewImages[imageIdx]
-                      ? `/api/proxy-image?url=${encodeURIComponent(previewImages[imageIdx])}`
-                      : fullUrl}
+                    key={previewImages ? previewImages[imageIdx] : "orig"}
+                    src={previewImages && previewImages[imageIdx] ? previewImages[imageIdx] : fullUrl}
                     alt=""
                     onClick={() => {
                       if (previewImages) return; // no zoom in preview mode
@@ -465,11 +466,14 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
                         ? "w-full md:cursor-zoom-out"
                         : "w-full md:max-h-[72dvh] md:cursor-zoom-in md:object-contain"
                     }
+                    data-url={previewImages?.[imageIdx] ?? ""}
                     onError={previewImages ? (e) => {
                       const el = e.target as HTMLImageElement;
-                      if (!el.getAttribute("data-orig")) {
-                        el.setAttribute("data-orig", el.src);
-                        el.src = `/api/proxy-image?url=${encodeURIComponent(el.src)}`;
+                      const origUrl = el.getAttribute("data-url");
+                      if (origUrl && !el.src.includes("/api/proxy-image")) {
+                        el.src = `/api/proxy-image?url=${encodeURIComponent(origUrl)}`;
+                      } else {
+                        el.style.display = "none";
                       }
                     } : undefined}
                   />
@@ -512,14 +516,15 @@ export default function Detail({ item, spaces, allItems, siblings, urls, onClose
                       >
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
-                          src={`/api/proxy-image?url=${encodeURIComponent(src)}`}
+                          src={src}
+                          data-url={src}
                           alt=""
                           className="h-full w-full object-cover"
                           onError={(e) => {
                             const el = e.target as HTMLImageElement;
-                            if (!el.getAttribute("data-orig")) {
-                              el.setAttribute("data-orig", el.src);
-                              el.src = `/api/proxy-image?url=${encodeURIComponent(el.src)}`;
+                            const origUrl = el.getAttribute("data-url");
+                            if (origUrl && !el.src.includes("/api/proxy-image")) {
+                              el.src = `/api/proxy-image?url=${encodeURIComponent(origUrl)}`;
                             }
                           }}
                         />
